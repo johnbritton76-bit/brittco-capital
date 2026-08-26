@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">{{ d.loan_type }} · {{ d.status }}</div>
+    <h2>{{ d.address }}</h2>
+    <p class="hint"><a href="/borrowers/{{ d.borrower_id }}">{{ d.borrower_name }}</a></p>
+  </div>
+  <a class="btn ghost" href="/deals/{{ d.id }}/edit">Edit deal</a>
+</div>
+
+<div class="card">
+  <h3>Underwriting result</h3>
+  <p>
+    {% if uw.decision == 'Approve' %}<span class="badge good">Approve</span>
+    {% elif uw.decision == 'Review' %}<span class="badge warn">Holistic review</span>
+    {% else %}<span class="badge bad">{{ uw.decision }}</span>{% endif %}
+  </p>
+  <div class="metrics">
+    <div class="metric"><span>LTV vs as-is / purchase</span><strong>{{ "%.1f"|format(uw.ltv) }}%</strong> <small>(guideline 75%)</small></div>
+    <div class="metric"><span>Credit</span><strong>{{ uw.credit or "—" }}</strong> <small>(min 680)</small></div>
+    {% if uw.net_profit_pct is not none %}
+    <div class="metric"><span>Net projected profit on ARV</span><strong>{{ "%.1f"|format(uw.net_profit_pct) }}%</strong> <small>(prefer 25%+)</small></div>
+    {% endif %}
+    <div class="metric"><span>Loan amount</span><strong>${{ "{:,.0f}".format(d.loan_amount or 0) }}</strong></div>
+  </div>
+  <ul>
+    {% for f in uw.flags %}
+    <li>{{ f }}</li>
+    {% endfor %}
+  </ul>
+  {% if d.ltv_override_reason %}<p><em>Override notes:</em> {{ d.ltv_override_reason }}</p>{% endif %}
+</div>
+
+<div class="grid cards" style="margin-top:14px">
+  <div class="card"><h3>Purchase</h3><div>${{ "{:,.0f}".format(d.purchase_price or 0) }}</div></div>
+  <div class="card"><h3>As-is value</h3><div>${{ "{:,.0f}".format(d.as_is_value or 0) }}</div></div>
+  <div class="card"><h3>ARV</h3><div>${{ "{:,.0f}".format(d.arv or 0) }}</div></div>
+  <div class="card"><h3>Rehab</h3><div>${{ "{:,.0f}".format(d.rehab_budget or 0) }}</div></div>
+  <div class="card"><h3>Rate / points / term</h3><div>{{ d.rate or "—" }}% · {{ d.points or "—" }} pts · {{ d.term_months or "—" }} mo</div></div>
+  <div class="card"><h3>Exit</h3><div>{{ d.exit_strategy or "—" }}</div></div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Messages with borrower</h3>
+  {% for m in messages %}
+    <p><strong>{{ m.sender }}</strong> <span class="hint">{{ m.created_at }}</span><br>{{ m.body }}</p>
+  {% else %}
+    <p class="hint">No messages yet.</p>
+  {% endfor %}
+  <form method="post" action="/deals/{{ d.id }}/message">
+    <textarea name="body" placeholder="Message the borrower..."></textarea>
+    <button class="btn" type="submit" style="margin-top:8px">Send</button>
+  </form>
+</div>
+{% endblock %}

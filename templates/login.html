@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brittco Capital Inc — Staff Login</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="auth-card" method="post">
+      <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+      <div class="tag">Your Bridge to Building Wealth</div>
+      <h1>Staff login</h1>
+      <p class="hint">CRM, underwriting, and deal pipeline</p>
+      {% if error %}<p class="badge bad">{{ error }}</p>{% endif %}
+      <label>Email</label>
+      <input name="email" type="email" value="admin@brittcocapital.com" required>
+      <label>Password</label>
+      <input name="password" type="password" value="brittco" required>
+      <button class="btn full" type="submit">Enter dashboard</button>
+      <p class="hint" style="margin-top:16px"><a href="/portal/login">Borrower portal →</a></p>
+    </form>
+  </div>
+</body>
+</html>

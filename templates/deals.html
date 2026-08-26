@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>All deals</h2><a class="btn" href="/deals/new">New deal</a></div>
+<div class="card">
+<table class="table">
+  <tr><th>Borrower</th><th>Type</th><th>Address</th><th>Amount</th><th>LTV</th><th>ARV profit</th><th>Status</th></tr>
+  {% for d in deals %}
+  <tr>
+    <td><a href="/deals/{{ d.id }}">{{ d.borrower_name }}</a></td>
+    <td>{{ d.loan_type }}</td>
+    <td>{{ d.address }}</td>
+    <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
+    <td>{% if d.ltv %}{{ "%.1f"|format(d.ltv) }}%{% endif %}</td>
+    <td>{% if d.net_profit_pct is not none %}{{ "%.1f"|format(d.net_profit_pct) }}%{% endif %}</td>
+    <td><span class="badge">{{ d.status }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

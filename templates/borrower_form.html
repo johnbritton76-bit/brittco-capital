@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>{{ 'Edit' if b else 'New' }} borrower</h2></div>
+<form method="post" class="card form-grid">
+  <div><label>Full name</label><input name="name" value="{{ b.name if b else '' }}" required></div>
+  <div><label>Entity type</label>
+    <select name="entity_type">
+      {% for t in ['Individual','LLC','Trust','Corporation'] %}
+      <option value="{{ t }}" {% if b and b.entity_type==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div><label>Entity / LLC name</label><input name="entity_name" value="{{ b.entity_name if b else '' }}"></div>
+  <div><label>Email</label><input name="email" type="email" value="{{ b.email if b else '' }}" required></div>
+  <div><label>Phone</label><input name="phone" value="{{ b.phone if b else '' }}"></div>
+  <div><label>Credit score</label><input name="credit_score" type="number" value="{{ b.credit_score if b else '' }}"></div>
+  <div><label>Portal password (leave blank to keep)</label><input name="password" type="password"></div>
+  <div class="span-2"><label>Notes</label><textarea name="notes">{{ b.notes if b else '' }}</textarea></div>
+  <div class="span-2"><button class="btn" type="submit">Save profile</button></div>
+</form>
+{% endblock %}

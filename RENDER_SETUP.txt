@@ -1,0 +1,64 @@
+BRITTCO CAPITAL INC — Render Hosting (Simple Path)
+==================================================
+
+Goal: Get a link you can open on your phone.
+
+The cleanest free way is: put the files on GitHub (free) → connect Render.
+
+--------------------------------------------
+PART A — Put the files on GitHub (one-time)
+--------------------------------------------
+1. Go to https://github.com and create a free account (or log in).
+2. Click the green "New" button to create a new repository.
+   - Name it: brittco-capital
+   - Leave it Public
+   - Click "Create repository"
+3. On the next screen, look for “uploading an existing file” (or similar).
+4. Drag the entire contents of the unzipped brittco folder into the browser
+   (app.py, Procfile, requirements.txt, templates folder, static folder, etc.).
+5. Click “Commit changes”.
+
+--------------------------------------------
+PART B — Connect to Render
+--------------------------------------------
+1. Go to https://render.com and sign up / log in (Google is fine).
+2. Click “New +” → “Web Service”.
+3. Click “Connect account” next to GitHub and authorize Render.
+4. Select your brittco-capital repository.
+5. Fill in:
+   - Name: brittco-capital
+   - Language / Runtime: Python 3
+   - Build Command:  pip install -r requirements.txt
+   - Start Command:  gunicorn app:app --bind 0.0.0.0:$PORT
+   - Instance type: Free
+6. Under Environment Variables, add:
+   Key:   SECRET_KEY
+   Value: Brittco2026SecureKey!   (or any long phrase you invent)
+7. Click “Create Web Service”.
+
+--------------------------------------------
+PART C — Open it
+--------------------------------------------
+Wait 1–3 minutes. Render will show a green “Live” status and a link like:
+https://brittco-capital-xxxx.onrender.com
+
+Open that link on your phone.
+
+Staff login:
+  admin@brittcocapital.com
+  brittco
+
+Borrower portal (link is on the login page):
+  marcus@example.com
+  borrower
+
+--------------------------------------------
+NOTES
+--------------------------------------------
+• Free plan sleeps after ~15 minutes of no use. First open after sleep can
+  take 30–60 seconds. Paid plans stay always-on.
+• Free storage is temporary. When you start using real deals, we can move
+  the data to a permanent database.
+• Keep your domain at GoDaddy. Later we point app.yourdomain.com here.
+
+Stuck? Tell me exactly which step you’re on and what you see.

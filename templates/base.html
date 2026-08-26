@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Brittco Capital Inc" }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <nav class="nav">
+      <a href="/" class="{{ 'active' if nav=='dash' else '' }}">Dashboard</a>
+      <a href="/borrowers" class="{{ 'active' if nav=='borrowers' else '' }}">Borrowers</a>
+      <a href="/deals" class="{{ 'active' if nav=='deals' else '' }}">Deals</a>
+      <a href="/deals/new" class="{{ 'active' if nav=='newdeal' else '' }}">New deal</a>
+      <a href="/borrowers/new" class="{{ 'active' if nav=='newborrower' else '' }}">New borrower</a>
+      <a href="/logout">Log out</a>
+    </nav>
+  </aside>
+  <main class="main">
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% block body %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

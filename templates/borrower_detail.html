@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Borrower profile</div>
+    <h2>{{ b.name }}</h2>
+  </div>
+  <div>
+    <a class="btn ghost" href="/borrowers/{{ b.id }}/edit">Edit</a>
+    <a class="btn" href="/deals/new?borrower_id={{ b.id }}">New deal for this borrower</a>
+  </div>
+</div>
+<div class="grid cards">
+  <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}</div></div>
+  <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>{{ b.phone }}</div></div>
+  <div class="card"><h3>Credit</h3><div class="n">{{ b.credit_score or "—" }}</div></div>
+</div>
+{% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Deal history</h3>
+  <table class="table">
+    <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
+    {% for d in deals %}
+    <tr>
+      <td><a href="/deals/{{ d.id }}">{{ d.loan_type }}</a></td>
+      <td>{{ d.address }}</td>
+      <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
+      <td>{{ d.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
