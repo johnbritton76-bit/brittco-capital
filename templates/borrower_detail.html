@@ -6,8 +6,8 @@
     <h2>{{ b.name }}</h2>
   </div>
   <div>
-    <a class="btn ghost" href="/borrowers/{{ b.id }}/edit">Edit</a>
-    <a class="btn" href="/deals/new?borrower_id={{ b.id }}">New deal for this borrower</a>
+    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Edit</a>
+    <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
   </div>
 </div>
 <div class="grid cards">
@@ -22,7 +22,7 @@
     <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
     {% for d in deals %}
     <tr>
-      <td><a href="/deals/{{ d.id }}">{{ d.loan_type }}</a></td>
+      <td><a href="{{ url_for('deal_detail', did=d.id) }}">{{ d.loan_type }}</a></td>
       <td>{{ d.address }}</td>
       <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
       <td>{{ d.status }}</td>

@@ -447,6 +447,7 @@ def save_deal(deal_id=None):
 
 
 @app.route("/deals/new", methods=["GET", "POST"])
+@app.route("/new-deal", methods=["GET", "POST"])
 @staff_required
 def deal_new():
     borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()

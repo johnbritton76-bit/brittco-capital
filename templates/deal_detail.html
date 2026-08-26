@@ -4,9 +4,9 @@
   <div>
     <div class="tag">{{ d.loan_type }} · {{ d.status }}</div>
     <h2>{{ d.address }}</h2>
-    <p class="hint"><a href="/borrowers/{{ d.borrower_id }}">{{ d.borrower_name }}</a></p>
+    <p class="hint"><a href="{{ url_for('borrower_detail', bid=d.borrower_id) }}">{{ d.borrower_name }}</a></p>
   </div>
-  <a class="btn ghost" href="/deals/{{ d.id }}/edit">Edit deal</a>
+  <a class="btn ghost" href="{{ url_for('deal_edit', did=d.id) }}">Edit deal</a>
 </div>
 
 <div class="card">
@@ -48,7 +48,7 @@
   {% else %}
     <p class="hint">No messages yet.</p>
   {% endfor %}
-  <form method="post" action="/deals/{{ d.id }}/message">
+  <form method="post" action="{{ url_for('staff_message', did=d.id) }}">
     <textarea name="body" placeholder="Message the borrower..."></textarea>
     <button class="btn" type="submit" style="margin-top:8px">Send</button>
   </form>

@@ -5,7 +5,7 @@
     <div class="tag">Brittco Capital Inc</div>
     <h2>Pipeline</h2>
   </div>
-  <a class="btn" href="/deals/new">New deal</a>
+  <a class="btn" href="{{ url_for('deal_new') }}">New deal</a>
 </div>
 <div class="grid cards">
   <div class="card"><h3>Active deals</h3><div class="n">{{ stats.active }}</div></div>
@@ -19,7 +19,7 @@
     <tr><th>Borrower</th><th>Type</th><th>Property</th><th>Loan</th><th>LTV</th><th>Status</th></tr>
     {% for d in deals %}
     <tr>
-      <td><a href="/deals/{{ d.id }}">{{ d.borrower_name }}</a></td>
+      <td><a href="{{ url_for('deal_detail', did=d.id) }}">{{ d.borrower_name }}</a></td>
       <td>{{ d.loan_type }}</td>
       <td>{{ d.address }}</td>
       <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
