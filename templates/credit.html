@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Credit pulls</h2></div>
+<p class="hint">
+  Soft pulls are the default. A live bureau pull requires a licensed vendor account
+  (Soft Pull Solutions, iSoftpull, or CRS) plus FCRA permissible purpose.
+  Until those keys are added in Render, record scores here and they attach to the borrower profile.
+</p>
+{% if vendor_ready %}
+<p class="flash">Vendor API key is set. Requests will be marked as vendor-requested.</p>
+{% else %}
+<p class="hint">No CREDIT_API_KEY is set yet. Use manual entry for now.</p>
+{% endif %}
+
+<form method="post" action="{{ url_for('credit_pull') }}" class="card form-grid">
+  <div><label>Borrower</label>
+    <select name="borrower_id" required>
+      {% for b in borrowers %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div><label>Pull type</label>
+    <select name="pull_type"><option>Soft</option><option>Hard</option></select>
+  </div>
+  <div><label>Bureau</label>
+    <select name="bureau">
+      <option>Tri-merge</option><option>Experian</option><option>Equifax</option><option>TransUnion</option>
+    </select>
+  </div>
+  <div><label>Score (if known)</label><input name="score" type="number"></div>
+  <div class="span-2"><label>Notes / findings</label><textarea name="notes"></textarea></div>
+  <div class="span-2"><button class="btn" type="submit">Save soft pull</button></div>
+</form>
+
+<div class="card" style="margin-top:14px">
+  <h3>Pull history</h3>
+  <table class="table">
+    <tr><th>Date</th><th>Borrower</th><th>Type</th><th>Bureau</th><th>Score</th><th>Status</th></tr>
+    {% for p in pulls %}
+    <tr>
+      <td>{{ p.created_at }}</td>
+      <td>{{ p.borrower_name }}</td>
+      <td>{{ p.pull_type }}</td>
+      <td>{{ p.bureau }}</td>
+      <td>{{ p.score or "—" }}</td>
+      <td>{{ p.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

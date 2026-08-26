@@ -2,7 +2,7 @@
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from functools import wraps
 
 from flask import (
@@ -77,6 +77,54 @@ def init_db():
             sender TEXT,
             body TEXT,
             created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS loans (
+            id INTEGER PRIMARY KEY,
+            borrower_id INTEGER,
+            deal_id INTEGER,
+            loan_number TEXT,
+            loan_type TEXT,
+            property_address TEXT,
+            original_principal REAL,
+            current_balance REAL,
+            rate REAL,
+            points REAL,
+            start_date TEXT,
+            maturity_date TEXT,
+            payment_type TEXT,
+            payment_amount REAL,
+            payment_frequency TEXT,
+            next_payment_due TEXT,
+            late_fee REAL,
+            status TEXT,
+            notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            paid_on TEXT,
+            amount REAL,
+            applied_to TEXT,
+            note TEXT
+        );
+        CREATE TABLE IF NOT EXISTS credit_pulls (
+            id INTEGER PRIMARY KEY,
+            borrower_id INTEGER,
+            pull_type TEXT,
+            bureau TEXT,
+            score INTEGER,
+            status TEXT,
+            vendor TEXT,
+            notes TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS reminder_log (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            kind TEXT,
+            sent_on TEXT,
+            audience TEXT,
+            body TEXT
         );
         """
     )
@@ -166,6 +214,37 @@ def init_db():
             ),
         )
         c.commit()
+    if not c.execute("SELECT 1 FROM loans").fetchone():
+        today = date.today()
+        c.execute(
+            """INSERT INTO loans
+            (borrower_id, deal_id, loan_number, loan_type, property_address,
+             original_principal, current_balance, rate, points, start_date, maturity_date,
+             payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+             status, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                1,
+                1,
+                "BC-1001",
+                "Fix and Flip",
+                "1842 Pine Street, Orlando, FL",
+                210000,
+                210000,
+                11.5,
+                2.0,
+                (today - timedelta(days=60)).isoformat(),
+                (today + timedelta(days=300)).isoformat(),
+                "Interest only",
+                2012.50,
+                "Monthly",
+                (today + timedelta(days=6)).isoformat(),
+                150,
+                "Current",
+                "Sample funded loan for performance tracking.",
+            ),
+        )
+        c.commit()
     c.close()
 
 
@@ -198,6 +277,98 @@ def money(v):
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def parse_date(s):
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except ValueError:
+        return None
+
+
+def days_until(s):
+    d = parse_date(s)
+    if not d:
+        return None
+    return (d - date.today()).days
+
+
+def loan_alerts():
+    rows = db().execute(
+        """SELECT l.*, b.name AS borrower_name, b.email AS borrower_email
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           WHERE l.status NOT IN ('Paid Off','Sold','Written Off')
+           ORDER BY l.next_payment_due"""
+    ).fetchall()
+    alerts = []
+    for r in rows:
+        due = days_until(r["next_payment_due"])
+        mat = days_until(r["maturity_date"])
+        if due is not None and due < 0:
+            alerts.append(
+                {
+                    "level": "bad",
+                    "loan": r,
+                    "kind": "payment_late",
+                    "text": f"{r['borrower_name']} payment is {abs(due)} day(s) late on {r['loan_number']}.",
+                }
+            )
+        elif due is not None and due <= 7:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "loan": r,
+                    "kind": "payment_due",
+                    "text": f"{r['borrower_name']} payment due in {due} day(s) on {r['loan_number']}.",
+                }
+            )
+        if mat is not None and 0 <= mat <= 45:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "loan": r,
+                    "kind": "maturity",
+                    "text": f"{r['borrower_name']} loan {r['loan_number']} matures in {mat} day(s).",
+                }
+            )
+        elif mat is not None and mat < 0:
+            alerts.append(
+                {
+                    "level": "bad",
+                    "loan": r,
+                    "kind": "matured",
+                    "text": f"{r['borrower_name']} loan {r['loan_number']} is past maturity.",
+                }
+            )
+    return alerts
+
+
+def post_reminders(alerts):
+    sent = 0
+    today = date.today().isoformat()
+    for a in alerts:
+        loan = a["loan"]
+        exists = db().execute(
+            "SELECT 1 FROM reminder_log WHERE loan_id=? AND kind=? AND sent_on=?",
+            (loan["id"], a["kind"], today),
+        ).fetchone()
+        if exists:
+            continue
+        body = a["text"]
+        db().execute(
+            "INSERT INTO messages (deal_id, borrower_id, sender, body, created_at) VALUES (?,?,?,?,?)",
+            (loan["deal_id"], loan["borrower_id"], "Brittco System", body, datetime.now().isoformat(timespec="minutes")),
+        )
+        db().execute(
+            "INSERT INTO reminder_log (loan_id, kind, sent_on, audience, body) VALUES (?,?,?,?,?)",
+            (loan["id"], a["kind"], today, "staff_and_borrower", body),
+        )
+        sent += 1
+    if sent:
+        db().commit()
+    return sent
 
 
 def underwrite(deal, credit_score):
@@ -301,14 +472,22 @@ def dashboard():
         ).fetchall()
     )
     funded = sum(money(d["loan_amount"]) for d in deals if d["status"] == "Funded")
+    book = db().execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(current_balance),0) bal FROM loans WHERE status NOT IN ('Paid Off','Written Off')"
+    ).fetchone()
+    alerts = loan_alerts()
+    post_reminders(alerts)
     stats = {
         "active": sum(1 for d in deals if d["status"] not in ("Declined", "Paid Off")),
         "uw": sum(1 for d in deals if d["status"] == "Underwriting"),
         "borrowers": db().execute("SELECT COUNT(*) c FROM borrowers").fetchone()["c"],
         "funded": funded,
+        "loans": book["c"],
+        "servicing": book["bal"],
+        "alerts": len(alerts),
     }
     return render_template(
-        "dashboard.html", title="Dashboard", nav="dash", deals=deals, stats=stats
+        "dashboard.html", title="Dashboard", nav="dash", deals=deals, stats=stats, alerts=alerts
     )
 
 
@@ -542,10 +721,14 @@ def portal_home():
     deals = db().execute(
         "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
     ).fetchall()
+    loans = db().execute(
+        "SELECT * FROM loans WHERE borrower_id=? AND status NOT IN ('Written Off') ORDER BY id DESC",
+        (b["id"],),
+    ).fetchall()
     messages = db().execute(
         "SELECT * FROM messages WHERE borrower_id=? ORDER BY id", (b["id"],)
     ).fetchall()
-    return render_template("portal.html", b=b, deals=deals, messages=messages, flash=None)
+    return render_template("portal.html", b=b, deals=deals, loans=loans, messages=messages, flash=None)
 
 
 @app.route("/portal/apply", methods=["POST"])
@@ -596,6 +779,170 @@ def portal_message():
     )
     db().commit()
     return redirect(url_for("portal_home"))
+
+
+@app.route("/loans")
+@staff_required
+def loans():
+    rows = db().execute(
+        """SELECT l.*, b.name AS borrower_name
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           ORDER BY l.id DESC"""
+    ).fetchall()
+    enriched = []
+    for r in rows:
+        d = dict(r)
+        d["due_in"] = days_until(r["next_payment_due"])
+        d["matures_in"] = days_until(r["maturity_date"])
+        enriched.append(d)
+    return render_template("loans.html", title="Loan management", nav="loans", loans=enriched)
+
+
+@app.route("/loans/new", methods=["GET", "POST"])
+@staff_required
+def loan_new():
+    borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    deals = db().execute("SELECT id, address, loan_type FROM deals ORDER BY id DESC").fetchall()
+    if request.method == "POST":
+        f = request.form
+        principal = money(f.get("original_principal"))
+        db().execute(
+            """INSERT INTO loans
+            (borrower_id, deal_id, loan_number, loan_type, property_address,
+             original_principal, current_balance, rate, points, start_date, maturity_date,
+             payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+             status, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                int(f["borrower_id"]),
+                int(f["deal_id"]) if f.get("deal_id") else None,
+                f.get("loan_number"),
+                f.get("loan_type"),
+                f.get("property_address"),
+                principal,
+                money(f.get("current_balance")) or principal,
+                money(f.get("rate")) or None,
+                money(f.get("points")) or None,
+                f.get("start_date"),
+                f.get("maturity_date"),
+                f.get("payment_type"),
+                money(f.get("payment_amount")) or None,
+                f.get("payment_frequency") or "Monthly",
+                f.get("next_payment_due"),
+                money(f.get("late_fee")) or 0,
+                f.get("status") or "Current",
+                f.get("notes"),
+            ),
+        )
+        db().commit()
+        return redirect(url_for("loans"))
+    return render_template(
+        "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None
+    )
+
+
+@app.route("/loans/<int:lid>")
+@staff_required
+def loan_detail(lid):
+    loan = db().execute(
+        """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
+        (lid,),
+    ).fetchone()
+    payments = db().execute(
+        "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on DESC, id DESC", (lid,)
+    ).fetchall()
+    paid = sum(money(p["amount"]) for p in payments)
+    perf = {
+        "paid": paid,
+        "due_in": days_until(loan["next_payment_due"]),
+        "matures_in": days_until(loan["maturity_date"]),
+        "remaining": money(loan["current_balance"]),
+    }
+    return render_template(
+        "loan_detail.html", title=loan["loan_number"], nav="loans", loan=loan, payments=payments, perf=perf
+    )
+
+
+@app.route("/loans/<int:lid>/payment", methods=["POST"])
+@staff_required
+def loan_payment(lid):
+    f = request.form
+    amt = money(f.get("amount"))
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    new_bal = max(0.0, money(loan["current_balance"]) - amt)
+    status = "Paid Off" if new_bal <= 0 else loan["status"]
+    nxt = f.get("next_payment_due") or loan["next_payment_due"]
+    db().execute(
+        "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
+        (lid, f.get("paid_on") or date.today().isoformat(), amt, f.get("applied_to") or "Interest", f.get("note")),
+    )
+    db().execute(
+        "UPDATE loans SET current_balance=?, status=?, next_payment_due=? WHERE id=?",
+        (new_bal, status, nxt, lid),
+    )
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/credit")
+@staff_required
+def credit():
+    pulls = db().execute(
+        """SELECT p.*, b.name AS borrower_name
+           FROM credit_pulls p JOIN borrowers b ON b.id=p.borrower_id
+           ORDER BY p.id DESC"""
+    ).fetchall()
+    borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    vendor_ready = bool(os.environ.get("CREDIT_API_KEY"))
+    return render_template(
+        "credit.html",
+        title="Credit pulls",
+        nav="credit",
+        pulls=pulls,
+        borrowers=borrowers,
+        vendor_ready=vendor_ready,
+    )
+
+
+@app.route("/credit/pull", methods=["POST"])
+@staff_required
+def credit_pull():
+    f = request.form
+    bid = int(f["borrower_id"])
+    pull_type = f.get("pull_type") or "Soft"
+    bureau = f.get("bureau") or "Tri-merge"
+    score = int(f["score"]) if f.get("score") else None
+    notes = f.get("notes") or ""
+    api_key = os.environ.get("CREDIT_API_KEY")
+    status = "Recorded"
+    vendor = "Manual entry"
+    if api_key:
+        vendor = os.environ.get("CREDIT_VENDOR", "Soft Pull Solutions")
+        status = "Requested via vendor"
+        notes = (notes + " Live API keys are set. Connect the vendor SDK next for automatic JSON import.").strip()
+    else:
+        notes = (notes + " No vendor key on file. Result stored as a manual / pending soft pull.").strip()
+    db().execute(
+        """INSERT INTO credit_pulls
+        (borrower_id, pull_type, bureau, score, status, vendor, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (bid, pull_type, bureau, score, status, vendor, notes, datetime.now().isoformat(timespec="minutes")),
+    )
+    if score:
+        db().execute("UPDATE borrowers SET credit_score=? WHERE id=?", (score, bid))
+    db().commit()
+    return redirect(url_for("credit"))
+
+
+@app.route("/cron/reminders")
+def cron_reminders():
+    expected = os.environ.get("CRON_SECRET", "brittco-cron")
+    if request.args.get("key") != expected:
+        return "Forbidden", 403
+    alerts = loan_alerts()
+    sent = post_reminders(alerts)
+    return {"ok": True, "alerts": len(alerts), "new_reminders": sent}
 
 
 if __name__ == "__main__":

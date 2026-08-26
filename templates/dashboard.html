@@ -12,7 +12,18 @@
   <div class="card"><h3>In underwriting</h3><div class="n">{{ stats.uw }}</div></div>
   <div class="card"><h3>Borrowers</h3><div class="n">{{ stats.borrowers }}</div></div>
   <div class="card"><h3>Funded volume</h3><div class="n">${{ "{:,.0f}".format(stats.funded) }}</div></div>
+  <div class="card"><h3>Servicing book</h3><div class="n">${{ "{:,.0f}".format(stats.servicing) }}</div></div>
+  <div class="card"><h3>Due alerts</h3><div class="n">{{ stats.alerts }}</div></div>
 </div>
+{% if alerts %}
+<div class="card" style="margin-top:16px">
+  <h3>Reminders</h3>
+  {% for a in alerts %}
+    <p><span class="badge {{ a.level }}">{{ a.kind }}</span> {{ a.text }}
+      <a href="{{ url_for('loan_detail', lid=a.loan.id) }}">open loan</a></p>
+  {% endfor %}
+</div>
+{% endif %}
 <div class="card" style="margin-top:16px">
   <h3>Recent deals</h3>
   <table class="table">

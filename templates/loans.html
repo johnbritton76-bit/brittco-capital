@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <h2>Loan management</h2>
+  <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
+</div>
+<p class="hint">Track funded loans, payments, and upcoming due dates.</p>
+<div class="card">
+<table class="table">
+  <tr>
+    <th>Loan #</th><th>Borrower</th><th>Property</th><th>Balance</th>
+    <th>Next payment</th><th>Matures</th><th>Status</th>
+  </tr>
+  {% for l in loans %}
+  <tr>
+    <td><a href="{{ url_for('loan_detail', lid=l.id) }}">{{ l.loan_number or l.id }}</a></td>
+    <td>{{ l.borrower_name }}</td>
+    <td>{{ l.property_address }}</td>
+    <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
+    <td>
+      {{ l.next_payment_due or "—" }}
+      {% if l.due_in is not none and l.due_in < 0 %}<span class="badge bad">late</span>
+      {% elif l.due_in is not none and l.due_in <= 7 %}<span class="badge warn">{{ l.due_in }}d</span>{% endif %}
+    </td>
+    <td>{{ l.maturity_date or "—" }}</td>
+    <td><span class="badge">{{ l.status }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

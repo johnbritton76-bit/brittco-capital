@@ -22,6 +22,23 @@
     <p>{{ b.email }} · {{ b.phone }} · {{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}</p>
   </div>
 
+  {% if loans %}
+  <div class="card" style="margin-top:14px">
+    <h3>Your loans</h3>
+    <table class="table">
+      <tr><th>Loan</th><th>Balance</th><th>Next payment</th><th>Status</th></tr>
+      {% for l in loans %}
+      <tr>
+        <td>{{ l.loan_number or l.id }} · {{ l.property_address }}</td>
+        <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
+        <td>{{ l.next_payment_due or "—" }}</td>
+        <td><span class="badge">{{ l.status }}</span></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
   <div class="card" style="margin-top:14px">
     <h3>Your deals</h3>
     <table class="table">

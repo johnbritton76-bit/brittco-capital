@@ -14,6 +14,8 @@
       <a href="{{ url_for('borrowers') }}" class="{{ 'active' if nav=='borrowers' else '' }}">Borrowers</a>
       <a href="{{ url_for('deals') }}" class="{{ 'active' if nav=='deals' else '' }}">Deals</a>
       <a href="{{ url_for('deal_new') }}" class="{{ 'active' if nav=='newdeal' else '' }}">New deal</a>
+      <a href="{{ url_for('loans') }}" class="{{ 'active' if nav=='loans' else '' }}">Loans</a>
+      <a href="{{ url_for('credit') }}" class="{{ 'active' if nav=='credit' else '' }}">Credit</a>
       <a href="{{ url_for('borrower_new') }}" class="{{ 'active' if nav=='newborrower' else '' }}">New borrower</a>
       <a href="{{ url_for('logout') }}">Log out</a>
     </nav>

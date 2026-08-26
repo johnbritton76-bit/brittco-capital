@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">{{ loan.loan_type }} · {{ loan.status }}</div>
+    <h2>{{ loan.loan_number or ("Loan " ~ loan.id) }}</h2>
+    <p class="hint">{{ loan.borrower_name }} · {{ loan.property_address }}</p>
+  </div>
+</div>
+<div class="grid cards">
+  <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
+  <div class="card"><h3>Original principal</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
+  <div class="card"><h3>Rate</h3><div>{{ loan.rate or "—" }}%</div></div>
+  <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
+  <div class="card"><h3>Next payment</h3>
+    <div>{{ loan.next_payment_due or "—" }}
+      {% if perf.due_in is not none and perf.due_in < 0 %}<span class="badge bad">{{ perf.due_in|abs }} days late</span>
+      {% elif perf.due_in is not none %}<span class="badge">{{ perf.due_in }} days</span>{% endif %}
+    </div>
+  </div>
+  <div class="card"><h3>Maturity</h3>
+    <div>{{ loan.maturity_date or "—" }}
+      {% if perf.matures_in is not none %}<span class="badge">{{ perf.matures_in }} days</span>{% endif %}
+    </div>
+  </div>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Record a payment</h3>
+  <form method="post" action="{{ url_for('loan_payment', lid=loan.id) }}" class="form-grid">
+    <div><label>Date</label><input name="paid_on" type="date"></div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
+    <div><label>Applied to</label>
+      <select name="applied_to"><option>Interest</option><option>Principal</option><option>Fees</option></select>
+    </div>
+    <div><label>Next payment due after this</label><input name="next_payment_due" type="date"></div>
+    <div class="span-2"><label>Note</label><input name="note"></div>
+    <div class="span-2"><button class="btn" type="submit">Save payment</button></div>
+  </form>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Payment history</h3>
+  <table class="table">
+    <tr><th>Date</th><th>Amount</th><th>Applied</th><th>Note</th></tr>
+    {% for p in payments %}
+    <tr>
+      <td>{{ p.paid_on }}</td>
+      <td>${{ "{:,.2f}".format(p.amount or 0) }}</td>
+      <td>{{ p.applied_to }}</td>
+      <td>{{ p.note or "" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No payments yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
