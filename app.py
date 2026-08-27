@@ -634,35 +634,23 @@ def investor_books(iid):
             },
         )
         amt = money(d["investor_amount"])
-        line = dict(d)
-        fee = (slot["math"] or {}).get("fee", 25.0)
-        stored_nate = None
         try:
-            stored_nate = d["nate_amount"]
+            stored_nate = money(d["nate_amount"])
         except (KeyError, IndexError):
-            stored_nate = None
-        if (d["kind"] or "") == "Principal":
-            nate = 0.0
-        elif stored_nate not in (None, ""):
-            nate = money(stored_nate)
-        else:
-            # Older sample rows stored the gross amount on the investor line.
-            nate = round(amt * fee / (100.0 - fee) if fee < 100 else 0.0, 2) if fee else 0.0
-            # If the row is still the original gross, treat amt as gross.
-            nate = round(amt * fee / 100.0, 2)
-            line["gross"] = amt
-            line["investor_amount"] = round(amt - nate, 2)
-            amt = line["investor_amount"]
-        line["nate_amount"] = nate
-        slot["lines"].append(line)
+            stored_nate = 0.0
+        line = dict(d)
+        # Monthly lines are investor cash. Any old Nate split is added back into profit.
         if (d["kind"] or "") == "Principal":
             slot["principal"] += amt
+            line["nate_amount"] = 0
         else:
-            slot["interest"] += amt
-            slot["nate"] += nate
+            profit_line = amt + stored_nate
+            line["investor_amount"] = profit_line
+            line["nate_amount"] = 0
+            slot["interest"] += profit_line
             if str(d["created_at"] or "").startswith(year):
-                slot["ytd_int"] += amt
-                slot["ytd_nate"] += nate
+                slot["ytd_int"] += profit_line
+        slot["lines"].append(line)
     rows = []
     w_ann = 0.0
     w_cap = 0.0
@@ -671,35 +659,58 @@ def investor_books(iid):
         if not loan:
             continue
         cap = s["capital"] or 0
-        profit = s["interest"]
-        ytd = s["ytd_int"]
-        nate = s.get("nate") or 0
-        ytd_nate = s.get("ytd_nate") or 0
-        gross = profit + nate
+        gross = s["interest"]
+        ytd_gross = s["ytd_int"]
         m = s["math"] or {}
         fee = m.get("fee", 25.0)
-        ror = (profit / cap * 100) if cap else 0
-        ytd_ror = (ytd / cap * 100) if cap else 0
+        status = (loan["status"] or "")
+        basis_back = s["principal"] >= cap - 0.5 or status in ("Paid Off", "Termed", "Closed")
+        accrued = round(gross * fee / 100.0, 2) if fee else 0.0
+        nate = accrued if basis_back else 0.0
+        ytd_nate = round(ytd_gross * fee / 100.0, 2) if basis_back else 0.0
+        net = gross - nate
+        ytd_net = ytd_gross - ytd_nate
+        ror = (net / cap * 100) if cap else 0
+        ytd_ror = (ytd_net / cap * 100) if cap else 0
         gross_ror = (gross / cap * 100) if cap else 0
-        ann_rate = m.get("annualized_net") or 0
+        ann_rate = m.get("annualized_net") if basis_back else (m.get("annualized_actual") or m.get("annualized_initial") or 0)
+        if basis_back:
+            ann_rate = m.get("annualized_net") or 0
+        else:
+            ann_rate = m.get("annualized_actual") or m.get("annualized_initial") or 0
         ann_gross = m.get("annualized_actual") or m.get("annualized_initial") or 0
         ann_dollars = cap * (ann_rate or 0) / 100
         w_ann += (ann_rate or 0) * cap
         w_cap += cap
+        if basis_back:
+            story = (
+                f"You put ${cap:,.0f} into this loan and have your basis back. "
+                f"Gross profit is ${gross:,.2f}. Nate Holland’s {fee:.1f}% fee is now due: ${nate:,.2f}. "
+                f"Your net profit is ${net:,.2f} ({ror:.1f}% / {ann_rate or 0:.1f}% annualized)."
+            )
+        else:
+            story = (
+                f"You put ${cap:,.0f} into this loan. You have received ${gross:,.2f} in profit so far "
+                f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital in the deal. "
+                f"Nate Holland’s {fee:.1f}% fee (${accrued:,.2f}) is estimated only — it is not payable "
+                f"until this loan is paid off and your basis is returned."
+            )
         rows.append(
             {
                 "loan_id": lid,
                 "loan_number": loan["loan_number"],
                 "property": loan["property_address"],
-                "status": loan["status"],
+                "status": status,
                 "capital": cap,
-                "interest": profit,
+                "interest": net,
                 "principal_back": s["principal"],
                 "still_out": max(0.0, cap - s["principal"]),
-                "ytd_int": ytd,
-                "profit": profit,
+                "ytd_int": ytd_net,
+                "profit": net,
                 "gross_profit": gross,
                 "nate_fee": nate,
+                "nate_accrued": accrued,
+                "nate_due": basis_back,
                 "ytd_nate": ytd_nate,
                 "fee": fee,
                 "ror": ror,
@@ -713,13 +724,7 @@ def investor_books(iid):
                 "ext_rate": m.get("ext_rate") or 0,
                 "used": m.get("used") or 0,
                 "lines": s.get("lines") or [],
-                "story": (
-                    f"You put ${cap:,.0f} into this loan. Gross profit on your capital is ${gross:,.2f}. "
-                    f"Nate Holland’s management fee is {fee:.1f}% (${nate:,.2f}). "
-                    f"Your net profit is ${profit:,.2f} ({ror:.1f}% for the period, "
-                    f"{ann_rate or 0:.1f}% annualized). "
-                    f"${max(0.0, cap - s['principal']):,.0f} of your capital is still in the deal."
-                ),
+                "story": story,
             }
         )
     net_all = sum(r["profit"] for r in rows)
@@ -876,15 +881,13 @@ def split_payment(loan, amount, applied_to):
             fee = 25.0 if p["mgmt_fee_pct"] is None else money(p["mgmt_fee_pct"])
         except (KeyError, IndexError):
             fee = 25.0
-        nate_amt = 0.0 if applied_to == "Principal" else round(inv_amt * fee / 100.0, 2)
-        inv_net = round(inv_amt - nate_amt, 2)
         rows.append(
             {
                 "investor_id": p["investor_id"],
                 "investor_name": p["investor_name"],
-                "investor_amount": inv_net,
+                "investor_amount": round(inv_amt, 2),
                 "gross_investor": round(inv_amt, 2),
-                "nate_amount": nate_amt,
+                "nate_amount": 0.0,
                 "brittco_amount": round(brit_amt, 2),
                 "participation_id": p["id"],
                 "mgmt_fee_pct": fee,
