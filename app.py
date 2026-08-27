@@ -6,11 +6,28 @@ from datetime import datetime, date, timedelta
 from functools import wraps
 
 from flask import (
-    Flask, g, redirect, render_template, request, session, url_for, flash
+    Flask, g, redirect, render_template, request, session, url_for, flash,
+    send_from_directory,
 )
+from werkzeug.utils import secure_filename
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "brittco.db")
+UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+ALLOWED_UPLOADS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".doc", ".docx"}
+CLOSING_DEFAULTS = [
+    "Purchase contract",
+    "Government ID / KYC",
+    "Entity documents",
+    "Title commitment",
+    "Insurance binder",
+    "Appraisal or BPO",
+    "Scope of work (if rehab)",
+    "Wiring instructions confirmed",
+    "Closing statement",
+    "Funds verified to close",
+]
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "brittco-local-dev-key-change-before-hosting")
@@ -68,7 +85,8 @@ def init_db():
             exit_strategy TEXT,
             notes TEXT,
             ltv_override_reason TEXT,
-            created_at TEXT
+            created_at TEXT,
+            acked INTEGER
         );
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY,
@@ -156,6 +174,22 @@ def init_db():
             loan_id INTEGER,
             months INTEGER,
             rate REAL,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS closing_items (
+            id INTEGER PRIMARY KEY,
+            deal_id INTEGER,
+            title TEXT,
+            done INTEGER,
+            notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY,
+            deal_id INTEGER,
+            borrower_id INTEGER,
+            filename TEXT,
+            original_name TEXT,
+            kind TEXT,
             created_at TEXT
         );
         CREATE TABLE IF NOT EXISTS distributions (
@@ -326,7 +360,126 @@ def init_db():
                 (loan_row[0], 2, half, 10.0, 3, 2.0, 3, 0, "Funded", date.today().isoformat(), "Sample 50% · 3 mo at 10%"),
             )
         c.commit()
+    seed_demo_books(c)
+    c.commit()
     c.close()
+
+
+def seed_demo_books(c):
+    """Add multi-deal sample P&L so both demo investors have YTD and all-time numbers."""
+    if c.execute("SELECT COUNT(*) FROM distributions").fetchone()[0] > 0:
+        return
+    elena = c.execute("SELECT id FROM investors WHERE email=?", ("elena@example.com",)).fetchone()
+    david = c.execute("SELECT id FROM investors WHERE email=?", ("david@example.com",)).fetchone()
+    if not elena or not david:
+        return
+    e_id, d_id = elena[0], david[0]
+    today = date.today()
+    last_year = today.replace(year=today.year - 1)
+    existing = c.execute("SELECT COUNT(*) FROM loans").fetchone()[0]
+    if existing < 3:
+        extras = [
+            (
+                1, 1, "BC-1002", "Bridge", "412 Magnolia Ave, Winter Park, FL",
+                180000, 0, 12.0, 1.5,
+                (last_year - timedelta(days=200)).isoformat(),
+                (last_year + timedelta(days=10)).isoformat(),
+                "Interest only", 1800, "Monthly", last_year.isoformat(), 0, "Paid Off",
+                "Demo paid-off bridge.",
+            ),
+            (
+                2, 2, "BC-1003", "Hard Money", "77 Lakeview Dr, Tampa, FL",
+                150000, 150000, 12.5, 2.0,
+                (today - timedelta(days=80)).isoformat(),
+                (today + timedelta(days=40)).isoformat(),
+                "Interest only", 1562.50, "Monthly", (today + timedelta(days=12)).isoformat(), 125,
+                "Current", "Demo current hard-money loan.",
+            ),
+        ]
+        for row in extras:
+            c.execute(
+                """INSERT INTO loans
+                (borrower_id, deal_id, loan_number, loan_type, property_address,
+                 original_principal, current_balance, rate, points, start_date, maturity_date,
+                 payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+                 status, notes)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                row,
+            )
+    loans = list(c.execute("SELECT id, loan_number, original_principal FROM loans ORDER BY id").fetchall())
+    if len(loans) < 1:
+        return
+
+    def part(loan_id, investor_id, amount, rate=10.0, term=3, status="Funded"):
+        already = c.execute(
+            "SELECT 1 FROM participations WHERE loan_id=? AND investor_id=?",
+            (loan_id, investor_id),
+        ).fetchone()
+        if already:
+            return
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (loan_id, investor_id, amount, rate, term, 2.0, 3, 0, status, today.isoformat(), "Demo book"),
+        )
+
+    # Split first loan if present
+    lid1 = loans[0][0]
+    amt1 = (loans[0][2] or 210000) / 2
+    part(lid1, e_id, amt1)
+    part(lid1, d_id, amt1)
+    if len(loans) > 1:
+        lid2 = loans[1][0]
+        part(lid2, e_id, 120000, 10.0, 3, "Termed")
+        part(lid2, d_id, 60000, 10.0, 3, "Termed")
+    if len(loans) > 2:
+        lid3 = loans[2][0]
+        part(lid3, e_id, 50000, 10.0, 3)
+        part(lid3, d_id, 100000, 10.0, 3)
+
+    def pay(loan_id, when, amount, kind):
+        cur = c.execute(
+            "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
+            (loan_id, when, amount, kind, "Demo sample"),
+        )
+        return cur.lastrowid
+
+    def dist(pay_id, loan_id, investor_id, inv_amt, brit_amt, kind, when):
+        c.execute(
+            """INSERT INTO distributions
+            (payment_id, loan_id, investor_id, investor_amount, brittco_amount, kind, created_at)
+            VALUES (?,?,?,?,?,?,?)""",
+            (pay_id, loan_id, investor_id, inv_amt, brit_amt, kind, when),
+        )
+
+    # Last-year activity on loan 2 (or loan 1)
+    ly_loan = loans[1][0] if len(loans) > 1 else lid1
+    for i, day in enumerate([40, 70, 100]):
+        when = (last_year - timedelta(days=day)).isoformat()
+        pid = pay(ly_loan, when, 2700, "Interest")
+        dist(pid, ly_loan, e_id, 1800, 300, "Interest", when)
+        dist(pid, ly_loan, d_id, 600, 0, "Interest", when)
+    payoff = last_year.isoformat()
+    pid = pay(ly_loan, payoff, 180000, "Principal")
+    dist(pid, ly_loan, e_id, 120000, 0, "Principal", payoff)
+    dist(pid, ly_loan, d_id, 60000, 0, "Principal", payoff)
+
+    # This-year activity on loan 1
+    for i, day in enumerate([75, 45, 15]):
+        when = (today - timedelta(days=day)).isoformat()
+        pid = pay(lid1, when, 2012.50, "Interest")
+        dist(pid, lid1, e_id, 875, 131.25, "Interest", when)
+        dist(pid, lid1, d_id, 875, 131.25, "Interest", when)
+
+    if len(loans) > 2:
+        lid3 = loans[2][0]
+        for day in [50, 20]:
+            when = (today - timedelta(days=day)).isoformat()
+            pid = pay(lid3, when, 1562.50, "Interest")
+            dist(pid, lid3, e_id, 417, 104, "Interest", when)
+            dist(pid, lid3, d_id, 833, 208, "Interest", when)
 
 
 # Initialize database when the app starts (works with gunicorn on Render)
@@ -349,6 +502,10 @@ try:
     ]:
         if p_cols and col not in p_cols:
             _c.execute(f"ALTER TABLE participations ADD COLUMN {col} {spec}")
+    deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
+    if deal_cols and "acked" not in deal_cols:
+        _c.execute("ALTER TABLE deals ADD COLUMN acked INTEGER")
+        _c.execute("UPDATE deals SET acked=1 WHERE acked IS NULL")
     _c.commit()
     _c.close()
 except sqlite3.Error:
@@ -363,6 +520,123 @@ def staff_required(fn):
         return fn(*a, **k)
 
     return wrap
+
+
+@app.context_processor
+def inject_new_apps():
+    if not session.get("staff_id"):
+        return {"new_apps": []}
+    try:
+        rows = db().execute(
+            """SELECT d.id, d.address, b.name AS borrower_name
+               FROM deals d JOIN borrowers b ON b.id=d.borrower_id
+               WHERE d.status='Application' AND COALESCE(d.acked,0)=0
+               ORDER BY d.id DESC"""
+        ).fetchall()
+        return {"new_apps": [dict(r) for r in rows]}
+    except sqlite3.Error:
+        return {"new_apps": []}
+
+
+def ensure_closing_list(deal_id):
+    exists = db().execute("SELECT 1 FROM closing_items WHERE deal_id=?", (deal_id,)).fetchone()
+    if exists:
+        return
+    for title in CLOSING_DEFAULTS:
+        db().execute(
+            "INSERT INTO closing_items (deal_id, title, done, notes) VALUES (?,?,0,'')",
+            (deal_id, title),
+        )
+    db().commit()
+
+
+def save_uploads(deal_id, borrower_id, files):
+    saved = 0
+    for f in files:
+        if not f or not f.filename:
+            continue
+        name = secure_filename(f.filename)
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in ALLOWED_UPLOADS:
+            continue
+        stored = f"{deal_id}_{int(datetime.now().timestamp())}_{saved}_{name}"
+        f.save(os.path.join(UPLOAD_DIR, stored))
+        db().execute(
+            """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (deal_id, borrower_id, stored, name, "Upload", datetime.now().isoformat(timespec="minutes")),
+        )
+        saved += 1
+    if saved:
+        db().commit()
+    return saved
+
+
+def investor_books(iid):
+    year = str(date.today().year)
+    parts = db().execute(
+        "SELECT * FROM participations WHERE investor_id=?", (iid,)
+    ).fetchall()
+    dists = db().execute(
+        "SELECT * FROM distributions WHERE investor_id=?", (iid,)
+    ).fetchall()
+    deployed = sum(money(p["amount"]) for p in parts if p["status"] not in ("Closed",))
+    all_int = sum(money(d["investor_amount"]) for d in dists if (d["kind"] or "") != "Principal")
+    all_prin = sum(money(d["investor_amount"]) for d in dists if (d["kind"] or "") == "Principal")
+    ytd_int = sum(
+        money(d["investor_amount"])
+        for d in dists
+        if (d["kind"] or "") != "Principal" and str(d["created_at"] or "").startswith(year)
+    )
+    ytd_prin = sum(
+        money(d["investor_amount"])
+        for d in dists
+        if (d["kind"] or "") == "Principal" and str(d["created_at"] or "").startswith(year)
+    )
+    by_loan = {}
+    for p in parts:
+        by_loan.setdefault(p["loan_id"], {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0})
+        by_loan[p["loan_id"]]["capital"] += money(p["amount"])
+    for d in dists:
+        slot = by_loan.setdefault(d["loan_id"], {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0})
+        amt = money(d["investor_amount"])
+        if (d["kind"] or "") == "Principal":
+            slot["principal"] += amt
+        else:
+            slot["interest"] += amt
+            if str(d["created_at"] or "").startswith(year):
+                slot["ytd_int"] += amt
+    rows = []
+    for lid, s in by_loan.items():
+        loan = db().execute("SELECT loan_number, property_address, status FROM loans WHERE id=?", (lid,)).fetchone()
+        if not loan:
+            continue
+        rows.append(
+            {
+                "loan_id": lid,
+                "loan_number": loan["loan_number"],
+                "property": loan["property_address"],
+                "status": loan["status"],
+                "capital": s["capital"],
+                "interest": s["interest"],
+                "principal_back": s["principal"],
+                "still_out": max(0.0, s["capital"] - s["principal"]),
+                "ytd_int": s["ytd_int"],
+                "profit": s["interest"],
+            }
+        )
+    return {
+        "deployed": deployed,
+        "all_int": all_int,
+        "all_prin": all_prin,
+        "ytd_int": ytd_int,
+        "ytd_prin": ytd_prin,
+        "still_out": max(0.0, deployed - all_prin),
+        "all_profit": all_int,
+        "ytd_profit": ytd_int,
+        "rows": rows,
+        "year": year,
+    }
 
 
 def borrower_required(fn):
@@ -806,17 +1080,22 @@ def save_deal(deal_id=None):
             fields + (deal_id,),
         )
         db().commit()
+        if (f.get("status") or "") == "Closing":
+            ensure_closing_list(deal_id)
         return deal_id
     cur = db().execute(
         """INSERT INTO deals
         (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
          loan_amount, rate, points, term_months, status, exit_strategy, notes,
-         ltv_override_reason, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        fields + (datetime.now().isoformat(timespec="minutes"),),
+         ltv_override_reason, created_at, acked)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        fields + (datetime.now().isoformat(timespec="minutes"), 1),
     )
     db().commit()
-    return cur.lastrowid
+    did = cur.lastrowid
+    if (f.get("status") or "") == "Closing":
+        ensure_closing_list(did)
+    return did
 
 
 @app.route("/deals/new", methods=["GET", "POST"])
@@ -851,8 +1130,23 @@ def deal_detail(did):
         "SELECT * FROM messages WHERE deal_id=? OR (borrower_id=? AND deal_id IS NULL) ORDER BY id",
         (did, d["borrower_id"]),
     ).fetchall()
+    if d["status"] == "Closing":
+        ensure_closing_list(did)
+    checklist = db().execute(
+        "SELECT * FROM closing_items WHERE deal_id=? ORDER BY id", (did,)
+    ).fetchall()
+    docs = db().execute(
+        "SELECT * FROM documents WHERE deal_id=? ORDER BY id DESC", (did,)
+    ).fetchall()
     return render_template(
-        "deal_detail.html", title=d["address"], nav="deals", d=d, uw=uw, messages=messages
+        "deal_detail.html",
+        title=d["address"],
+        nav="deals",
+        d=d,
+        uw=uw,
+        messages=messages,
+        checklist=checklist,
+        docs=docs,
     )
 
 
@@ -922,19 +1216,22 @@ def portal_home():
     messages = db().execute(
         "SELECT * FROM messages WHERE borrower_id=? ORDER BY id", (b["id"],)
     ).fetchall()
-    return render_template("portal.html", b=b, deals=deals, loans=loans, messages=messages, flash=None)
+    docs = db().execute(
+        "SELECT * FROM documents WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
+    ).fetchall()
+    return render_template("portal.html", b=b, deals=deals, loans=loans, messages=messages, docs=docs, flash=None)
 
 
 @app.route("/portal/apply", methods=["POST"])
 @borrower_required
 def portal_apply():
     f = request.form
-    db().execute(
+    cur = db().execute(
         """INSERT INTO deals
         (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
          loan_amount, rate, points, term_months, status, exit_strategy, notes,
-         ltv_override_reason, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         ltv_override_reason, created_at, acked)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             session["borrower_id"],
             f.get("loan_type"),
@@ -952,9 +1249,13 @@ def portal_apply():
             "Submitted from borrower portal",
             "",
             datetime.now().isoformat(timespec="minutes"),
+            0,
         ),
     )
     db().commit()
+    did = cur.lastrowid
+    files = request.files.getlist("docs")
+    save_uploads(did, session["borrower_id"], files)
     return redirect(url_for("portal_home"))
 
 
@@ -1244,6 +1545,7 @@ def investor_detail(iid):
     ach = db().execute(
         "SELECT * FROM ach_transfers WHERE investor_id=? ORDER BY id DESC", (iid,)
     ).fetchall()
+    books = investor_books(iid)
     return render_template(
         "investor_detail.html",
         title=inv["name"],
@@ -1252,6 +1554,7 @@ def investor_detail(iid):
         parts=parts,
         dists=dists,
         ach=ach,
+        books=books,
         dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
     )
 
@@ -1366,7 +1669,8 @@ def investor_portal():
            WHERE p.investor_id=? ORDER BY e.id DESC""",
         (inv["id"],),
     ).fetchall()
-    return render_template("investor_portal.html", inv=inv, parts=parts, exts=exts)
+    books = investor_books(inv["id"])
+    return render_template("investor_portal.html", inv=inv, parts=parts, exts=exts, books=books)
 
 
 @app.route("/ach", methods=["GET", "POST"])
@@ -1420,6 +1724,39 @@ def ach():
         loans=loans,
         vendor_ready=bool(os.environ.get("ACH_API_KEY")),
     )
+
+
+@app.route("/alerts/ack/<int:did>", methods=["POST"])
+@staff_required
+def ack_application(did):
+    db().execute("UPDATE deals SET acked=1 WHERE id=?", (did,))
+    db().commit()
+    return redirect(request.referrer or url_for("deal_detail", did=did))
+
+
+@app.route("/deals/<int:did>/checklist", methods=["POST"])
+@staff_required
+def toggle_closing_item(did):
+    iid = int(request.form["item_id"])
+    row = db().execute("SELECT done FROM closing_items WHERE id=?", (iid,)).fetchone()
+    db().execute("UPDATE closing_items SET done=? WHERE id=?", (0 if row["done"] else 1, iid))
+    db().commit()
+    return redirect(url_for("deal_detail", did=did))
+
+
+@app.route("/deals/<int:did>/upload", methods=["POST"])
+@staff_required
+def staff_upload(did):
+    d = db().execute("SELECT borrower_id FROM deals WHERE id=?", (did,)).fetchone()
+    save_uploads(did, d["borrower_id"], request.files.getlist("docs"))
+    return redirect(url_for("deal_detail", did=did))
+
+
+@app.route("/files/<path:name>")
+def serve_upload(name):
+    if not (session.get("staff_id") or session.get("borrower_id") or session.get("investor_id")):
+        return redirect(url_for("login"))
+    return send_from_directory(UPLOAD_DIR, name)
 
 
 @app.route("/cron/reminders")
