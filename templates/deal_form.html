@@ -27,7 +27,7 @@
   <div><label>Term (months)</label><input name="term_months" type="number" value="{{ d.term_months if d else 12 }}"></div>
   <div><label>Status</label>
     <select name="status">
-      {% for s in ['Lead','Application','Underwriting','Approved','Conditions','Funded','Declined','Paid Off'] %}
+      {% for s in ['Lead','Application','Underwriting','Approved','Conditions','Closing','Funded','Declined','Paid Off'] %}
       <option value="{{ s }}" {% if d and d.status==s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>

@@ -42,6 +42,41 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  <h3>Closing room</h3>
+  <p class="hint">Set status to Closing on Edit deal to use this as the active closing stage. Check items off as they clear.</p>
+  {% for c in checklist %}
+  <form method="post" action="{{ url_for('toggle_closing_item', did=d.id) }}" style="margin:6px 0">
+    <input type="hidden" name="item_id" value="{{ c.id }}">
+    <button class="btn {% if c.done %}ghost{% endif %}" type="submit">
+      {% if c.done %}Done{% else %}Open{% endif %}
+    </button>
+    {{ c.title }}
+  </form>
+  {% else %}
+  <p class="hint">No checklist yet. Change status to Closing to create one.</p>
+  {% endfor %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Documents & photos</h3>
+  <table class="table">
+    <tr><th>File</th><th>When</th></tr>
+    {% for f in docs %}
+    <tr>
+      <td><a href="{{ url_for('serve_upload', name=f.filename) }}" target="_blank">{{ f.original_name }}</a></td>
+      <td>{{ f.created_at }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="2">None yet.</td></tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('staff_upload', did=d.id) }}" enctype="multipart/form-data" style="margin-top:10px">
+    <input type="file" name="docs" multiple>
+    <button class="btn" type="submit">Upload</button>
+  </form>
+</div>
+
+<div class="card" style="margin-top:14px">
   <h3>Messages with borrower</h3>
   {% for m in messages %}
     <p><strong>{{ m.sender }}</strong> <span class="hint">{{ m.created_at }}</span><br>{{ m.body }}</p>

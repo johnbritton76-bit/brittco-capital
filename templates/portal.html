@@ -57,7 +57,7 @@
   <div class="card" style="margin-top:14px">
     <h3>Start another application</h3>
     <p class="hint">Your contact and credit profile is already on file. Only the new property is needed.</p>
-    <form method="post" action="/portal/apply" class="form-grid">
+    <form method="post" action="/portal/apply" class="form-grid" enctype="multipart/form-data">
       <div><label>Loan type</label>
         <select name="loan_type">
           <option>Hard Money</option><option>Bridge</option><option>Fix and Flip</option>
@@ -69,6 +69,7 @@
       <div><label>Rehab budget</label><input name="rehab_budget" type="number" step="0.01"></div>
       <div><label>Requested loan</label><input name="loan_amount" type="number" step="0.01"></div>
       <div class="span-2"><label>Exit strategy</label><input name="exit_strategy"></div>
+      <div class="span-2"><label>Upload documents or photos</label><input type="file" name="docs" multiple></div>
       <div class="span-2"><button class="btn" type="submit">Submit application</button></div>
     </form>
   </div>

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Nate Holland management fee</h2></div>
+<p class="hint">Default is 25% of each investor’s gross profit on a deal. Change the percent on the loan page for that investor.</p>
+<div class="grid cards">
+  <div class="card"><h3>All-time fees</h3><div class="n">${{ "{:,.2f}".format(total) }}</div></div>
+  <div class="card"><h3>This year</h3><div class="n">${{ "{:,.2f}".format(ytd) }}</div></div>
+</div>
+{% for b in books %}
+<div class="card" style="margin-top:14px">
+  <h3><a href="{{ url_for('investor_detail', iid=b.id) }}">{{ b.name }}</a></h3>
+  <p>Nate all-time ${{ "{:,.2f}".format(b.nate_all) }} · this year ${{ "{:,.2f}".format(b.nate_ytd) }}</p>
+  <table class="table">
+    <tr><th>Deal</th><th>Gross profit</th><th>Fee %</th><th>Nate’s fee</th><th>Investor net</th></tr>
+    {% for r in b.rows %}
+    <tr>
+      <td>{{ r.loan_number }} · {{ r.property }}</td>
+      <td>${{ "{:,.2f}".format(r.gross_profit) }}</td>
+      <td>{{ "%.1f"|format(r.fee) }}%</td>
+      <td>${{ "{:,.2f}".format(r.nate_fee) }}</td>
+      <td>${{ "{:,.2f}".format(r.profit) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endfor %}
+{% endblock %}

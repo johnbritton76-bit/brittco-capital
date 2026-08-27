@@ -166,7 +166,8 @@ def init_db():
             extensions_used INTEGER,
             status TEXT,
             funded_on TEXT,
-            notes TEXT
+            notes TEXT,
+            mgmt_fee_pct REAL
         );
         CREATE TABLE IF NOT EXISTS extensions (
             id INTEGER PRIMARY KEY,
@@ -199,6 +200,7 @@ def init_db():
             investor_id INTEGER,
             investor_amount REAL,
             brittco_amount REAL,
+            nate_amount REAL,
             kind TEXT,
             created_at TEXT
         );
@@ -502,6 +504,12 @@ try:
     ]:
         if p_cols and col not in p_cols:
             _c.execute(f"ALTER TABLE participations ADD COLUMN {col} {spec}")
+    if p_cols and "mgmt_fee_pct" not in p_cols:
+        _c.execute("ALTER TABLE participations ADD COLUMN mgmt_fee_pct REAL")
+        _c.execute("UPDATE participations SET mgmt_fee_pct=25 WHERE mgmt_fee_pct IS NULL")
+    dist_cols = [r[1] for r in _c.execute("PRAGMA table_info(distributions)")]
+    if dist_cols and "nate_amount" not in dist_cols:
+        _c.execute("ALTER TABLE distributions ADD COLUMN nate_amount REAL")
     deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
     if deal_cols and "acked" not in deal_cols:
         _c.execute("ALTER TABLE deals ADD COLUMN acked INTEGER")
@@ -597,7 +605,16 @@ def investor_books(iid):
     for p in parts:
         slot = by_loan.setdefault(
             p["loan_id"],
-            {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0, "math": None, "lines": []},
+            {
+                "capital": 0.0,
+                "interest": 0.0,
+                "principal": 0.0,
+                "ytd_int": 0.0,
+                "nate": 0.0,
+                "ytd_nate": 0.0,
+                "math": None,
+                "lines": [],
+            },
         )
         slot["capital"] += money(p["amount"])
         if slot["math"] is None:
@@ -605,16 +622,47 @@ def investor_books(iid):
     for d in dists:
         slot = by_loan.setdefault(
             d["loan_id"],
-            {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0, "math": None, "lines": []},
+            {
+                "capital": 0.0,
+                "interest": 0.0,
+                "principal": 0.0,
+                "ytd_int": 0.0,
+                "nate": 0.0,
+                "ytd_nate": 0.0,
+                "math": None,
+                "lines": [],
+            },
         )
         amt = money(d["investor_amount"])
-        slot["lines"].append(dict(d))
+        line = dict(d)
+        fee = (slot["math"] or {}).get("fee", 25.0)
+        stored_nate = None
+        try:
+            stored_nate = d["nate_amount"]
+        except (KeyError, IndexError):
+            stored_nate = None
+        if (d["kind"] or "") == "Principal":
+            nate = 0.0
+        elif stored_nate not in (None, ""):
+            nate = money(stored_nate)
+        else:
+            # Older sample rows stored the gross amount on the investor line.
+            nate = round(amt * fee / (100.0 - fee) if fee < 100 else 0.0, 2) if fee else 0.0
+            # If the row is still the original gross, treat amt as gross.
+            nate = round(amt * fee / 100.0, 2)
+            line["gross"] = amt
+            line["investor_amount"] = round(amt - nate, 2)
+            amt = line["investor_amount"]
+        line["nate_amount"] = nate
+        slot["lines"].append(line)
         if (d["kind"] or "") == "Principal":
             slot["principal"] += amt
         else:
             slot["interest"] += amt
+            slot["nate"] += nate
             if str(d["created_at"] or "").startswith(year):
                 slot["ytd_int"] += amt
+                slot["ytd_nate"] += nate
     rows = []
     w_ann = 0.0
     w_cap = 0.0
@@ -625,10 +673,16 @@ def investor_books(iid):
         cap = s["capital"] or 0
         profit = s["interest"]
         ytd = s["ytd_int"]
+        nate = s.get("nate") or 0
+        ytd_nate = s.get("ytd_nate") or 0
+        gross = profit + nate
         m = s["math"] or {}
+        fee = m.get("fee", 25.0)
         ror = (profit / cap * 100) if cap else 0
         ytd_ror = (ytd / cap * 100) if cap else 0
-        ann_rate = m.get("annualized_actual") or m.get("annualized_initial") or 0
+        gross_ror = (gross / cap * 100) if cap else 0
+        ann_rate = m.get("annualized_net") or 0
+        ann_gross = m.get("annualized_actual") or m.get("annualized_initial") or 0
         ann_dollars = cap * (ann_rate or 0) / 100
         w_ann += (ann_rate or 0) * cap
         w_cap += cap
@@ -644,9 +698,15 @@ def investor_books(iid):
                 "still_out": max(0.0, cap - s["principal"]),
                 "ytd_int": ytd,
                 "profit": profit,
+                "gross_profit": gross,
+                "nate_fee": nate,
+                "ytd_nate": ytd_nate,
+                "fee": fee,
                 "ror": ror,
                 "ytd_ror": ytd_ror,
+                "gross_ror": gross_ror,
                 "ann_rate": ann_rate or 0,
+                "ann_gross": ann_gross or 0,
                 "ann_dollars": ann_dollars,
                 "term": m.get("term") or 0,
                 "base": m.get("base") or 0,
@@ -654,26 +714,32 @@ def investor_books(iid):
                 "used": m.get("used") or 0,
                 "lines": s.get("lines") or [],
                 "story": (
-                    f"You put ${cap:,.0f} into this loan. "
-                    f"You have been paid ${profit:,.2f} in profit "
-                    f"({ror:.1f}% of your capital). "
-                    f"This year that profit is ${ytd:,.2f}. "
+                    f"You put ${cap:,.0f} into this loan. Gross profit on your capital is ${gross:,.2f}. "
+                    f"Nate Holland’s management fee is {fee:.1f}% (${nate:,.2f}). "
+                    f"Your net profit is ${profit:,.2f} ({ror:.1f}% for the period, "
+                    f"{ann_rate or 0:.1f}% annualized). "
                     f"${max(0.0, cap - s['principal']):,.0f} of your capital is still in the deal."
                 ),
             }
         )
-    all_ror = (all_int / deployed * 100) if deployed else 0
-    ytd_ror = (ytd_int / deployed * 100) if deployed else 0
+    net_all = sum(r["profit"] for r in rows)
+    net_ytd = sum(r["ytd_int"] for r in rows)
+    nate_all = sum(r["nate_fee"] for r in rows)
+    nate_ytd = sum(r["ytd_nate"] for r in rows)
+    all_ror = (net_all / deployed * 100) if deployed else 0
+    ytd_ror = (net_ytd / deployed * 100) if deployed else 0
     ann_rate = (w_ann / w_cap) if w_cap else 0
     return {
         "deployed": deployed,
-        "all_int": all_int,
+        "all_int": net_all,
         "all_prin": all_prin,
-        "ytd_int": ytd_int,
+        "ytd_int": net_ytd,
         "ytd_prin": ytd_prin,
         "still_out": max(0.0, deployed - all_prin),
-        "all_profit": all_int,
-        "ytd_profit": ytd_int,
+        "all_profit": net_all,
+        "ytd_profit": net_ytd,
+        "nate_all": nate_all,
+        "nate_ytd": nate_ytd,
         "all_ror": all_ror,
         "ytd_ror": ytd_ror,
         "ann_rate": ann_rate,
@@ -718,6 +784,14 @@ def participation_math(p):
     ext_return = used * ext_rate
     total_return = base + ext_return
     total_months = term + used
+    try:
+        fee = p["mgmt_fee_pct"]
+        fee = 25.0 if fee is None else money(fee)
+    except (KeyError, IndexError):
+        fee = 25.0
+    keep = max(0.0, 1.0 - fee / 100.0)
+    net_base = base * keep
+    net_total = total_return * keep
     return {
         "term": term,
         "used": used,
@@ -727,8 +801,11 @@ def participation_math(p):
         "ext_return": ext_return,
         "total_return": total_return,
         "total_months": total_months,
+        "fee": fee,
+        "net_base": net_base,
         "annualized_initial": annualized(base, term),
         "annualized_actual": annualized(total_return, total_months) if total_months else annualized(base, term),
+        "annualized_net": annualized(net_total, total_months) if total_months else annualized(net_base, term),
     }
 
 
@@ -795,13 +872,22 @@ def split_payment(loan, amount, applied_to):
             brit_amt = share - inv_amt
         else:
             inv_amt, brit_amt = share, 0.0
+        try:
+            fee = 25.0 if p["mgmt_fee_pct"] is None else money(p["mgmt_fee_pct"])
+        except (KeyError, IndexError):
+            fee = 25.0
+        nate_amt = 0.0 if applied_to == "Principal" else round(inv_amt * fee / 100.0, 2)
+        inv_net = round(inv_amt - nate_amt, 2)
         rows.append(
             {
                 "investor_id": p["investor_id"],
                 "investor_name": p["investor_name"],
-                "investor_amount": round(inv_amt, 2),
+                "investor_amount": inv_net,
+                "gross_investor": round(inv_amt, 2),
+                "nate_amount": nate_amt,
                 "brittco_amount": round(brit_amt, 2),
                 "participation_id": p["id"],
+                "mgmt_fee_pct": fee,
             }
         )
     return rows
@@ -1450,14 +1536,15 @@ def loan_payment(lid):
     for row in split_payment(loan, amt, applied):
         db().execute(
             """INSERT INTO distributions
-            (payment_id, loan_id, investor_id, investor_amount, brittco_amount, kind, created_at)
-            VALUES (?,?,?,?,?,?,?)""",
+            (payment_id, loan_id, investor_id, investor_amount, brittco_amount, nate_amount, kind, created_at)
+            VALUES (?,?,?,?,?,?,?,?)""",
             (
                 pay_id,
                 lid,
                 row["investor_id"],
                 row["investor_amount"],
                 row["brittco_amount"],
+                row.get("nate_amount") or 0,
                 applied,
                 datetime.now().isoformat(timespec="minutes"),
             ),
@@ -1610,8 +1697,8 @@ def add_participation(lid):
     db().execute(
         """INSERT INTO participations
         (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
-         max_extensions, extensions_used, status, funded_on, notes)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+         max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             lid,
             int(f["investor_id"]),
@@ -1624,7 +1711,19 @@ def add_participation(lid):
             f.get("status") or "Funded",
             f.get("funded_on") or date.today().isoformat(),
             f.get("notes"),
+            money(f.get("mgmt_fee_pct") if f.get("mgmt_fee_pct") not in (None, "") else 25),
         ),
+    )
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/fee/<int:pid>", methods=["POST"])
+@staff_required
+def set_mgmt_fee(lid, pid):
+    db().execute(
+        "UPDATE participations SET mgmt_fee_pct=? WHERE id=?",
+        (money(request.form.get("mgmt_fee_pct") or 25), pid),
     )
     db().commit()
     return redirect(url_for("loan_detail", lid=lid))
@@ -1801,6 +1900,16 @@ def serve_upload(name):
     if not (session.get("staff_id") or session.get("borrower_id") or session.get("investor_id")):
         return redirect(url_for("login"))
     return send_from_directory(UPLOAD_DIR, name)
+
+
+@app.route("/nate")
+@staff_required
+def nate_fees():
+    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
+    books = [dict(investor_books(i["id"]), name=i["name"], id=i["id"]) for i in investors]
+    total = sum(b["nate_all"] for b in books)
+    ytd = sum(b["nate_ytd"] for b in books)
+    return render_template("nate.html", title="Nate Holland fee", nav="nate", books=books, total=total, ytd=ytd)
 
 
 @app.route("/cron/reminders")

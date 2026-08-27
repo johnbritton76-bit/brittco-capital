@@ -16,6 +16,7 @@
       <a href="{{ url_for('deal_new') }}" class="{{ 'active' if nav=='newdeal' else '' }}">New deal</a>
       <a href="{{ url_for('loans') }}" class="{{ 'active' if nav=='loans' else '' }}">Loans</a>
       <a href="{{ url_for('investors') }}" class="{{ 'active' if nav=='investors' else '' }}">Investors</a>
+      <a href="{{ url_for('nate_fees') }}" class="{{ 'active' if nav=='nate' else '' }}">Nate fee</a>
       <a href="{{ url_for('ach') }}" class="{{ 'active' if nav=='ach' else '' }}">ACH</a>
       <a href="{{ url_for('credit') }}" class="{{ 'active' if nav=='credit' else '' }}">Credit</a>
       <a href="{{ url_for('borrower_new') }}" class="{{ 'active' if nav=='newborrower' else '' }}">New borrower</a>
@@ -23,6 +24,20 @@
     </nav>
   </aside>
   <main class="main">
+    {% if new_apps %}
+    <div class="alert-bar">
+      {% for a in new_apps %}
+      <div class="alert-row">
+        <strong>New application submitted</strong>
+        — {{ a.borrower_name }} · {{ a.address }}
+        <a href="{{ url_for('deal_detail', did=a.id) }}">Open</a>
+        <form method="post" action="{{ url_for('ack_application', did=a.id) }}" style="display:inline">
+          <button class="btn ghost" type="submit">Acknowledge</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
     {% block body %}{% endblock %}
   </main>

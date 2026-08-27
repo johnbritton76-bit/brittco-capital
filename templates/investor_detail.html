@@ -13,10 +13,12 @@
   <h3>In plain English</h3>
   <p>
     Money still working in deals: <strong>${{ "{:,.0f}".format(books.still_out) }}</strong>.
-    Profit earned this year: <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
-    ({{ "%.1f"|format(books.ytd_ror) }}% of capital).
-    Profit earned all time: <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
+    Net profit this year after Nate’s fee: <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
+    ({{ "%.1f"|format(books.ytd_ror) }}%).
+    Net profit all time: <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
     ({{ "%.1f"|format(books.all_ror) }}%).
+    Nate Holland’s fee: <strong>${{ "{:,.2f}".format(books.nate_all) }}</strong>
+    (this year ${{ "{:,.2f}".format(books.nate_ytd) }}).
     If this book kept the same pace for a full year, that is about
     <strong>{{ "%.1f"|format(books.ann_rate) }}%</strong> annualized
     (${{ "{:,.0f}".format(books.ann_dollars) }}).
@@ -37,30 +39,30 @@
   <table class="table">
     <tr>
       <th>Deal</th><th>Your capital</th>
-      <th>Financial return $</th><th>Rate of return</th>
-      <th>YTD return $</th><th>YTD rate</th>
-      <th>Annualized $</th><th>Annualized rate</th>
+      <th>Gross profit</th><th>Nate fee</th>
+      <th>Your net $</th><th>Your net rate</th>
+      <th>YTD net $</th><th>Annualized net</th>
     </tr>
     {% for r in books.rows %}
     <tr>
       <td>{{ r.loan_number }}<br><span class="hint">{{ r.property }}</span></td>
       <td>${{ "{:,.0f}".format(r.capital) }}</td>
+      <td>${{ "{:,.2f}".format(r.gross_profit) }}</td>
+      <td>${{ "{:,.2f}".format(r.nate_fee) }} ({{ "%.0f"|format(r.fee) }}%)</td>
       <td>${{ "{:,.2f}".format(r.profit) }}</td>
       <td>{{ "%.1f"|format(r.ror) }}%</td>
       <td>${{ "{:,.2f}".format(r.ytd_int) }}</td>
-      <td>{{ "%.1f"|format(r.ytd_ror) }}%</td>
-      <td>${{ "{:,.0f}".format(r.ann_dollars) }}</td>
       <td>{{ "%.1f"|format(r.ann_rate) }}%</td>
     </tr>
     {% endfor %}
     <tr class="total">
       <td>Totals</td>
       <td>${{ "{:,.0f}".format(books.deployed) }}</td>
+      <td></td>
+      <td>${{ "{:,.2f}".format(books.nate_all) }}</td>
       <td>${{ "{:,.2f}".format(books.all_profit) }}</td>
       <td>{{ "%.1f"|format(books.all_ror) }}%</td>
       <td>${{ "{:,.2f}".format(books.ytd_profit) }}</td>
-      <td>{{ "%.1f"|format(books.ytd_ror) }}%</td>
-      <td>${{ "{:,.0f}".format(books.ann_dollars) }}</td>
       <td>{{ "%.1f"|format(books.ann_rate) }}%</td>
     </tr>
   </table>
@@ -78,7 +80,10 @@
     <tr>
       <td>{{ line.created_at }}</td>
       <td>{{ line.kind or "Payment" }}</td>
-      <td>${{ "{:,.2f}".format(line.investor_amount or 0) }}</td>
+      <td>
+        You ${{ "{:,.2f}".format(line.investor_amount or 0) }}
+        {% if line.nate_amount %} · Nate ${{ "{:,.2f}".format(line.nate_amount) }}{% endif %}
+      </td>
     </tr>
     {% else %}
     <tr><td colspan="3">No payments posted on this deal yet.</td></tr>
