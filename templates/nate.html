@@ -1,24 +1,25 @@
 {% extends "base.html" %}
 {% block body %}
 <div class="top"><h2>Nate Holland management fee</h2></div>
-<p class="hint">Default is 25% of each investor’s gross profit on a deal. Change the percent on the loan page for that investor.</p>
+<p class="hint">Nate is paid {{ 25 }}% of net profit only after the investor has their basis back (loan paid off). Monthly payments are not split.</p>
 <div class="grid cards">
-  <div class="card"><h3>All-time fees</h3><div class="n">${{ "{:,.2f}".format(total) }}</div></div>
-  <div class="card"><h3>This year</h3><div class="n">${{ "{:,.2f}".format(ytd) }}</div></div>
+  <div class="card"><h3>Payable now</h3><div class="n">${{ "{:,.2f}".format(total) }}</div></div>
+  <div class="card"><h3>This year payable</h3><div class="n">${{ "{:,.2f}".format(ytd) }}</div></div>
 </div>
 {% for b in books %}
 <div class="card" style="margin-top:14px">
   <h3><a href="{{ url_for('investor_detail', iid=b.id) }}">{{ b.name }}</a></h3>
-  <p>Nate all-time ${{ "{:,.2f}".format(b.nate_all) }} · this year ${{ "{:,.2f}".format(b.nate_ytd) }}</p>
+  <p>Payable ${{ "{:,.2f}".format(b.nate_all) }} · this year ${{ "{:,.2f}".format(b.nate_ytd) }}</p>
   <table class="table">
-    <tr><th>Deal</th><th>Gross profit</th><th>Fee %</th><th>Nate’s fee</th><th>Investor net</th></tr>
+    <tr><th>Deal</th><th>Gross profit</th><th>Fee %</th><th>Estimated</th><th>Payable now</th><th>When</th></tr>
     {% for r in b.rows %}
     <tr>
       <td>{{ r.loan_number }} · {{ r.property }}</td>
       <td>${{ "{:,.2f}".format(r.gross_profit) }}</td>
       <td>{{ "%.1f"|format(r.fee) }}%</td>
+      <td>${{ "{:,.2f}".format(r.nate_accrued) }}</td>
       <td>${{ "{:,.2f}".format(r.nate_fee) }}</td>
-      <td>${{ "{:,.2f}".format(r.profit) }}</td>
+      <td>{% if r.nate_due %}Due — basis returned{% else %}Not due until payoff{% endif %}</td>
     </tr>
     {% endfor %}
   </table>

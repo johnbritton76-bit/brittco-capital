@@ -48,7 +48,7 @@
       <td>{{ r.loan_number }}<br><span class="hint">{{ r.property }}</span></td>
       <td>${{ "{:,.0f}".format(r.capital) }}</td>
       <td>${{ "{:,.2f}".format(r.gross_profit) }}</td>
-      <td>${{ "{:,.2f}".format(r.nate_fee) }} ({{ "%.0f"|format(r.fee) }}%)</td>
+      <td>${{ "{:,.2f}".format(r.nate_fee) }}{% if not r.nate_due %} <span class="hint">(est. ${{ "{:,.2f}".format(r.nate_accrued) }} at payoff)</span>{% endif %}</td>
       <td>${{ "{:,.2f}".format(r.profit) }}</td>
       <td>{{ "%.1f"|format(r.ror) }}%</td>
       <td>${{ "{:,.2f}".format(r.ytd_int) }}</td>
