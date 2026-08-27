@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Investor books</div>
+    <h2>{{ inv.name }}</h2>
+    <p class="hint">{{ inv.entity_name }} · {{ inv.email }} · {{ inv.phone }}</p>
+  </div>
+  <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
+</div>
+
+<div class="card">
+  <h3>In plain English</h3>
+  <p>
+    Money still working in deals: <strong>${{ "{:,.0f}".format(books.still_out) }}</strong>.
+    Profit earned this year: <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
+    ({{ "%.1f"|format(books.ytd_ror) }}% of capital).
+    Profit earned all time: <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
+    ({{ "%.1f"|format(books.all_ror) }}%).
+    If this book kept the same pace for a full year, that is about
+    <strong>{{ "%.1f"|format(books.ann_rate) }}%</strong> annualized
+    (${{ "{:,.0f}".format(books.ann_dollars) }}).
+  </p>
+</div>
+
+<div class="grid cards" style="margin-top:14px">
+  <div class="card"><h3>Still in deals</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
+  <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(books.ytd_ror) }}% YTD rate</div></div>
+  <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(books.all_ror) }}% all-time rate</div></div>
+  <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(books.ann_rate) }}%</div></div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Spreadsheet summary</h3>
+  <p class="hint">Financial return = dollars paid to this investor (not principal). Rate of return = those dollars ÷ capital. Annualized rate = deal rate × 12 ÷ term months.</p>
+  <div style="overflow-x:auto">
+  <table class="table">
+    <tr>
+      <th>Deal</th><th>Your capital</th>
+      <th>Financial return $</th><th>Rate of return</th>
+      <th>YTD return $</th><th>YTD rate</th>
+      <th>Annualized $</th><th>Annualized rate</th>
+    </tr>
+    {% for r in books.rows %}
+    <tr>
+      <td>{{ r.loan_number }}<br><span class="hint">{{ r.property }}</span></td>
+      <td>${{ "{:,.0f}".format(r.capital) }}</td>
+      <td>${{ "{:,.2f}".format(r.profit) }}</td>
+      <td>{{ "%.1f"|format(r.ror) }}%</td>
+      <td>${{ "{:,.2f}".format(r.ytd_int) }}</td>
+      <td>{{ "%.1f"|format(r.ytd_ror) }}%</td>
+      <td>${{ "{:,.0f}".format(r.ann_dollars) }}</td>
+      <td>{{ "%.1f"|format(r.ann_rate) }}%</td>
+    </tr>
+    {% endfor %}
+    <tr class="total">
+      <td>Totals</td>
+      <td>${{ "{:,.0f}".format(books.deployed) }}</td>
+      <td>${{ "{:,.2f}".format(books.all_profit) }}</td>
+      <td>{{ "%.1f"|format(books.all_ror) }}%</td>
+      <td>${{ "{:,.2f}".format(books.ytd_profit) }}</td>
+      <td>{{ "%.1f"|format(books.ytd_ror) }}%</td>
+      <td>${{ "{:,.0f}".format(books.ann_dollars) }}</td>
+      <td>{{ "%.1f"|format(books.ann_rate) }}%</td>
+    </tr>
+  </table>
+  </div>
+</div>
+
+{% for r in books.rows %}
+<div class="card" style="margin-top:14px">
+  <h3>{{ r.loan_number }} · {{ r.property }}</h3>
+  <p>{{ r.story }}</p>
+  <p class="hint">Term {{ r.term }} months at {{ r.base }}%{% if r.used %} · {{ r.used }} extension month(s) at {{ r.ext_rate }}%/mo{% endif %} · {{ r.status }}</p>
+  <table class="table">
+    <tr><th>Date</th><th>What it was</th><th>Paid to investor</th></tr>
+    {% for line in r.lines %}
+    <tr>
+      <td>{{ line.created_at }}</td>
+      <td>{{ line.kind or "Payment" }}</td>
+      <td>${{ "{:,.2f}".format(line.investor_amount or 0) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3">No payments posted on this deal yet.</td></tr>
+    {% endfor %}
+    <tr class="total">
+      <td colspan="2">Profit on this deal</td>
+      <td>${{ "{:,.2f}".format(r.profit) }}</td>
+    </tr>
+  </table>
+</div>
+{% endfor %}
+{% endblock %}

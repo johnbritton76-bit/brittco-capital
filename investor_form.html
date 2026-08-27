@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>New investor</h2></div>
+<form method="post" class="card form-grid">
+  <div><label>Name</label><input name="name" required></div>
+  <div><label>Entity</label><input name="entity_name"></div>
+  <div><label>Email</label><input name="email" type="email"></div>
+  <div><label>Phone</label><input name="phone"></div>
+  <div><label>Portal password</label><input name="password" value="investor"></div>
+  <div class="span-2"><label>Notes</label><textarea name="notes"></textarea></div>
+  <div class="span-2"><button class="btn" type="submit">Save investor</button></div>
+</form>
+{% endblock %}

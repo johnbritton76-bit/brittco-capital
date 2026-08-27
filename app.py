@@ -595,11 +595,20 @@ def investor_books(iid):
     )
     by_loan = {}
     for p in parts:
-        by_loan.setdefault(p["loan_id"], {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0})
-        by_loan[p["loan_id"]]["capital"] += money(p["amount"])
+        slot = by_loan.setdefault(
+            p["loan_id"],
+            {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0, "math": None, "lines": []},
+        )
+        slot["capital"] += money(p["amount"])
+        if slot["math"] is None:
+            slot["math"] = participation_math(p)
     for d in dists:
-        slot = by_loan.setdefault(d["loan_id"], {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0})
+        slot = by_loan.setdefault(
+            d["loan_id"],
+            {"capital": 0.0, "interest": 0.0, "principal": 0.0, "ytd_int": 0.0, "math": None, "lines": []},
+        )
         amt = money(d["investor_amount"])
+        slot["lines"].append(dict(d))
         if (d["kind"] or "") == "Principal":
             slot["principal"] += amt
         else:
@@ -607,24 +616,55 @@ def investor_books(iid):
             if str(d["created_at"] or "").startswith(year):
                 slot["ytd_int"] += amt
     rows = []
+    w_ann = 0.0
+    w_cap = 0.0
     for lid, s in by_loan.items():
         loan = db().execute("SELECT loan_number, property_address, status FROM loans WHERE id=?", (lid,)).fetchone()
         if not loan:
             continue
+        cap = s["capital"] or 0
+        profit = s["interest"]
+        ytd = s["ytd_int"]
+        m = s["math"] or {}
+        ror = (profit / cap * 100) if cap else 0
+        ytd_ror = (ytd / cap * 100) if cap else 0
+        ann_rate = m.get("annualized_actual") or m.get("annualized_initial") or 0
+        ann_dollars = cap * (ann_rate or 0) / 100
+        w_ann += (ann_rate or 0) * cap
+        w_cap += cap
         rows.append(
             {
                 "loan_id": lid,
                 "loan_number": loan["loan_number"],
                 "property": loan["property_address"],
                 "status": loan["status"],
-                "capital": s["capital"],
-                "interest": s["interest"],
+                "capital": cap,
+                "interest": profit,
                 "principal_back": s["principal"],
-                "still_out": max(0.0, s["capital"] - s["principal"]),
-                "ytd_int": s["ytd_int"],
-                "profit": s["interest"],
+                "still_out": max(0.0, cap - s["principal"]),
+                "ytd_int": ytd,
+                "profit": profit,
+                "ror": ror,
+                "ytd_ror": ytd_ror,
+                "ann_rate": ann_rate or 0,
+                "ann_dollars": ann_dollars,
+                "term": m.get("term") or 0,
+                "base": m.get("base") or 0,
+                "ext_rate": m.get("ext_rate") or 0,
+                "used": m.get("used") or 0,
+                "lines": s.get("lines") or [],
+                "story": (
+                    f"You put ${cap:,.0f} into this loan. "
+                    f"You have been paid ${profit:,.2f} in profit "
+                    f"({ror:.1f}% of your capital). "
+                    f"This year that profit is ${ytd:,.2f}. "
+                    f"${max(0.0, cap - s['principal']):,.0f} of your capital is still in the deal."
+                ),
             }
         )
+    all_ror = (all_int / deployed * 100) if deployed else 0
+    ytd_ror = (ytd_int / deployed * 100) if deployed else 0
+    ann_rate = (w_ann / w_cap) if w_cap else 0
     return {
         "deployed": deployed,
         "all_int": all_int,
@@ -634,6 +674,10 @@ def investor_books(iid):
         "still_out": max(0.0, deployed - all_prin),
         "all_profit": all_int,
         "ytd_profit": ytd_int,
+        "all_ror": all_ror,
+        "ytd_ror": ytd_ror,
+        "ann_rate": ann_rate,
+        "ann_dollars": deployed * ann_rate / 100 if deployed else 0,
         "rows": rows,
         "year": year,
     }
