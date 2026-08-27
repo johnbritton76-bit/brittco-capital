@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Investor</div>
+    <h2>{{ inv.name }}</h2>
+    <p class="hint">{{ inv.entity_name }} · {{ inv.email }} · {{ inv.phone }}</p>
+  </div>
+  <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
+</div>
+<div class="card">
+  <h3>Capital in deals</h3>
+  <table class="table">
+    <tr><th>Loan</th><th>Property</th><th>Amount</th><th>Investor rate</th><th>Borrower rate</th><th>Status</th></tr>
+    {% for p in parts %}
+    <tr>
+      <td><a href="{{ url_for('loan_detail', lid=p.loan_id) }}">{{ p.loan_number }}</a></td>
+      <td>{{ p.property_address }}</td>
+      <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
+      <td>{{ p.investor_rate }}%</td>
+      <td>{{ p.borrower_rate }}%</td>
+      <td>{{ p.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Returns received</h3>
+  <table class="table">
+    <tr><th>When</th><th>Loan</th><th>Investor share</th><th>Brittco share on that payment</th><th>Type</th></tr>
+    {% for d in dists %}
+    <tr>
+      <td>{{ d.created_at }}</td>
+      <td>{{ d.loan_number }}</td>
+      <td>${{ "{:,.2f}".format(d.investor_amount or 0) }}</td>
+      <td>${{ "{:,.2f}".format(d.brittco_amount or 0) }}</td>
+      <td>{{ d.kind }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

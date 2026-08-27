@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <h2>Investors</h2>
+  <a class="btn" href="{{ url_for('investor_new') }}">Add investor</a>
+</div>
+<div class="card">
+<table class="table">
+  <tr><th>Name</th><th>Entity</th><th>Deals</th><th>Capital in deals</th><th>Returns paid</th><th>ACH</th></tr>
+  {% for i in investors %}
+  <tr>
+    <td><a href="{{ url_for('investor_detail', iid=i.id) }}">{{ i.name }}</a></td>
+    <td>{{ i.entity_name or "—" }}</td>
+    <td>{{ i.deals }}</td>
+    <td>${{ "{:,.0f}".format(i.deployed or 0) }}</td>
+    <td>${{ "{:,.2f}".format(i.earned or 0) }}</td>
+    <td>{{ i.ach_status }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

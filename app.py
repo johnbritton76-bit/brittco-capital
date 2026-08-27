@@ -126,6 +126,47 @@ def init_db():
             audience TEXT,
             body TEXT
         );
+        CREATE TABLE IF NOT EXISTS investors (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            entity_name TEXT,
+            email TEXT,
+            phone TEXT,
+            notes TEXT,
+            ach_status TEXT
+        );
+        CREATE TABLE IF NOT EXISTS participations (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            investor_id INTEGER,
+            amount REAL,
+            investor_rate REAL,
+            status TEXT,
+            funded_on TEXT,
+            notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS distributions (
+            id INTEGER PRIMARY KEY,
+            payment_id INTEGER,
+            loan_id INTEGER,
+            investor_id INTEGER,
+            investor_amount REAL,
+            brittco_amount REAL,
+            kind TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ach_transfers (
+            id INTEGER PRIMARY KEY,
+            investor_id INTEGER,
+            borrower_id INTEGER,
+            loan_id INTEGER,
+            direction TEXT,
+            amount REAL,
+            status TEXT,
+            vendor TEXT,
+            notes TEXT,
+            created_at TEXT
+        );
         """
     )
     if not c.execute("SELECT 1 FROM staff").fetchone():
@@ -245,11 +286,43 @@ def init_db():
             ),
         )
         c.commit()
+    if not c.execute("SELECT 1 FROM investors").fetchone():
+        c.execute(
+            "INSERT INTO investors (name, entity_name, email, phone, notes, ach_status) VALUES (?,?,?,?,?,?)",
+            ("Elena Brooks", "Brooks Family Trust", "elena@example.com", "(407) 555-0177", "Repeat capital partner.", "Not connected"),
+        )
+        c.execute(
+            "INSERT INTO investors (name, entity_name, email, phone, notes, ach_status) VALUES (?,?,?,?,?,?)",
+            ("David Chen", "Chen Capital LLC", "david@example.com", "(813) 555-0114", "Prefers monthly interest ACH.", "Not connected"),
+        )
+        loan_row = c.execute("SELECT id, original_principal FROM loans ORDER BY id LIMIT 1").fetchone()
+        if loan_row:
+            half = (loan_row[1] or 210000) / 2
+            c.execute(
+                """INSERT INTO participations (loan_id, investor_id, amount, investor_rate, status, funded_on, notes)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (loan_row[0], 1, half, 9.0, "Funded", date.today().isoformat(), "Sample 50% participation"),
+            )
+            c.execute(
+                """INSERT INTO participations (loan_id, investor_id, amount, investor_rate, status, funded_on, notes)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (loan_row[0], 2, half, 9.0, "Funded", date.today().isoformat(), "Sample 50% participation"),
+            )
+        c.commit()
     c.close()
 
 
 # Initialize database when the app starts (works with gunicorn on Render)
 init_db()
+try:
+    _c = sqlite3.connect(DB_PATH)
+    cols = [r[1] for r in _c.execute("PRAGMA table_info(ach_transfers)")]
+    if cols and "borrower_id" not in cols:
+        _c.execute("ALTER TABLE ach_transfers ADD COLUMN borrower_id INTEGER")
+        _c.commit()
+    _c.close()
+except sqlite3.Error:
+    pass
 
 
 def staff_required(fn):
@@ -293,6 +366,58 @@ def days_until(s):
     if not d:
         return None
     return (d - date.today()).days
+
+
+def loan_stack(lid):
+    parts = db().execute(
+        """SELECT p.*, i.name AS investor_name, i.entity_name
+           FROM participations p JOIN investors i ON i.id=p.investor_id
+           WHERE p.loan_id=? ORDER BY p.id""",
+        (lid,),
+    ).fetchall()
+    funded = sum(money(p["amount"]) for p in parts)
+    return parts, funded
+
+
+def split_payment(loan, amount, applied_to):
+    """Split a borrower payment across investors vs Brittco."""
+    parts, funded = loan_stack(loan["id"])
+    borrower_rate = money(loan["rate"]) or 0
+    rows = []
+    if not parts or funded <= 0:
+        rows.append(
+            {
+                "investor_id": None,
+                "investor_name": "Unallocated / Brittco book",
+                "investor_amount": 0.0,
+                "brittco_amount": amount,
+            }
+        )
+        return rows
+    remaining = amount
+    for i, p in enumerate(parts):
+        share = amount * (money(p["amount"]) / funded)
+        if i == len(parts) - 1:
+            share = remaining
+        remaining -= share
+        inv_rate = money(p["investor_rate"])
+        if applied_to == "Principal":
+            inv_amt, brit_amt = share, 0.0
+        elif borrower_rate > 0 and inv_rate > 0:
+            inv_amt = share * (inv_rate / borrower_rate)
+            brit_amt = share - inv_amt
+        else:
+            inv_amt, brit_amt = share, 0.0
+        rows.append(
+            {
+                "investor_id": p["investor_id"],
+                "investor_name": p["investor_name"],
+                "investor_amount": round(inv_amt, 2),
+                "brittco_amount": round(brit_amt, 2),
+                "participation_id": p["id"],
+            }
+        )
+    return rows
 
 
 def loan_alerts():
@@ -853,14 +978,36 @@ def loan_detail(lid):
         "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on DESC, id DESC", (lid,)
     ).fetchall()
     paid = sum(money(p["amount"]) for p in payments)
+    parts, funded = loan_stack(lid)
+    dists = db().execute(
+        """SELECT d.*, i.name AS investor_name
+           FROM distributions d LEFT JOIN investors i ON i.id=d.investor_id
+           WHERE d.loan_id=? ORDER BY d.id DESC""",
+        (lid,),
+    ).fetchall()
+    inv_paid = sum(money(d["investor_amount"]) for d in dists)
+    brit_paid = sum(money(d["brittco_amount"]) for d in dists)
+    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
     perf = {
         "paid": paid,
         "due_in": days_until(loan["next_payment_due"]),
         "matures_in": days_until(loan["maturity_date"]),
         "remaining": money(loan["current_balance"]),
+        "funded": funded,
+        "gap": money(loan["original_principal"]) - funded,
+        "investor_paid": inv_paid,
+        "brittco_paid": brit_paid,
     }
     return render_template(
-        "loan_detail.html", title=loan["loan_number"], nav="loans", loan=loan, payments=payments, perf=perf
+        "loan_detail.html",
+        title=loan["loan_number"],
+        nav="loans",
+        loan=loan,
+        payments=payments,
+        perf=perf,
+        parts=parts,
+        dists=dists,
+        investors=investors,
     )
 
 
@@ -869,14 +1016,33 @@ def loan_detail(lid):
 def loan_payment(lid):
     f = request.form
     amt = money(f.get("amount"))
+    applied = f.get("applied_to") or "Interest"
     loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
-    new_bal = max(0.0, money(loan["current_balance"]) - amt)
+    new_bal = money(loan["current_balance"])
+    if applied == "Principal":
+        new_bal = max(0.0, new_bal - amt)
     status = "Paid Off" if new_bal <= 0 else loan["status"]
     nxt = f.get("next_payment_due") or loan["next_payment_due"]
-    db().execute(
+    cur = db().execute(
         "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
-        (lid, f.get("paid_on") or date.today().isoformat(), amt, f.get("applied_to") or "Interest", f.get("note")),
+        (lid, f.get("paid_on") or date.today().isoformat(), amt, applied, f.get("note")),
     )
+    pay_id = cur.lastrowid
+    for row in split_payment(loan, amt, applied):
+        db().execute(
+            """INSERT INTO distributions
+            (payment_id, loan_id, investor_id, investor_amount, brittco_amount, kind, created_at)
+            VALUES (?,?,?,?,?,?,?)""",
+            (
+                pay_id,
+                lid,
+                row["investor_id"],
+                row["investor_amount"],
+                row["brittco_amount"],
+                applied,
+                datetime.now().isoformat(timespec="minutes"),
+            ),
+        )
     db().execute(
         "UPDATE loans SET current_balance=?, status=?, next_payment_due=? WHERE id=?",
         (new_bal, status, nxt, lid),
@@ -933,6 +1099,148 @@ def credit_pull():
         db().execute("UPDATE borrowers SET credit_score=? WHERE id=?", (score, bid))
     db().commit()
     return redirect(url_for("credit"))
+
+
+@app.route("/investors")
+@staff_required
+def investors():
+    rows = db().execute("SELECT * FROM investors ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        stats = db().execute(
+            """SELECT COALESCE(SUM(amount),0) deployed, COUNT(*) n
+               FROM participations WHERE investor_id=? AND status!='Closed'""",
+            (r["id"],),
+        ).fetchone()
+        earned = db().execute(
+            "SELECT COALESCE(SUM(investor_amount),0) t FROM distributions WHERE investor_id=?",
+            (r["id"],),
+        ).fetchone()["t"]
+        d["deployed"] = stats["deployed"]
+        d["deals"] = stats["n"]
+        d["earned"] = earned
+        out.append(d)
+    return render_template("investors.html", title="Investors", nav="investors", investors=out)
+
+
+@app.route("/investors/new", methods=["GET", "POST"])
+@staff_required
+def investor_new():
+    if request.method == "POST":
+        f = request.form
+        db().execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status)
+               VALUES (?,?,?,?,?,?)""",
+            (f.get("name"), f.get("entity_name"), f.get("email"), f.get("phone"), f.get("notes"), "Not connected"),
+        )
+        db().commit()
+        return redirect(url_for("investors"))
+    return render_template("investor_form.html", title="New investor", nav="investors")
+
+
+@app.route("/investors/<int:iid>")
+@staff_required
+def investor_detail(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    parts = db().execute(
+        """SELECT p.*, l.loan_number, l.property_address, l.rate AS borrower_rate, l.status AS loan_status
+           FROM participations p JOIN loans l ON l.id=p.loan_id
+           WHERE p.investor_id=? ORDER BY p.id DESC""",
+        (iid,),
+    ).fetchall()
+    dists = db().execute(
+        """SELECT d.*, l.loan_number FROM distributions d
+           JOIN loans l ON l.id=d.loan_id WHERE d.investor_id=? ORDER BY d.id DESC""",
+        (iid,),
+    ).fetchall()
+    ach = db().execute(
+        "SELECT * FROM ach_transfers WHERE investor_id=? ORDER BY id DESC", (iid,)
+    ).fetchall()
+    return render_template(
+        "investor_detail.html",
+        title=inv["name"],
+        nav="investors",
+        inv=inv,
+        parts=parts,
+        dists=dists,
+        ach=ach,
+        dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
+    )
+
+
+@app.route("/loans/<int:lid>/participate", methods=["POST"])
+@staff_required
+def add_participation(lid):
+    f = request.form
+    db().execute(
+        """INSERT INTO participations (loan_id, investor_id, amount, investor_rate, status, funded_on, notes)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            lid,
+            int(f["investor_id"]),
+            money(f.get("amount")),
+            money(f.get("investor_rate")),
+            f.get("status") or "Funded",
+            f.get("funded_on") or date.today().isoformat(),
+            f.get("notes"),
+        ),
+    )
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/ach", methods=["GET", "POST"])
+@staff_required
+def ach():
+    if request.method == "POST":
+        f = request.form
+        vendor = "Dwolla" if os.environ.get("ACH_API_KEY") else "Manual / pending bank"
+        lid = int(f["loan_id"]) if f.get("loan_id") else None
+        bid = int(f["borrower_id"]) if f.get("borrower_id") else None
+        if lid and not bid:
+            row = db().execute("SELECT borrower_id FROM loans WHERE id=?", (lid,)).fetchone()
+            bid = row["borrower_id"] if row else None
+        db().execute(
+            """INSERT INTO ach_transfers
+            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                None,
+                bid,
+                lid,
+                "Debit borrower (loan payment)",
+                money(f.get("amount")),
+                "Queued" if os.environ.get("ACH_API_KEY") else "Recorded — collect at bank or connect processor",
+                vendor,
+                f.get("notes"),
+                datetime.now().isoformat(timespec="minutes"),
+            ),
+        )
+        db().commit()
+        return redirect(url_for("ach"))
+    transfers = db().execute(
+        """SELECT t.*, b.name AS borrower_name, l.loan_number
+           FROM ach_transfers t
+           LEFT JOIN borrowers b ON b.id=t.borrower_id
+           LEFT JOIN loans l ON l.id=t.loan_id
+           ORDER BY t.id DESC"""
+    ).fetchall()
+    borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    loans = db().execute(
+        """SELECT l.id, l.loan_number, l.property_address, b.name AS borrower_name
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           ORDER BY l.id DESC"""
+    ).fetchall()
+    return render_template(
+        "ach.html",
+        title="ACH collections",
+        nav="ach",
+        transfers=transfers,
+        borrowers=borrowers,
+        loans=loans,
+        vendor_ready=bool(os.environ.get("ACH_API_KEY")),
+    )
 
 
 @app.route("/cron/reminders")

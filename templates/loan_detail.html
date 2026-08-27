@@ -23,7 +23,42 @@
       {% if perf.matures_in is not none %}<span class="badge">{{ perf.matures_in }} days</span>{% endif %}
     </div>
   </div>
+  <div class="card"><h3>Investor capital in</h3><div class="n">${{ "{:,.0f}".format(perf.funded) }}</div></div>
+  <div class="card"><h3>Still to raise</h3><div>${{ "{:,.0f}".format(perf.gap) }}</div></div>
+  <div class="card"><h3>Investor returns paid</h3><div>${{ "{:,.2f}".format(perf.investor_paid) }}</div></div>
+  <div class="card"><h3>Brittco share paid</h3><div>${{ "{:,.2f}".format(perf.brittco_paid) }}</div></div>
 </div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Who funded this loan</h3>
+  <p class="hint">Add as many investors as you need. Investor rate is what they earn. Brittco keeps the spread between the borrower rate and that investor rate.</p>
+  <table class="table">
+    <tr><th>Investor</th><th>Amount</th><th>Investor rate</th><th>Spread to Brittco</th><th>Status</th></tr>
+    {% for p in parts %}
+    <tr>
+      <td><a href="{{ url_for('investor_detail', iid=p.investor_id) }}">{{ p.investor_name }}</a></td>
+      <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
+      <td>{{ p.investor_rate }}%</td>
+      <td>{{ "%.2f"|format((loan.rate or 0) - (p.investor_rate or 0)) }}%</td>
+      <td>{{ p.status }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No investors on this loan yet.</td></tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('add_participation', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div><label>Investor</label>
+      <select name="investor_id" required>
+        {% for i in investors %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Amount in this deal</label><input name="amount" type="number" step="0.01" required></div>
+    <div><label>Rate paid to investor %</label><input name="investor_rate" type="number" step="0.01" required></div>
+    <div><label>Funded on</label><input name="funded_on" type="date"></div>
+    <div class="span-2"><button class="btn" type="submit">Add investor to this loan</button></div>
+  </form>
+</div>
+
 <div class="card" style="margin-top:14px">
   <h3>Record a payment</h3>
   <form method="post" action="{{ url_for('loan_payment', lid=loan.id) }}" class="form-grid">
@@ -53,4 +88,22 @@
     {% endfor %}
   </table>
 </div>
+<div class="card" style="margin-top:14px">
+  <h3>How each payment was split</h3>
+  <table class="table">
+    <tr><th>When</th><th>Investor</th><th>Investor received</th><th>Brittco kept</th><th>Type</th></tr>
+    {% for d in dists %}
+    <tr>
+      <td>{{ d.created_at }}</td>
+      <td>{{ d.investor_name or "Brittco book" }}</td>
+      <td>${{ "{:,.2f}".format(d.investor_amount or 0) }}</td>
+      <td>${{ "{:,.2f}".format(d.brittco_amount or 0) }}</td>
+      <td>{{ d.kind }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">Splits appear after you record a borrower payment.</td></tr>
+    {% endfor %}
+  </table>
+</div>
 {% endblock %}
+
