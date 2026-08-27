@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brittco Investor Portal</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:980px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Investor portal</div>
+      <h2 style="margin:4px 0 0">Hello, {{ inv.name }}</h2>
+    </div>
+    <a class="btn ghost" href="/investor/logout" style="margin-left:auto">Sign out</a>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <h3>Your investments</h3>
+    <table class="table">
+      <tr>
+        <th>Loan</th><th>Amount</th><th>Term</th><th>Rate</th>
+        <th>Annualized</th><th>Extensions</th><th>Status</th>
+      </tr>
+      {% for p in parts %}
+      <tr>
+        <td>{{ p.loan_number }}<br><span class="hint">{{ p.property_address }}</span></td>
+        <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
+        <td>{{ p.term }} months</td>
+        <td>{{ p.base }}% for the term</td>
+        <td>
+          {% if p.annualized_initial %}{{ "%.1f"|format(p.annualized_initial) }}% initial<br>{% endif %}
+          {% if p.annualized_actual %}<strong>{{ "%.1f"|format(p.annualized_actual) }}% actual</strong>{% endif %}
+        </td>
+        <td>{{ p.used }} of {{ p.max_ext }} @ {{ p.ext_rate }}%/mo<br>
+            Extra return so far: {{ "%.1f"|format(p.ext_return) }}%</td>
+        <td><span class="badge">{{ p.status }}</span> / {{ p.loan_status }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">No investments on file yet.</td></tr>
+      {% endfor %}
+    </table>
+    <p class="hint">10% in 3 months = 40% annualized (rate × 12 ÷ term months).</p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h3>Extension history</h3>
+    <table class="table">
+      <tr><th>When</th><th>Loan</th><th>Months added</th><th>Rate that month</th></tr>
+      {% for e in exts %}
+      <tr>
+        <td>{{ e.created_at }}</td>
+        <td>{{ e.loan_number }}</td>
+        <td>{{ e.months }}</td>
+        <td>{{ e.rate }}%</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No extensions yet.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</main>
+</body>
+</html>

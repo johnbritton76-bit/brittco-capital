@@ -31,21 +31,31 @@
 
 <div class="card" style="margin-top:14px">
   <h3>Who funded this loan</h3>
-  <p class="hint">Add as many investors as you need. Investor rate is what they earn. Brittco keeps the spread between the borrower rate and that investor rate.</p>
+  <p class="hint">Example: 3 months at 10% (40% annualized), then 2% per month on extensions. After the max extensions, term the loan.</p>
   <table class="table">
-    <tr><th>Investor</th><th>Amount</th><th>Investor rate</th><th>Spread to Brittco</th><th>Status</th></tr>
+    <tr><th>Investor</th><th>Amount</th><th>Term</th><th>Rate</th><th>Ann. return</th><th>Ext</th><th>Status</th><th></th></tr>
     {% for p in parts %}
     <tr>
       <td><a href="{{ url_for('investor_detail', iid=p.investor_id) }}">{{ p.investor_name }}</a></td>
       <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
-      <td>{{ p.investor_rate }}%</td>
-      <td>{{ "%.2f"|format((loan.rate or 0) - (p.investor_rate or 0)) }}%</td>
+      <td>{{ p.term }} mo</td>
+      <td>{{ p.base }}% + {{ p.ext_rate }}%/mo ext</td>
+      <td>{% if p.annualized_actual %}{{ "%.1f"|format(p.annualized_actual) }}%{% endif %}</td>
+      <td>{{ p.used }} / {{ p.max_ext }}</td>
       <td>{{ p.status }}</td>
+      <td>
+        <form method="post" action="{{ url_for('add_extension', lid=loan.id, pid=p.id) }}">
+          <button class="btn ghost" type="submit">+1 mo extension</button>
+        </form>
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No investors on this loan yet.</td></tr>
+    <tr><td colspan="8">No investors on this loan yet.</td></tr>
     {% endfor %}
   </table>
+  <form method="post" action="{{ url_for('term_loan', lid=loan.id) }}" style="margin-top:8px">
+    <button class="btn ghost" type="submit">Term this loan now</button>
+  </form>
   <form method="post" action="{{ url_for('add_participation', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
     <div><label>Investor</label>
       <select name="investor_id" required>
@@ -53,7 +63,16 @@
       </select>
     </div>
     <div><label>Amount in this deal</label><input name="amount" type="number" step="0.01" required></div>
-    <div><label>Rate paid to investor %</label><input name="investor_rate" type="number" step="0.01" required></div>
+    <div><label>Rate paid to investor % (for the term)</label><input name="investor_rate" type="number" step="0.01" required placeholder="10"></div>
+    <div><label>Term (months)</label><input name="term_months" type="number" value="3" required></div>
+    <div><label>Extension rate % per month</label><input name="extension_rate" type="number" step="0.01" value="2"></div>
+    <div><label>Term after how many extension months</label>
+      <select name="max_extensions">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+      </select>
+    </div>
     <div><label>Funded on</label><input name="funded_on" type="date"></div>
     <div class="span-2"><button class="btn" type="submit">Add investor to this loan</button></div>
   </form>

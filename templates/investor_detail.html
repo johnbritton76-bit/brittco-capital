@@ -11,14 +11,14 @@
 <div class="card">
   <h3>Capital in deals</h3>
   <table class="table">
-    <tr><th>Loan</th><th>Property</th><th>Amount</th><th>Investor rate</th><th>Borrower rate</th><th>Status</th></tr>
+    <tr><th>Loan</th><th>Amount</th><th>Term / rate</th><th>Ann. return</th><th>Extensions</th><th>Status</th></tr>
     {% for p in parts %}
     <tr>
       <td><a href="{{ url_for('loan_detail', lid=p.loan_id) }}">{{ p.loan_number }}</a></td>
-      <td>{{ p.property_address }}</td>
       <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
-      <td>{{ p.investor_rate }}%</td>
-      <td>{{ p.borrower_rate }}%</td>
+      <td>{{ p.term }} mo @ {{ p.base }}%</td>
+      <td>{% if p.annualized_actual %}{{ "%.1f"|format(p.annualized_actual) }}%{% endif %}</td>
+      <td>{{ p.used }} / {{ p.max_ext }} @ {{ p.ext_rate }}%/mo</td>
       <td>{{ p.status }}</td>
     </tr>
     {% endfor %}
