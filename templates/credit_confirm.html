@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Confirm soft credit pull</h2></div>
+<div class="card">
+  <p>You are about to request a <strong>soft pull</strong> for:</p>
+  <p>
+    <strong>{{ b.name }}</strong><br>
+    {{ b.address or "Address not on file" }}{% if b.city %}, {{ b.city }} {{ b.state }} {{ b.zip }}{% endif %}<br>
+    DOB {{ b.dob or "—" }} · SSN {{ ssn_mask }}
+  </p>
+  <p class="hint">
+    A live bureau pull needs a vendor key in Render (CREDIT_API_KEY). Without it, this logs a confirmed request on the profile so staff can complete it.
+  </p>
+  <form method="post">
+    <div style="margin:12px 0">
+      <label>Bureau</label>
+      <select name="bureau">
+        <option>Tri-merge</option><option>Experian</option><option>Equifax</option><option>TransUnion</option>
+      </select>
+    </div>
+    <input type="hidden" name="confirm" value="yes">
+    <button class="btn" type="submit">Confirm soft pull</button>
+    <a class="btn ghost" href="{{ url_for('borrower_detail', bid=b.id) }}">Cancel</a>
+  </form>
+</div>
+{% endblock %}

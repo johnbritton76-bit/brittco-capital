@@ -6,7 +6,17 @@
     <h2>{{ inv.name }}</h2>
     <p class="hint">{{ inv.entity_name }} · {{ inv.email }} · {{ inv.phone }}</p>
   </div>
-  <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
+  <div>
+    <a class="btn" href="{{ url_for('investor_profile', iid=inv.id) }}">Profile</a>
+    <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
+  </div>
+</div>
+<div class="card">
+  <h3>Capital available to deploy</h3>
+  <div class="n">${{ "{:,.0f}".format(inv.capital_available or 0) }}</div>
+  {% if inv.wire_bank %}
+  <p class="hint">Wire: {{ inv.wire_bank }} · {{ inv.wire_name }} · routing {{ inv.wire_routing }}</p>
+  {% endif %}
 </div>
 
 <div class="card">

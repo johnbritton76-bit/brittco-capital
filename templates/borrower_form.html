@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="top"><h2>{{ 'Edit' if b else 'New' }} borrower</h2></div>
+<div class="top"><h2>{{ 'Edit profile' if b else 'New borrower' }}</h2></div>
 <form method="post" class="card form-grid">
   <div><label>Full name</label><input name="name" value="{{ b.name if b else '' }}" required></div>
+  <div><label>Date of birth</label><input name="dob" type="date" value="{{ b.dob if b else '' }}"></div>
   <div><label>Entity type</label>
     <select name="entity_type">
       {% for t in ['Individual','LLC','Trust','Corporation'] %}
@@ -12,7 +13,28 @@
   </div>
   <div><label>Entity / LLC name</label><input name="entity_name" value="{{ b.entity_name if b else '' }}"></div>
   <div><label>Email</label><input name="email" type="email" value="{{ b.email if b else '' }}" required></div>
-  <div><label>Phone</label><input name="phone" value="{{ b.phone if b else '' }}"></div>
+  <div><label>Mobile phone</label><input name="phone" value="{{ b.phone if b else '' }}"></div>
+  <div><label>Work phone</label><input name="work_phone" value="{{ b.work_phone if b else '' }}"></div>
+  <div><label>Social Security number</label><input name="ssn" value="{{ b.ssn if b else '' }}" autocomplete="off"></div>
+  <div class="span-2"><label>Current address</label><input name="address" value="{{ b.address if b else '' }}"></div>
+  <div><label>City</label><input name="city" value="{{ b.city if b else '' }}"></div>
+  <div><label>State</label><input name="state" value="{{ b.state if b else '' }}"></div>
+  <div><label>ZIP</label><input name="zip" value="{{ b.zip if b else '' }}"></div>
+  <div><label>Years at this address</label><input name="years_at_address" type="number" step="0.1" value="{{ b.years_at_address if b else '' }}"></div>
+  <div><label>Own or rent</label>
+    <select name="own_or_rent">
+      {% for t in ['','Own','Rent'] %}
+      <option value="{{ t }}" {% if b and b.own_or_rent==t %}selected{% endif %}>{{ t or '—' }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="span-2 hint">If less than 2 years at the current address, enter the previous address below.</div>
+  <div class="span-2"><label>Previous address</label><input name="prev_address" value="{{ b.prev_address if b else '' }}"></div>
+  <div><label>Previous city</label><input name="prev_city" value="{{ b.prev_city if b else '' }}"></div>
+  <div><label>Previous state</label><input name="prev_state" value="{{ b.prev_state if b else '' }}"></div>
+  <div><label>Previous ZIP</label><input name="prev_zip" value="{{ b.prev_zip if b else '' }}"></div>
+  <div><label>Employer</label><input name="employer" value="{{ b.employer if b else '' }}"></div>
+  <div><label>Occupation</label><input name="occupation" value="{{ b.occupation if b else '' }}"></div>
   <div><label>Credit score</label><input name="credit_score" type="number" value="{{ b.credit_score if b else '' }}"></div>
   <div><label>Portal password (leave blank to keep)</label><input name="password" type="password"></div>
   <div class="span-2"><label>Notes</label><textarea name="notes">{{ b.notes if b else '' }}</textarea></div>

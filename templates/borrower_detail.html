@@ -6,16 +6,48 @@
     <h2>{{ b.name }}</h2>
   </div>
   <div>
-    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Edit</a>
+    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
+    <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
     <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
   </div>
 </div>
 <div class="grid cards">
   <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}</div></div>
-  <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>{{ b.phone }}</div></div>
+  <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>Mobile {{ b.phone or "—" }}<br>Work {{ b.work_phone or "—" }}</div></div>
   <div class="card"><h3>Credit</h3><div class="n">{{ b.credit_score or "—" }}</div></div>
+  <div class="card"><h3>SSN</h3><div>{{ ssn_mask }}</div><div class="hint">Full number only on Profile</div></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Demographics</h3>
+  <p>
+    {{ b.address or "—" }}{% if b.city %}, {{ b.city }} {{ b.state }} {{ b.zip }}{% endif %}<br>
+    {{ b.own_or_rent or "Own/rent not set" }}
+    {% if b.years_at_address %} · {{ b.years_at_address }} years at this address{% endif %}
+    {% if b.dob %}<br>DOB {{ b.dob }}{% endif %}
+    {% if b.employer %}<br>{{ b.occupation or "Works" }} at {{ b.employer }}{% endif %}
+  </p>
+  {% if b.years_at_address and b.years_at_address < 2 and b.prev_address %}
+  <p class="hint">Previous address (under 2 years): {{ b.prev_address }}, {{ b.prev_city }} {{ b.prev_state }} {{ b.prev_zip }}</p>
+  {% endif %}
 </div>
 {% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Credit pull history</h3>
+  <table class="table">
+    <tr><th>When</th><th>Type</th><th>Bureau</th><th>Score</th><th>Status</th></tr>
+    {% for p in pulls %}
+    <tr>
+      <td>{{ p.created_at }}</td>
+      <td>{{ p.pull_type }}</td>
+      <td>{{ p.bureau }}</td>
+      <td>{{ p.score or "—" }}</td>
+      <td>{{ p.status }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No pulls yet. Use Soft credit pull — you will be asked to confirm.</td></tr>
+    {% endfor %}
+  </table>
+</div>
 <div class="card" style="margin-top:14px">
   <h3>Deal history</h3>
   <table class="table">

@@ -66,7 +66,22 @@ def init_db():
             phone TEXT,
             credit_score INTEGER,
             password TEXT,
-            notes TEXT
+            notes TEXT,
+            address TEXT,
+            city TEXT,
+            state TEXT,
+            zip TEXT,
+            years_at_address REAL,
+            prev_address TEXT,
+            prev_city TEXT,
+            prev_state TEXT,
+            prev_zip TEXT,
+            own_or_rent TEXT,
+            work_phone TEXT,
+            ssn TEXT,
+            dob TEXT,
+            employer TEXT,
+            occupation TEXT
         );
         CREATE TABLE IF NOT EXISTS deals (
             id INTEGER PRIMARY KEY,
@@ -152,7 +167,14 @@ def init_db():
             phone TEXT,
             notes TEXT,
             ach_status TEXT,
-            password TEXT
+            password TEXT,
+            capital_available REAL,
+            wire_bank TEXT,
+            wire_routing TEXT,
+            wire_account TEXT,
+            wire_name TEXT,
+            wire_further TEXT,
+            wire_notes TEXT
         );
         CREATE TABLE IF NOT EXISTS participations (
             id INTEGER PRIMARY KEY,
@@ -514,6 +536,44 @@ try:
     if deal_cols and "acked" not in deal_cols:
         _c.execute("ALTER TABLE deals ADD COLUMN acked INTEGER")
         _c.execute("UPDATE deals SET acked=1 WHERE acked IS NULL")
+    b_cols = [r[1] for r in _c.execute("PRAGMA table_info(borrowers)")]
+    for col, spec in [
+        ("address", "TEXT"),
+        ("city", "TEXT"),
+        ("state", "TEXT"),
+        ("zip", "TEXT"),
+        ("years_at_address", "REAL"),
+        ("prev_address", "TEXT"),
+        ("prev_city", "TEXT"),
+        ("prev_state", "TEXT"),
+        ("prev_zip", "TEXT"),
+        ("own_or_rent", "TEXT"),
+        ("work_phone", "TEXT"),
+        ("ssn", "TEXT"),
+        ("dob", "TEXT"),
+        ("employer", "TEXT"),
+        ("occupation", "TEXT"),
+    ]:
+        if b_cols and col not in b_cols:
+            _c.execute(f"ALTER TABLE borrowers ADD COLUMN {col} {spec}")
+    inv_cols = [r[1] for r in _c.execute("PRAGMA table_info(investors)")]
+    for col, spec in [
+        ("capital_available", "REAL"),
+        ("wire_bank", "TEXT"),
+        ("wire_routing", "TEXT"),
+        ("wire_account", "TEXT"),
+        ("wire_name", "TEXT"),
+        ("wire_further", "TEXT"),
+        ("wire_notes", "TEXT"),
+    ]:
+        if inv_cols and col not in inv_cols:
+            _c.execute(f"ALTER TABLE investors ADD COLUMN {col} {spec}")
+    _c.execute(
+        "UPDATE investors SET capital_available=250000 WHERE email='elena@example.com' AND (capital_available IS NULL OR capital_available=0)"
+    )
+    _c.execute(
+        "UPDATE investors SET capital_available=150000 WHERE email='david@example.com' AND (capital_available IS NULL OR capital_available=0)"
+    )
     _c.commit()
     _c.close()
 except sqlite3.Error:
@@ -821,6 +881,82 @@ def money(v):
         return 0.0
 
 
+def mask_ssn(ssn):
+    digits = "".join(ch for ch in (ssn or "") if ch.isdigit())
+    if len(digits) >= 4:
+        return f"***-**-{digits[-4:]}"
+    return "—"
+
+
+def save_borrower_from_form(f, bid=None, existing=None):
+    years = f.get("years_at_address")
+    payload = (
+        f.get("name"),
+        f.get("entity_type"),
+        f.get("entity_name"),
+        (f.get("email") or "").strip().lower(),
+        f.get("phone"),
+        int(f["credit_score"]) if f.get("credit_score") else None,
+        f.get("password") or (existing["password"] if existing else "borrower"),
+        f.get("notes"),
+        f.get("address"),
+        f.get("city"),
+        f.get("state"),
+        f.get("zip"),
+        float(years) if years else None,
+        f.get("prev_address"),
+        f.get("prev_city"),
+        f.get("prev_state"),
+        f.get("prev_zip"),
+        f.get("own_or_rent"),
+        f.get("work_phone"),
+        f.get("ssn"),
+        f.get("dob"),
+        f.get("employer"),
+        f.get("occupation"),
+    )
+    cols = """name=?, entity_type=?, entity_name=?, email=?, phone=?, credit_score=?,
+              password=?, notes=?, address=?, city=?, state=?, zip=?, years_at_address=?,
+              prev_address=?, prev_city=?, prev_state=?, prev_zip=?, own_or_rent=?,
+              work_phone=?, ssn=?, dob=?, employer=?, occupation=?"""
+    if bid:
+        db().execute(f"UPDATE borrowers SET {cols} WHERE id=?", payload + (bid,))
+    else:
+        db().execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes,
+             address, city, state, zip, years_at_address, prev_address, prev_city, prev_state,
+             prev_zip, own_or_rent, work_phone, ssn, dob, employer, occupation)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            payload,
+        )
+
+
+def save_investor_profile(f, iid, existing=None):
+    pw = f.get("password") or (existing["password"] if existing else "investor")
+    db().execute(
+        """UPDATE investors SET name=?, entity_name=?, email=?, phone=?, notes=?,
+           password=?, capital_available=?, wire_bank=?, wire_routing=?, wire_account=?,
+           wire_name=?, wire_further=?, wire_notes=? WHERE id=?""",
+        (
+            f.get("name") or (existing["name"] if existing else ""),
+            f.get("entity_name"),
+            f.get("email"),
+            f.get("phone"),
+            f.get("notes"),
+            pw,
+            money(f.get("capital_available")),
+            f.get("wire_bank"),
+            f.get("wire_routing"),
+            f.get("wire_account"),
+            f.get("wire_name"),
+            f.get("wire_further"),
+            f.get("wire_notes"),
+            iid,
+        ),
+    )
+
+
 def parse_date(s):
     if not s:
         return None
@@ -1078,14 +1214,38 @@ def dashboard():
     ).fetchone()
     alerts = loan_alerts()
     post_reminders(alerts)
+    year = str(date.today().year)
+    closed_all = db().execute(
+        "SELECT COUNT(*) c FROM loans WHERE status IN ('Paid Off','Closed','Termed','Sold','Written Off')"
+    ).fetchone()["c"]
+    closed_ytd = db().execute(
+        """SELECT COUNT(*) c FROM loans
+           WHERE status IN ('Paid Off','Closed','Termed','Sold','Written Off')
+           AND (maturity_date LIKE ? OR start_date LIKE ?)""",
+        (year + "%", year + "%"),
+    ).fetchone()["c"]
+    active_loans = db().execute(
+        "SELECT COUNT(*) c FROM loans WHERE status NOT IN ('Paid Off','Closed','Termed','Sold','Written Off')"
+    ).fetchone()["c"]
+    active_investors = db().execute(
+        """SELECT COUNT(*) c FROM investors i
+           WHERE COALESCE(i.capital_available,0) > 0
+              OR EXISTS (SELECT 1 FROM participations p WHERE p.investor_id=i.id AND p.status!='Closed')"""
+    ).fetchone()["c"]
     stats = {
         "active": sum(1 for d in deals if d["status"] not in ("Declined", "Paid Off")),
         "uw": sum(1 for d in deals if d["status"] == "Underwriting"),
         "borrowers": db().execute("SELECT COUNT(*) c FROM borrowers").fetchone()["c"],
+        "investors": db().execute("SELECT COUNT(*) c FROM investors").fetchone()["c"],
+        "active_investors": active_investors,
+        "active_loans": active_loans,
+        "closed_ytd": closed_ytd,
+        "closed_all": closed_all,
         "funded": funded,
         "loans": book["c"],
         "servicing": book["bal"],
         "alerts": len(alerts),
+        "year": year,
     }
     return render_template(
         "dashboard.html", title="Dashboard", nav="dash", deals=deals, stats=stats, alerts=alerts
@@ -1108,22 +1268,7 @@ def borrowers():
 @staff_required
 def borrower_new():
     if request.method == "POST":
-        f = request.form
-        db().execute(
-            """INSERT INTO borrowers
-            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                f.get("name"),
-                f.get("entity_type"),
-                f.get("entity_name"),
-                (f.get("email") or "").strip().lower(),
-                f.get("phone"),
-                int(f["credit_score"]) if f.get("credit_score") else None,
-                f.get("password") or "borrower",
-                f.get("notes"),
-            ),
-        )
+        save_borrower_from_form(request.form)
         db().commit()
         return redirect(url_for("borrowers"))
     return render_template(
@@ -1138,8 +1283,17 @@ def borrower_detail(bid):
     deals = deal_rows(
         db().execute("SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)).fetchall()
     )
+    pulls = db().execute(
+        "SELECT * FROM credit_pulls WHERE borrower_id=? ORDER BY id DESC", (bid,)
+    ).fetchall()
     return render_template(
-        "borrower_detail.html", title=b["name"], nav="borrowers", b=b, deals=deals
+        "borrower_detail.html",
+        title=b["name"],
+        nav="borrowers",
+        b=b,
+        deals=deals,
+        pulls=pulls,
+        ssn_mask=mask_ssn(b["ssn"] if "ssn" in b.keys() else ""),
     )
 
 
@@ -1148,23 +1302,7 @@ def borrower_detail(bid):
 def borrower_edit(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     if request.method == "POST":
-        f = request.form
-        pw = f.get("password") or b["password"]
-        db().execute(
-            """UPDATE borrowers SET name=?, entity_type=?, entity_name=?, email=?,
-               phone=?, credit_score=?, password=?, notes=? WHERE id=?""",
-            (
-                f.get("name"),
-                f.get("entity_type"),
-                f.get("entity_name"),
-                (f.get("email") or "").strip().lower(),
-                f.get("phone"),
-                int(f["credit_score"]) if f.get("credit_score") else None,
-                pw,
-                f.get("notes"),
-                bid,
-            ),
-        )
+        save_borrower_from_form(request.form, bid=bid, existing=b)
         db().commit()
         return redirect(url_for("borrower_detail", bid=bid))
     return render_template(
@@ -1607,7 +1745,45 @@ def credit_pull():
     if score:
         db().execute("UPDATE borrowers SET credit_score=? WHERE id=?", (score, bid))
     db().commit()
-    return redirect(url_for("credit"))
+    nxt = request.form.get("next") or url_for("credit")
+    return redirect(nxt)
+
+
+@app.route("/borrowers/<int:bid>/soft-pull", methods=["GET", "POST"])
+@staff_required
+def borrower_soft_pull(bid):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if request.method == "GET":
+        return render_template(
+            "credit_confirm.html",
+            title="Confirm soft pull",
+            nav="borrowers",
+            b=b,
+            ssn_mask=mask_ssn(b["ssn"] if b and "ssn" in b.keys() else ""),
+        )
+    if request.form.get("confirm") != "yes":
+        return redirect(url_for("borrower_detail", bid=bid))
+    api_key = os.environ.get("CREDIT_API_KEY")
+    status = "Requested via vendor" if api_key else "Pending / recorded (no vendor key)"
+    vendor = os.environ.get("CREDIT_VENDOR", "Soft Pull Solutions") if api_key else "Manual / pending"
+    notes = "One-click soft pull confirmed by admin."
+    db().execute(
+        """INSERT INTO credit_pulls
+        (borrower_id, pull_type, bureau, score, status, vendor, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            "Soft",
+            request.form.get("bureau") or "Tri-merge",
+            None,
+            status,
+            vendor,
+            notes,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().commit()
+    return redirect(url_for("borrower_detail", bid=bid))
 
 
 @app.route("/investors")
@@ -1639,8 +1815,8 @@ def investor_new():
     if request.method == "POST":
         f = request.form
         db().execute(
-            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
-               VALUES (?,?,?,?,?,?,?)""",
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password, capital_available)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (
                 f.get("name"),
                 f.get("entity_name"),
@@ -1649,6 +1825,7 @@ def investor_new():
                 f.get("notes"),
                 "Not connected",
                 f.get("password") or "investor",
+                money(f.get("capital_available")),
             ),
         )
         db().commit()
@@ -1690,6 +1867,19 @@ def investor_detail(iid):
         ach=ach,
         books=books,
         dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
+    )
+
+
+@app.route("/investors/<int:iid>/profile", methods=["GET", "POST"])
+@staff_required
+def investor_profile(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    if request.method == "POST":
+        save_investor_profile(request.form, iid, inv)
+        db().commit()
+        return redirect(url_for("investor_detail", iid=iid))
+    return render_template(
+        "investor_profile.html", title="Investor profile", nav="investors", inv=inv, staff=True
     )
 
 
@@ -1817,6 +2007,17 @@ def investor_portal():
     ).fetchall()
     books = investor_books(inv["id"])
     return render_template("investor_portal.html", inv=inv, parts=parts, exts=exts, books=books)
+
+
+@app.route("/investor/profile", methods=["GET", "POST"])
+@investor_required
+def investor_self_profile():
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
+    if request.method == "POST":
+        save_investor_profile(request.form, inv["id"], inv)
+        db().commit()
+        return redirect(url_for("investor_portal"))
+    return render_template("investor_self_profile.html", inv=inv, staff=False)
 
 
 @app.route("/ach", methods=["GET", "POST"])

@@ -1,0 +1,23 @@
+<form method="post" class="card form-grid">
+  <div><label>Name</label><input name="name" value="{{ inv.name or '' }}" required></div>
+  <div><label>Entity</label><input name="entity_name" value="{{ inv.entity_name or '' }}"></div>
+  <div><label>Email</label><input name="email" type="email" value="{{ inv.email or '' }}"></div>
+  <div><label>Phone</label><input name="phone" value="{{ inv.phone or '' }}"></div>
+  <div class="span-2">
+    <label>Capital available to deploy</label>
+    <input name="capital_available" type="number" step="0.01" value="{{ inv.capital_available or 0 }}">
+    <p class="hint">How much can go into a new deal right now. Investor and staff can both change this.</p>
+  </div>
+  <div class="span-2"><h3>Wire instructions</h3></div>
+  <div><label>Bank name</label><input name="wire_bank" value="{{ inv.wire_bank or '' }}"></div>
+  <div><label>Name on account</label><input name="wire_name" value="{{ inv.wire_name or '' }}"></div>
+  <div><label>Routing number</label><input name="wire_routing" value="{{ inv.wire_routing or '' }}"></div>
+  <div><label>Account number</label><input name="wire_account" value="{{ inv.wire_account or '' }}"></div>
+  <div class="span-2"><label>Further credit / reference</label><input name="wire_further" value="{{ inv.wire_further or '' }}"></div>
+  <div class="span-2"><label>Wire notes</label><textarea name="wire_notes">{{ inv.wire_notes or '' }}</textarea></div>
+  <div class="span-2"><label>Notes</label><textarea name="notes">{{ inv.notes or '' }}</textarea></div>
+  {% if staff %}
+  <div><label>Portal password (leave blank to keep)</label><input name="password" type="password"></div>
+  {% endif %}
+  <div class="span-2"><button class="btn" type="submit">Save profile</button></div>
+</form>

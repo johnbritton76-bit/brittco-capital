@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your profile</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:900px;margin:0 auto">
+  <div class="top">
+    <h2>Your profile</h2>
+    <a class="btn ghost" href="{{ url_for('investor_portal') }}">Back to account</a>
+  </div>
+  {% include "_investor_fields.html" %}
+</main>
+</body>
+</html>

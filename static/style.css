@@ -113,3 +113,15 @@ textarea { min-height: 88px; resize: vertical; }
   .nav { display: flex; flex-wrap: wrap; gap: 6px; }
   .form-grid { grid-template-columns: 1fr; }
 }
+
+.alert-bar {
+  background: #fff4d6;
+  border: 1px solid #e6c56e;
+  color: #6b5208;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+.alert-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0; }
+
+.table tr.total td { font-weight: 700; background: #e8eef6; border-top: 2px solid #c5d3e3; }

@@ -8,10 +8,13 @@
   <a class="btn" href="{{ url_for('deal_new') }}">New deal</a>
 </div>
 <div class="grid cards">
-  <div class="card"><h3>Active deals</h3><div class="n">{{ stats.active }}</div></div>
+  <div class="card"><h3>Active investors</h3><div class="n">{{ stats.active_investors }}</div><div class="hint">{{ stats.investors }} on file</div></div>
+  <div class="card"><h3>Active loans</h3><div class="n">{{ stats.active_loans }}</div></div>
+  <div class="card"><h3>Closed loans {{ stats.year }}</h3><div class="n">{{ stats.closed_ytd }}</div></div>
+  <div class="card"><h3>Closed loans all time</h3><div class="n">{{ stats.closed_all }}</div></div>
   <div class="card"><h3>In underwriting</h3><div class="n">{{ stats.uw }}</div></div>
+  <div class="card"><h3>Active deals</h3><div class="n">{{ stats.active }}</div></div>
   <div class="card"><h3>Borrowers</h3><div class="n">{{ stats.borrowers }}</div></div>
-  <div class="card"><h3>Funded volume</h3><div class="n">${{ "{:,.0f}".format(stats.funded) }}</div></div>
   <div class="card"><h3>Servicing book</h3><div class="n">${{ "{:,.0f}".format(stats.servicing) }}</div></div>
   <div class="card"><h3>Due alerts</h3><div class="n">{{ stats.alerts }}</div></div>
 </div>
