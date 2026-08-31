@@ -32,6 +32,43 @@
 </div>
 {% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
 <div class="card" style="margin-top:14px">
+  <h3>ACH / bank for collections</h3>
+  <p class="hint">Save the bank details here, then open the processor to set the payment schedule.</p>
+  <form method="post" action="{{ url_for('borrower_ach', bid=b.id) }}" class="form-grid">
+    <div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name or '' }}"></div>
+    <div><label>Account type</label>
+      <select name="bank_account_type">
+        {% for t in ['Checking','Savings'] %}
+        <option value="{{ t }}" {% if b.bank_account_type==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Routing number</label><input name="bank_routing" value="{{ b.bank_routing or '' }}"></div>
+    <div><label>Account number</label><input name="bank_account" value="{{ b.bank_account or '' }}"></div>
+    <div class="span-2">
+      <label><input type="checkbox" name="ach_authorized" value="1" {% if b.ach_authorized %}checked{% endif %}> Borrower authorized ACH drafts</label>
+    </div>
+    <div class="span-2">
+      <button class="btn ghost" type="submit">Save bank details</button>
+      <button class="btn" type="submit" name="open_processor" value="1">Save and open ACH scheduler</button>
+    </div>
+  </form>
+  {% if ach_rows %}
+  <table class="table" style="margin-top:12px">
+    <tr><th>When</th><th>Loan</th><th>Amount</th><th>Status</th></tr>
+    {% for t in ach_rows %}
+    <tr>
+      <td>{{ t.created_at }}</td>
+      <td>{{ t.loan_number or "—" }}</td>
+      <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
+      <td>{{ t.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
   <h3>Credit pull history</h3>
   <table class="table">
     <tr><th>When</th><th>Type</th><th>Bureau</th><th>Score</th><th>Status</th></tr>

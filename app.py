@@ -81,7 +81,12 @@ def init_db():
             ssn TEXT,
             dob TEXT,
             employer TEXT,
-            occupation TEXT
+            occupation TEXT,
+            bank_name TEXT,
+            bank_routing TEXT,
+            bank_account TEXT,
+            bank_account_type TEXT,
+            ach_authorized INTEGER
         );
         CREATE TABLE IF NOT EXISTS deals (
             id INTEGER PRIMARY KEY,
@@ -553,6 +558,11 @@ try:
         ("dob", "TEXT"),
         ("employer", "TEXT"),
         ("occupation", "TEXT"),
+        ("bank_name", "TEXT"),
+        ("bank_routing", "TEXT"),
+        ("bank_account", "TEXT"),
+        ("bank_account_type", "TEXT"),
+        ("ach_authorized", "INTEGER"),
     ]:
         if b_cols and col not in b_cols:
             _c.execute(f"ALTER TABLE borrowers ADD COLUMN {col} {spec}")
@@ -879,6 +889,27 @@ def money(v):
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def request_soft_pull(bid, source):
+    api_key = os.environ.get("CREDIT_API_KEY")
+    status = "Requested via vendor" if api_key else "Auto-requested on application (pending vendor key)"
+    vendor = os.environ.get("CREDIT_VENDOR", "Soft Pull Solutions") if api_key else "Pending vendor"
+    db().execute(
+        """INSERT INTO credit_pulls
+        (borrower_id, pull_type, bureau, score, status, vendor, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            "Soft",
+            "Tri-merge",
+            None,
+            status,
+            vendor,
+            source,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
 
 
 def mask_ssn(ssn):
@@ -1294,7 +1325,36 @@ def borrower_detail(bid):
         deals=deals,
         pulls=pulls,
         ssn_mask=mask_ssn(b["ssn"] if "ssn" in b.keys() else ""),
+        ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"),
+        ach_rows=db().execute(
+            """SELECT t.*, l.loan_number FROM ach_transfers t
+               LEFT JOIN loans l ON l.id=t.loan_id
+               WHERE t.borrower_id=? ORDER BY t.id DESC""",
+            (bid,),
+        ).fetchall(),
     )
+
+
+@app.route("/borrowers/<int:bid>/ach", methods=["POST"])
+@staff_required
+def borrower_ach(bid):
+    f = request.form
+    db().execute(
+        """UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?,
+           bank_account_type=?, ach_authorized=? WHERE id=?""",
+        (
+            f.get("bank_name"),
+            f.get("bank_routing"),
+            f.get("bank_account"),
+            f.get("bank_account_type"),
+            1 if f.get("ach_authorized") else 0,
+            bid,
+        ),
+    )
+    db().commit()
+    if f.get("open_processor"):
+        return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"))
+    return redirect(url_for("borrower_detail", bid=bid))
 
 
 @app.route("/borrowers/<int:bid>/edit", methods=["GET", "POST"])
@@ -1497,6 +1557,8 @@ def portal_home():
 @borrower_required
 def portal_apply():
     f = request.form
+    if f.get("credit_consent") != "yes":
+        return redirect(url_for("portal_home"))
     cur = db().execute(
         """INSERT INTO deals
         (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
@@ -1527,6 +1589,11 @@ def portal_apply():
     did = cur.lastrowid
     files = request.files.getlist("docs")
     save_uploads(did, session["borrower_id"], files)
+    request_soft_pull(
+        session["borrower_id"],
+        "Automatic soft pull on portal application. Borrower consented in writing that a soft inquiry will not adversely affect their credit report.",
+    )
+    db().commit()
     return redirect(url_for("portal_home"))
 
 

@@ -70,6 +70,19 @@
       <div><label>Requested loan</label><input name="loan_amount" type="number" step="0.01"></div>
       <div class="span-2"><label>Exit strategy</label><input name="exit_strategy"></div>
       <div class="span-2"><label>Upload documents or photos</label><input type="file" name="docs" multiple></div>
+      <div class="span-2" style="border:1px solid #d7e0ea;border-radius:8px;padding:12px">
+        <p>
+          By submitting this application, you authorize Brittco Capital Inc to obtain a
+          <strong>soft inquiry</strong> of your consumer credit report solely to evaluate this
+          loan request. A soft inquiry is visible to you. It is not shown to other lenders as a
+          new application for credit, and it will not lower your credit score or otherwise
+          adversely affect your credit report.
+        </p>
+        <label>
+          <input type="checkbox" name="credit_consent" value="yes" required>
+          I have read this statement and I consent to a soft credit pull.
+        </label>
+      </div>
       <div class="span-2"><button class="btn" type="submit">Submit application</button></div>
     </form>
   </div>
