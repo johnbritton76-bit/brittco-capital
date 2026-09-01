@@ -1197,6 +1197,74 @@ def annualized(rate_pct, months):
     return money(rate_pct) * (12.0 / months)
 
 
+def annualized_days(rate_pct, days):
+    days = money(days)
+    if days <= 0:
+        return None
+    return money(rate_pct) * (365.0 / days)
+
+
+def loan_term_days(loan, p=None):
+    start = parse_date((loan["start_date"] if loan else None) or "")
+    end = parse_date((loan["maturity_date"] if loan else None) or "")
+    if start and end:
+        return max(1, (end - start).days)
+    if loan and (loan["loan_type"] or "") == "Transactional Loan":
+        return 7
+    months = 0
+    if p:
+        months = p["term_months"] or 0
+    if not months and loan:
+        months = loan["term_months"] if "term_months" in loan.keys() else 0
+    months = months or 3
+    return max(1, int(money(months) * 30))
+
+
+def participation_returns(loan, p, dists_for_investor=None):
+    math = participation_math(p)
+    cap = money(p["amount"])
+    days = loan_term_days(loan, p)
+    closed = (loan["status"] or "") in ("Paid Off", "Termed", "Closed", "Sold")
+    rate = money(p["investor_rate"])
+    if not rate:
+        rate = money(loan["points"]) or money(loan["rate"])
+    fee = math["fee"]
+    est_gross = cap * rate / 100.0
+    est_nate = est_gross * fee / 100.0
+    est_net = est_gross - est_nate
+    est_ann = annualized_days(rate, days) or 0
+    est_ann_net = annualized_days(rate * (1 - fee / 100.0), days) or 0
+    actual_gross = 0.0
+    if dists_for_investor:
+        actual_gross = sum(
+            money(d["investor_amount"])
+            for d in dists_for_investor
+            if (d["kind"] or "") != "Principal"
+        )
+    actual_nate = actual_gross * fee / 100.0 if closed else 0.0
+    actual_net = actual_gross - actual_nate
+    actual_rate = (actual_gross / cap * 100.0) if cap else 0.0
+    actual_ann = annualized_days(actual_rate, days) or 0
+    actual_ann_net = annualized_days((actual_net / cap * 100.0) if cap else 0, days) or 0
+    return {
+        **math,
+        "days": days,
+        "closed": closed,
+        "rate": rate,
+        "est_gross": est_gross,
+        "est_nate": est_nate,
+        "est_net": est_net,
+        "est_ann": est_ann,
+        "est_ann_net": est_ann_net,
+        "actual_gross": actual_gross,
+        "actual_nate": actual_nate,
+        "actual_net": actual_net,
+        "actual_ann": actual_ann,
+        "actual_ann_net": actual_ann_net,
+        "show_actual": closed,
+    }
+
+
 def participation_math(p):
     term = p["term_months"] or 0
     used = p["extensions_used"] or 0
@@ -2335,17 +2403,18 @@ def loan_detail(lid):
     ).fetchall()
     paid = sum(money(p["amount"]) for p in payments)
     raw_parts, funded = loan_stack(lid)
-    parts = []
-    for p in raw_parts:
-        d = dict(p)
-        d.update(participation_math(p))
-        parts.append(d)
     dists = db().execute(
         """SELECT d.*, i.name AS investor_name
            FROM distributions d LEFT JOIN investors i ON i.id=d.investor_id
            WHERE d.loan_id=? ORDER BY d.id DESC""",
         (lid,),
     ).fetchall()
+    parts = []
+    for p in raw_parts:
+        d = dict(p)
+        mine = [x for x in dists if x["investor_id"] == p["investor_id"]]
+        d.update(participation_returns(loan, p, mine))
+        parts.append(d)
     inv_paid = sum(money(d["investor_amount"]) for d in dists)
     brit_paid = sum(money(d["brittco_amount"]) for d in dists)
     investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
@@ -2358,6 +2427,16 @@ def loan_detail(lid):
         "gap": money(loan["original_principal"]) - funded,
         "investor_paid": inv_paid,
         "brittco_paid": brit_paid,
+        "days": loan_term_days(loan, parts[0] if parts else None),
+        "closed": (loan["status"] or "") in ("Paid Off", "Termed", "Closed", "Sold"),
+        "est_gross": sum(p.get("est_gross") or 0 for p in parts),
+        "est_nate": sum(p.get("est_nate") or 0 for p in parts),
+        "est_net": sum(p.get("est_net") or 0 for p in parts),
+        "est_ann": (parts[0]["est_ann"] if parts else annualized_days(money(loan["points"]) or money(loan["rate"]), loan_term_days(loan)) or 0),
+        "est_ann_net": (parts[0]["est_ann_net"] if parts else 0),
+        "actual_gross": sum(p.get("actual_gross") or 0 for p in parts),
+        "actual_nate": sum(p.get("actual_nate") or 0 for p in parts),
+        "actual_net": sum(p.get("actual_net") or 0 for p in parts),
     }
     return render_template(
         "loan_detail.html",
