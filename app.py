@@ -10,9 +10,11 @@ from datetime import datetime, date, timedelta
 from email.mime.text import MIMEText
 from functools import wraps
 
+from io import BytesIO
+
 from flask import (
     Flask, g, redirect, render_template, request, session, url_for, flash,
-    send_from_directory,
+    send_from_directory, send_file,
 )
 from werkzeug.utils import secure_filename
 
@@ -687,6 +689,7 @@ def save_uploads(deal_id, borrower_id, files):
 
 def investor_books(iid):
     year = str(date.today().year)
+    prior = str(date.today().year - 1)
     parts = db().execute(
         "SELECT * FROM participations WHERE investor_id=?", (iid,)
     ).fetchall()
@@ -715,6 +718,7 @@ def investor_books(iid):
                 "interest": 0.0,
                 "principal": 0.0,
                 "ytd_int": 0.0,
+                "ye_int": 0.0,
                 "nate": 0.0,
                 "ytd_nate": 0.0,
                 "math": None,
@@ -732,6 +736,7 @@ def investor_books(iid):
                 "interest": 0.0,
                 "principal": 0.0,
                 "ytd_int": 0.0,
+                "ye_int": 0.0,
                 "nate": 0.0,
                 "ytd_nate": 0.0,
                 "math": None,
@@ -753,8 +758,11 @@ def investor_books(iid):
             line["investor_amount"] = profit_line
             line["nate_amount"] = 0
             slot["interest"] += profit_line
-            if str(d["created_at"] or "").startswith(year):
+            when = str(d["created_at"] or "")
+            if when.startswith(year):
                 slot["ytd_int"] += profit_line
+            if when.startswith(prior):
+                slot["ye_int"] += profit_line
         slot["lines"].append(line)
     rows = []
     w_ann = 0.0
@@ -773,8 +781,11 @@ def investor_books(iid):
         accrued = round(gross * fee / 100.0, 2) if fee else 0.0
         nate = accrued if basis_back else 0.0
         ytd_nate = round(ytd_gross * fee / 100.0, 2) if basis_back else 0.0
+        ye_gross = s.get("ye_int") or 0.0
+        ye_nate = round(ye_gross * fee / 100.0, 2) if basis_back else 0.0
         net = gross - nate
         ytd_net = ytd_gross - ytd_nate
+        ye_net = ye_gross - ye_nate
         ror = (net / cap * 100) if cap else 0
         ytd_ror = (ytd_net / cap * 100) if cap else 0
         gross_ror = (gross / cap * 100) if cap else 0
@@ -811,6 +822,8 @@ def investor_books(iid):
                 "principal_back": s["principal"],
                 "still_out": max(0.0, cap - s["principal"]),
                 "ytd_int": ytd_net,
+                "ye_int": ye_net,
+                "ye_nate": ye_nate,
                 "profit": net,
                 "gross_profit": gross,
                 "nate_fee": nate,
@@ -834,10 +847,13 @@ def investor_books(iid):
         )
     net_all = sum(r["profit"] for r in rows)
     net_ytd = sum(r["ytd_int"] for r in rows)
+    net_ye = sum(r.get("ye_int") or 0 for r in rows)
     nate_all = sum(r["nate_fee"] for r in rows)
     nate_ytd = sum(r["ytd_nate"] for r in rows)
+    nate_ye = sum(r.get("ye_nate") or 0 for r in rows)
     all_ror = (net_all / deployed * 100) if deployed else 0
     ytd_ror = (net_ytd / deployed * 100) if deployed else 0
+    ye_ror = (net_ye / deployed * 100) if deployed else 0
     ann_rate = (w_ann / w_cap) if w_cap else 0
     return {
         "deployed": deployed,
@@ -848,15 +864,188 @@ def investor_books(iid):
         "still_out": max(0.0, deployed - all_prin),
         "all_profit": net_all,
         "ytd_profit": net_ytd,
+        "ye_profit": net_ye,
+        "ye_ror": ye_ror,
         "nate_all": nate_all,
         "nate_ytd": nate_ytd,
+        "nate_ye": nate_ye,
         "all_ror": all_ror,
         "ytd_ror": ytd_ror,
+        "ye_year": prior,
         "ann_rate": ann_rate,
         "ann_dollars": deployed * ann_rate / 100 if deployed else 0,
         "rows": rows,
         "year": year,
     }
+
+
+def money_txt(n):
+    return f"${money(n):,.2f}"
+
+
+def investor_statement_pdf(inv, books):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
+    )
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.6 * inch,
+        rightMargin=0.6 * inch,
+        topMargin=0.55 * inch,
+        bottomMargin=0.55 * inch,
+        title=f"Brittco Capital statement — {inv['name']}",
+        author="Brittco Capital Inc",
+    )
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("T", parent=styles["Heading1"], fontSize=16, textColor=colors.HexColor("#16324f"), spaceAfter=2)
+    sub = ParagraphStyle("S", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#5b6b7a"), spaceAfter=6)
+    body = ParagraphStyle("B", parent=styles["Normal"], fontSize=9, leading=12)
+    small = ParagraphStyle("SM", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#334"))
+    foot = ParagraphStyle("F", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#6b7a88"), alignment=TA_CENTER)
+    story = []
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    head = []
+    if os.path.exists(logo):
+        img = Image(logo, width=1.35 * inch, height=0.55 * inch)
+        head.append([
+            img,
+            Paragraph("Investor financial statement", title),
+        ])
+        story.append(Table(head, colWidths=[1.6 * inch, 5.4 * inch], hAlign="LEFT"))
+    else:
+        story.append(Paragraph("Brittco Capital Inc", title))
+        story.append(Paragraph("Investor financial statement", sub))
+    today = date.today().isoformat()
+    story.append(Paragraph("Your Bridge to Building Wealth", sub))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#c5d3e0"), spaceAfter=8))
+    story.append(Paragraph(f"<b>{inv['name']}</b>", body))
+    if inv["entity_name"]:
+        story.append(Paragraph(inv["entity_name"], small))
+    story.append(Paragraph(f"{inv['email'] or ''} &nbsp; {inv['phone'] or ''}", small))
+    story.append(Paragraph(f"Statement date {today}", small))
+    story.append(Spacer(1, 10))
+
+    year = books.get("year") or str(date.today().year)
+    prior = books.get("ye_year") or str(date.today().year - 1)
+    summary = [
+        ["", "YTD " + year, "Year-end " + prior, "All time"],
+        ["Net profit to investor", money_txt(books["ytd_profit"]), money_txt(books["ye_profit"]), money_txt(books["all_profit"])],
+        ["Rate of return", f"{books['ytd_ror']:.1f}%", f"{books['ye_ror']:.1f}%", f"{books['all_ror']:.1f}%"],
+        ["Nate Holland fee (realized)", money_txt(books["nate_ytd"]), money_txt(books.get("nate_ye") or 0), money_txt(books["nate_all"])],
+        ["Capital still in deals", money_txt(books["still_out"]), "—", money_txt(books["still_out"])],
+        ["Annualized book rate", f"{books['ann_rate']:.1f}%", "—", f"{books['ann_rate']:.1f}%"],
+    ]
+    t = Table(summary, colWidths=[2.2 * inch, 1.6 * inch, 1.6 * inch, 1.6 * inch])
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8f0f7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#16324f")),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#d0dbe6")),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "Nate is paid 25% of each loan’s realized net profit. "
+        "Year-end is the prior calendar year. YTD is this calendar year to date.",
+        small,
+    ))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Deal-by-deal detail", ParagraphStyle("H2", parent=styles["Heading2"], fontSize=12, textColor=colors.HexColor("#16324f"))))
+
+    header = ["Deal", "Capital", "Gross", "Nate fee", "Net all-time", "YTD net", "Year-end net", "Net rate", "Ann."]
+    data = [header]
+    for r in books["rows"]:
+        data.append([
+            Paragraph(f"{r['loan_number']}<br/><font size='7'>{r['property'] or ''}</font>", small),
+            money_txt(r["capital"]),
+            money_txt(r["gross_profit"]),
+            money_txt(r["nate_fee"]),
+            money_txt(r["profit"]),
+            money_txt(r["ytd_int"]),
+            money_txt(r.get("ye_int") or 0),
+            f"{r['ror']:.1f}%",
+            f"{r['ann_rate']:.1f}%",
+        ])
+    data.append([
+        "Totals",
+        money_txt(books["deployed"]),
+        "",
+        money_txt(books["nate_all"]),
+        money_txt(books["all_profit"]),
+        money_txt(books["ytd_profit"]),
+        money_txt(books["ye_profit"]),
+        f"{books['all_ror']:.1f}%",
+        f"{books['ann_rate']:.1f}%",
+    ])
+    widths = [1.35*inch, 0.72*inch, 0.68*inch, 0.68*inch, 0.82*inch, 0.72*inch, 0.82*inch, 0.58*inch, 0.52*inch]
+    dt = Table(data, colWidths=widths, repeatRows=1)
+    dt.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16324f")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e8f0f7")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c5d3e0")),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(dt)
+    story.append(Spacer(1, 14))
+    story.append(Paragraph("Activity detail", ParagraphStyle("H3", parent=styles["Heading2"], fontSize=12, textColor=colors.HexColor("#16324f"))))
+    for r in books["rows"]:
+        story.append(Paragraph(f"<b>{r['loan_number']}</b> — {r['property'] or ''} ({r['status']})", body))
+        story.append(Paragraph(r.get("story") or "", small))
+        if r.get("lines"):
+            lines = [["Date", "Type", "To investor", "Note"]]
+            for line in r["lines"]:
+                lines.append([
+                    str(line.get("created_at") or "")[:16],
+                    line.get("kind") or "",
+                    money_txt(line.get("investor_amount") or 0),
+                    "",
+                ])
+            lt = Table(lines, colWidths=[1.4*inch, 1.2*inch, 1.2*inch, 3.1*inch])
+            lt.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f7fb")),
+                ("GRID", (0, 0), (-1, -1), 0.2, colors.HexColor("#d7e0ea")),
+                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(lt)
+        story.append(Spacer(1, 8))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#c5d3e0"), spaceBefore=6, spaceAfter=6))
+    story.append(Paragraph(
+        "Prepared by Brittco Capital Inc for the investor named above. "
+        "Figures follow realized net profit after Nate Holland’s fee on paid-off loans. "
+        "This statement is for account review and is not a tax form.",
+        foot,
+    ))
+    doc.build(story)
+    return buf.getvalue()
 
 
 def borrower_required(fn):
@@ -2331,6 +2520,24 @@ def investor_portal():
     ).fetchall()
     books = investor_books(inv["id"])
     return render_template("investor_portal.html", inv=inv, parts=parts, exts=exts, books=books)
+
+
+@app.route("/investor/statement.pdf")
+@investor_required
+def investor_statement_self():
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
+    data = investor_statement_pdf(inv, investor_books(inv["id"]))
+    name = f"Brittco-statement-{inv['name'].replace(' ', '-')}.pdf"
+    return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
+
+
+@app.route("/investors/<int:iid>/statement.pdf")
+@staff_required
+def investor_statement_staff(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    data = investor_statement_pdf(inv, investor_books(iid))
+    name = f"Brittco-statement-{inv['name'].replace(' ', '-')}.pdf"
+    return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
 
 
 @app.route("/investor/profile", methods=["GET", "POST"])
