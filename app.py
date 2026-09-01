@@ -809,7 +809,7 @@ def investor_books(iid):
                 f"You invested ${cap:,.0f} in this loan. You have received ${gross:,.2f} in interest income so far "
                 f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital invested in this deal. "
                 f"Nate Holland’s {fee:.1f}% fee (${accrued:,.2f}) is estimated only — it is not payable "
-                f"until this loan is paid off and your basis is returned."
+                f"until your basis is paid off and a profit is realized."
             )
         rows.append(
             {
