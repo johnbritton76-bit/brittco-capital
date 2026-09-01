@@ -11,6 +11,42 @@
     <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
   </div>
 </div>
+{% if session.get('last_form_note') %}
+<div class="card"><p>{{ session.pop('last_form_note') }}</p>
+{% if session.get('last_form_url') %}<p><a href="{{ session.get('last_form_url') }}">Open form link</a></p>{% endif %}
+</div>
+{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Notary forms</h3>
+  <p class="hint">Borrower types the form, then downloads or prints it and signs in wet ink in front of a notary.</p>
+  <form method="post" action="{{ url_for('send_borrower_form', bid=b.id) }}" class="form-grid">
+    <div>
+      <label>Form</label>
+      <select name="form_key">
+        {% for key, spec in form_defs.items() %}
+        <option value="{{ key }}">{{ spec.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><button class="btn" type="submit">Send form to borrower</button></div>
+  </form>
+  <table class="table" style="margin-top:10px">
+    <tr><th>Form</th><th>Status</th><th>When</th><th></th></tr>
+    {% for p in packets %}
+    <tr>
+      <td>{{ form_defs[p.form_key].title if form_defs.get(p.form_key) else p.form_key }}</td>
+      <td>{{ p.status }}</td>
+      <td>{{ p.created_at }}</td>
+      <td>
+        <a href="{{ url_for('fill_form', token=p.token) }}">Open</a>
+        · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No forms sent yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
 <div class="grid cards">
   <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}</div></div>
   <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>Mobile {{ b.phone or "—" }}<br>Work {{ b.work_phone or "—" }}</div></div>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ spec.title }} · Brittco Capital</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      body { background: #fff; }
+      .card { box-shadow: none; border: 0; }
+    }
+  </style>
+</head>
+<body>
+<main class="main" style="max-width:760px;margin:0 auto">
+  <div class="portal-head no-print">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Form for wet-ink notarization</div>
+      <h2 style="margin:4px 0 0">{{ spec.title }}</h2>
+    </div>
+  </div>
+  {% if saved %}<div class="flash no-print">Saved. Download the PDF or print this page, then sign in front of a notary.</div>{% endif %}
+  <p class="hint no-print">{{ spec.blurb }} Type the fields, save, then download or print. Leave the signature line blank until you are with the notary.</p>
+
+  <form method="post" class="card form-grid">
+    {% for key, label in spec.fields %}
+    <div class="{% if key in ['property','address','aka'] %}span-2{% endif %}">
+      <label>{{ label }}</label>
+      <input name="{{ key }}" value="{{ data.get(key, '') }}">
+    </div>
+    {% endfor %}
+    <div class="span-2 no-print">
+      <button class="btn" type="submit" name="save" value="1">Save</button>
+      <button class="btn" type="submit" name="download" value="1">Save and download PDF</button>
+      <a class="btn ghost" href="{{ url_for('form_pdf', token=packet.token) }}">Download last saved PDF</a>
+      <button class="btn ghost" type="button" onclick="window.print()">Print this page</button>
+    </div>
+  </form>
+
+  <div class="card" style="margin-top:14px">
+    <h3>Signature — wet ink only</h3>
+    <p>Signature: ________________________________ &nbsp;&nbsp; Date: ____________________</p>
+    <p>Printed name: {{ borrower.name if borrower else "" }}</p>
+    <h3 style="margin-top:18px">Notary public</h3>
+    <p>State of {{ data.get('state') or '____________' }} &nbsp; County of {{ data.get('county') or '____________' }}</p>
+    <p>Sworn to and subscribed before me this ______ day of ______________, ________.</p>
+    <p>☐ Personally known &nbsp; ☐ Produced ID: ____________________</p>
+    <p>Notary signature: ________________________________ &nbsp; Commission expires: ______________</p>
+    <p>Stamp / seal:</p>
+  </div>
+</main>
+</body>
+</html>
