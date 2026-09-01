@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Brittco Capital Inc" }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <nav class="nav">
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if nav=='dash' else '' }}">Dashboard</a>
+      <a href="{{ url_for('borrowers') }}" class="{{ 'active' if nav=='borrowers' else '' }}">Borrowers</a>
+      <a href="{{ url_for('borrower_invite') }}" class="{{ 'active' if nav=='invite' else '' }}">Invite borrower</a>
+      <a href="{{ url_for('deals') }}" class="{{ 'active' if nav=='deals' else '' }}">Deals</a>
+      <a href="{{ url_for('deal_new') }}" class="{{ 'active' if nav=='newdeal' else '' }}">New deal</a>
+      <a href="{{ url_for('loans') }}" class="{{ 'active' if nav=='loans' else '' }}">Loans</a>
+      <a href="{{ url_for('investors') }}" class="{{ 'active' if nav=='investors' else '' }}">Investors</a>
+      <a href="{{ url_for('nate_fees') }}" class="{{ 'active' if nav=='nate' else '' }}">Nate fee</a>
+      <a href="{{ url_for('logout') }}">Log out</a>
+    </nav>
+  </aside>
+  <main class="main">
+    {% if new_apps %}
+    <div class="alert-bar">
+      {% for a in new_apps %}
+      <div class="alert-row">
+        <strong>New application submitted</strong>
+        — {{ a.borrower_name }} · {{ a.address }}
+        <a href="{{ url_for('deal_detail', did=a.id) }}">Open</a>
+        <form method="post" action="{{ url_for('ack_application', did=a.id) }}" style="display:inline">
+          <button class="btn ghost" type="submit">Acknowledge</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% block body %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>
