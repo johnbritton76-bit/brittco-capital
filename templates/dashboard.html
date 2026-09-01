@@ -8,6 +8,7 @@
   <a class="btn" href="{{ url_for('deal_new') }}">New deal</a>
 </div>
 <div class="grid cards">
+  <div class="card"><h3>Capital available to deploy</h3><div class="n">${{ "{:,.0f}".format(stats.capital_available) }}</div><div class="hint"><a href="{{ url_for('capital_available') }}">View by investor</a></div></div>
   <div class="card"><h3>Active investors</h3><div class="n">{{ stats.active_investors }}</div><div class="hint">{{ stats.investors }} on file</div></div>
   <div class="card"><h3>Active loans</h3><div class="n">{{ stats.active_loans }}</div></div>
   <div class="card"><h3>Closed loans {{ stats.year }}</h3><div class="n">{{ stats.closed_ytd }}</div></div>

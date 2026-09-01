@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Capital available to deploy</h2></div>
+<div class="grid cards">
+  <div class="card"><h3>Total ready</h3><div class="n">${{ "{:,.0f}".format(total) }}</div></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <p class="hint">Each investor (or staff) can change this number on that investor’s Profile.</p>
+  <table class="table">
+    <tr><th>Investor</th><th>Entity</th><th>Capital available to deploy</th></tr>
+    {% for i in investors %}
+    <tr>
+      <td><a href="{{ url_for('investor_detail', iid=i.id) }}">{{ i.name }}</a></td>
+      <td>{{ i.entity_name or "—" }}</td>
+      <td>${{ "{:,.0f}".format(i.capital_available or 0) }}</td>
+    </tr>
+    {% endfor %}
+    <tr class="total">
+      <td colspan="2">Total</td>
+      <td>${{ "{:,.0f}".format(total) }}</td>
+    </tr>
+  </table>
+</div>
+{% endblock %}

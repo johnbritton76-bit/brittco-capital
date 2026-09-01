@@ -1272,6 +1272,9 @@ def dashboard():
         "active_loans": active_loans,
         "closed_ytd": closed_ytd,
         "closed_all": closed_all,
+        "capital_available": db().execute(
+            "SELECT COALESCE(SUM(capital_available),0) t FROM investors"
+        ).fetchone()["t"],
         "funded": funded,
         "loans": book["c"],
         "servicing": book["bal"],
@@ -2171,6 +2174,23 @@ def serve_upload(name):
     if not (session.get("staff_id") or session.get("borrower_id") or session.get("investor_id")):
         return redirect(url_for("login"))
     return send_from_directory(UPLOAD_DIR, name)
+
+
+@app.route("/capital")
+@staff_required
+def capital_available():
+    rows = db().execute(
+        """SELECT id, name, entity_name, email, COALESCE(capital_available,0) AS capital_available
+           FROM investors ORDER BY capital_available DESC, name"""
+    ).fetchall()
+    total = sum(r["capital_available"] or 0 for r in rows)
+    return render_template(
+        "capital.html",
+        title="Capital available to deploy",
+        nav="capital",
+        investors=rows,
+        total=total,
+    )
 
 
 @app.route("/nate")
