@@ -800,14 +800,14 @@ def investor_books(iid):
         w_cap += cap
         if basis_back:
             story = (
-                f"You put ${cap:,.0f} into this loan and have your basis back. "
+                f"You invested ${cap:,.0f} in this loan and have your basis back. "
                 f"Gross profit is ${gross:,.2f}. Nate Holland’s {fee:.1f}% fee is now due: ${nate:,.2f}. "
                 f"Your net profit is ${net:,.2f} ({ror:.1f}% / {ann_rate or 0:.1f}% annualized)."
             )
         else:
             story = (
-                f"You put ${cap:,.0f} into this loan. You have received ${gross:,.2f} in profit so far "
-                f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital in the deal. "
+                f"You invested ${cap:,.0f} in this loan. You have received ${gross:,.2f} in interest income so far "
+                f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital invested in this deal. "
                 f"Nate Holland’s {fee:.1f}% fee (${accrued:,.2f}) is estimated only — it is not payable "
                 f"until this loan is paid off and your basis is returned."
             )
