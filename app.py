@@ -1505,6 +1505,16 @@ def underwrite(deal, credit_score):
         else:
             decision = "Review" if decision == "Approve" else decision
             flags.append("Add an override reason if you want to proceed above 75% LTV.")
+    if (deal["loan_type"] or "") == "Transactional Loan":
+        flags.append(
+            "Transactional Loan standard terms: 3% flat fee for up to 7 days. "
+            "Extensions beyond 7 days are negotiable."
+        )
+        pts = money(deal["points"]) if "points" in deal.keys() else None
+        if pts and abs(pts - 3) > 0.05:
+            flags.append(f"Fee is {pts:g}% — standard transactional fee is 3%.")
+            if decision == "Approve":
+                decision = "Review"
     if deal["loan_type"] == "Fix and Flip":
         if net_pct is None:
             flags.append("Enter ARV and rehab so projected profit can be calculated.")
@@ -1901,9 +1911,20 @@ def deal_create_loan(did):
         return redirect(url_for("loan_detail", lid=existing["id"]))
     principal = money(d["loan_amount"])
     start = date.today()
-    months = int(d["term_months"] or 12)
-    maturity = (start + timedelta(days=30 * months)).isoformat()
-    nxt = (start + timedelta(days=30)).isoformat()
+    transactional = (d["loan_type"] or "") == "Transactional Loan"
+    if transactional:
+        maturity = (start + timedelta(days=7)).isoformat()
+        nxt = maturity
+        points = money(d["points"]) or 3.0
+        pay_type = "Flat fee"
+        notes = "Transactional Loan: 3% flat fee for up to 7 days. Extensions beyond 7 days are negotiable."
+    else:
+        months = int(d["term_months"] or 12)
+        maturity = (start + timedelta(days=30 * months)).isoformat()
+        nxt = (start + timedelta(days=30)).isoformat()
+        points = money(d["points"]) or None
+        pay_type = "Interest only"
+        notes = "Created from funded deal"
     number = f"BC-{did:04d}"
     cur = db().execute(
         """INSERT INTO loans
@@ -1921,16 +1942,16 @@ def deal_create_loan(did):
             principal,
             principal,
             money(d["rate"]) or None,
-            money(d["points"]) or None,
+            points,
             start.isoformat(),
             maturity,
-            "Interest only",
+            pay_type,
             None,
             "Monthly",
             nxt,
             0,
             "Current",
-            "Created from funded deal",
+            notes,
         ),
     )
     db().execute("UPDATE deals SET status=? WHERE id=?", ("Funded", did))
