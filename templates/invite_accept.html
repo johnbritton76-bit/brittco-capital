@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Complete your Brittco profile</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:900px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Borrower invite</div>
+      <h2 style="margin:4px 0 0">Create your profile</h2>
+    </div>
+  </div>
+  {% if error %}<p class="badge bad">{{ error }}</p>{% endif %}
+  {% if inv and b %}
+  <p class="hint">Required fields must be finished before you can submit a loan application.</p>
+  <form method="post" class="card form-grid">
+    <div><label>Full name *</label><input name="name" value="{{ b.name or inv.name or '' }}" required></div>
+    <div><label>Date of birth *</label><input name="dob" type="date" value="{{ b.dob or '' }}" required></div>
+    <div><label>Email *</label><input name="email" type="email" value="{{ b.email if b.email and 'pending.brittco' not in b.email else (inv.email or '') }}" required></div>
+    <div><label>Mobile phone *</label><input name="phone" value="{{ b.phone or inv.phone or '' }}" required></div>
+    <div><label>Work phone</label><input name="work_phone" value="{{ b.work_phone or '' }}"></div>
+    <div><label>Social Security number *</label><input name="ssn" value="{{ b.ssn or '' }}" required autocomplete="off"></div>
+    <div><label>Entity type</label>
+      <select name="entity_type">
+        {% for t in ['Individual','LLC','Trust','Corporation'] %}
+        <option value="{{ t }}" {% if b.entity_type==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Entity / LLC name</label><input name="entity_name" value="{{ b.entity_name or '' }}"></div>
+    <div class="span-2"><label>Current street address *</label><input name="address" value="{{ b.address or '' }}" required></div>
+    <div><label>City *</label><input name="city" value="{{ b.city or '' }}" required></div>
+    <div><label>State *</label><input name="state" value="{{ b.state or '' }}" required></div>
+    <div><label>ZIP *</label><input name="zip" value="{{ b.zip or '' }}" required></div>
+    <div><label>Years at this address *</label><input name="years_at_address" type="number" step="0.1" value="{{ b.years_at_address or '' }}" required></div>
+    <div><label>Own or rent *</label>
+      <select name="own_or_rent" required>
+        <option value="">Select</option>
+        <option value="Own" {% if b.own_or_rent=='Own' %}selected{% endif %}>Own</option>
+        <option value="Rent" {% if b.own_or_rent=='Rent' %}selected{% endif %}>Rent</option>
+      </select>
+    </div>
+    <div class="span-2 hint">If you have lived at this address less than 2 years, previous address is required.</div>
+    <div class="span-2"><label>Previous address</label><input name="prev_address" value="{{ b.prev_address or '' }}"></div>
+    <div><label>Previous city</label><input name="prev_city" value="{{ b.prev_city or '' }}"></div>
+    <div><label>Previous state</label><input name="prev_state" value="{{ b.prev_state or '' }}"></div>
+    <div><label>Previous ZIP</label><input name="prev_zip" value="{{ b.prev_zip or '' }}"></div>
+    <div class="span-2"><h3>Employment</h3></div>
+    <div><label>Current employer *</label><input name="employer" value="{{ b.employer or '' }}" required></div>
+    <div><label>Job title *</label><input name="occupation" value="{{ b.occupation or '' }}" required></div>
+    <div><label>Years at this employer *</label><input name="years_employed" type="number" step="0.1" value="{{ b.years_employed or '' }}" required></div>
+    <div><label>Employer phone</label><input name="employer_phone" value="{{ b.employer_phone or '' }}"></div>
+    <div class="span-2"><label>Employer street</label><input name="employer_address" value="{{ b.employer_address or '' }}"></div>
+    <div><label>Employer city</label><input name="employer_city" value="{{ b.employer_city or '' }}"></div>
+    <div><label>Employer state</label><input name="employer_state" value="{{ b.employer_state or '' }}"></div>
+    <div class="span-2"><label>Previous employer (required if under 2 years here)</label><input name="prev_employer" value="{{ b.prev_employer or '' }}"></div>
+    <div><label>Gross monthly income</label><input name="monthly_income" type="number" step="0.01" value="{{ b.monthly_income or '' }}"></div>
+    <div><label>Liquid assets (cash / accounts)</label><input name="liquid_assets" type="number" step="0.01" value="{{ b.liquid_assets or '' }}"></div>
+    <div class="span-2"><label>Bankruptcy or foreclosure in last 7 years?</label>
+      <select name="credit_events">
+        {% for t in ['None','Bankruptcy','Foreclosure','Both'] %}
+        <option value="{{ t }}" {% if b.credit_events==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Choose a portal password *</label><input name="password" type="password" required></div>
+    <div class="span-2"><button class="btn" type="submit">Save profile and continue</button></div>
+  </form>
+  {% endif %}
+</main>
+</body>
+</html>

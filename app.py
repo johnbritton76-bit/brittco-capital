@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
 import os
+import secrets
+import smtplib
 import sqlite3
+import urllib.parse
+import urllib.request
 from datetime import datetime, date, timedelta
+from email.mime.text import MIMEText
 from functools import wraps
 
 from flask import (
@@ -82,6 +87,15 @@ def init_db():
             dob TEXT,
             employer TEXT,
             occupation TEXT,
+            employer_phone TEXT,
+            employer_address TEXT,
+            employer_city TEXT,
+            employer_state TEXT,
+            years_employed REAL,
+            prev_employer TEXT,
+            monthly_income REAL,
+            liquid_assets REAL,
+            credit_events TEXT,
             bank_name TEXT,
             bank_routing TEXT,
             bank_account TEXT,
@@ -242,6 +256,18 @@ def init_db():
             vendor TEXT,
             notes TEXT,
             created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS invites (
+            id INTEGER PRIMARY KEY,
+            token TEXT UNIQUE,
+            kind TEXT,
+            borrower_id INTEGER,
+            name TEXT,
+            email TEXT,
+            phone TEXT,
+            channel TEXT,
+            created_at TEXT,
+            used_at TEXT
         );
         """
     )
@@ -558,6 +584,15 @@ try:
         ("dob", "TEXT"),
         ("employer", "TEXT"),
         ("occupation", "TEXT"),
+        ("employer_phone", "TEXT"),
+        ("employer_address", "TEXT"),
+        ("employer_city", "TEXT"),
+        ("employer_state", "TEXT"),
+        ("years_employed", "REAL"),
+        ("prev_employer", "TEXT"),
+        ("monthly_income", "REAL"),
+        ("liquid_assets", "REAL"),
+        ("credit_events", "TEXT"),
         ("bank_name", "TEXT"),
         ("bank_routing", "TEXT"),
         ("bank_account", "TEXT"),
@@ -912,6 +947,109 @@ def request_soft_pull(bid, source):
     )
 
 
+def profile_ready(b):
+    if not b:
+        return False, ["profile"]
+    missing = []
+    for label, key in [
+        ("Full name", "name"),
+        ("Email", "email"),
+        ("Mobile phone", "phone"),
+        ("Date of birth", "dob"),
+        ("Social Security number", "ssn"),
+        ("Street address", "address"),
+        ("City", "city"),
+        ("State", "state"),
+        ("ZIP", "zip"),
+        ("Own or rent", "own_or_rent"),
+        ("Current employer", "employer"),
+        ("Job title / occupation", "occupation"),
+    ]:
+        if not str(b[key] if key in b.keys() else "" or "").strip():
+            missing.append(label)
+    years = None
+    try:
+        years = float(b["years_at_address"]) if b["years_at_address"] not in (None, "") else None
+    except (KeyError, TypeError, ValueError):
+        years = None
+    if years is None:
+        missing.append("Years at current address")
+    elif years < 2:
+        if not str(b["prev_address"] if "prev_address" in b.keys() else "" or "").strip():
+            missing.append("Previous address (required if under 2 years)")
+    emp_years = None
+    try:
+        emp_years = float(b["years_employed"]) if b["years_employed"] not in (None, "") else None
+    except (KeyError, TypeError, ValueError):
+        emp_years = None
+    if emp_years is None:
+        missing.append("Years with current employer")
+    elif emp_years < 2:
+        if not str(b["prev_employer"] if "prev_employer" in b.keys() else "" or "").strip():
+            missing.append("Previous employer (required if under 2 years on the job)")
+    return (len(missing) == 0), missing
+
+
+def public_base():
+    return (os.environ.get("PUBLIC_BASE_URL") or request.url_root or "").rstrip("/")
+
+
+def send_invite(email, phone, channel, link, name):
+    body = (
+        f"Hello {name},\n\n"
+        f"Brittco Capital Inc invited you to complete your borrower profile and apply for a loan.\n"
+        f"Open this secure link on your phone or computer:\n{link}\n\n"
+        f"You will create your password and enter your own information. "
+        f"Brittco staff cannot submit an application for you until that profile is complete.\n"
+    )
+    sent = []
+    errors = []
+    want_email = channel in ("email", "both") and email
+    want_sms = channel in ("text", "both") and phone
+    if want_email:
+        host = os.environ.get("SMTP_HOST")
+        user = os.environ.get("SMTP_USER")
+        password = os.environ.get("SMTP_PASS")
+        mail_from = os.environ.get("MAIL_FROM") or user
+        if host and user and password and mail_from:
+            try:
+                msg = MIMEText(body)
+                msg["Subject"] = "Your Brittco Capital application invite"
+                msg["From"] = mail_from
+                msg["To"] = email
+                with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT") or 587), timeout=20) as s:
+                    s.starttls()
+                    s.login(user, password)
+                    s.sendmail(mail_from, [email], msg.as_string())
+                sent.append("email")
+            except Exception as exc:
+                errors.append(f"email: {exc}")
+        else:
+            errors.append("email not sent — add SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM in Render")
+    if want_sms:
+        sid = os.environ.get("TWILIO_SID")
+        token = os.environ.get("TWILIO_TOKEN")
+        tw_from = os.environ.get("TWILIO_FROM")
+        if sid and token and tw_from:
+            try:
+                data = urllib.parse.urlencode(
+                    {"To": phone, "From": tw_from, "Body": f"Brittco invite: complete your profile {link}"}
+                ).encode()
+                req = urllib.request.Request(
+                    f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+                    data=data,
+                )
+                creds = urllib.parse.quote(sid) + ":" + urllib.parse.quote(token)
+                req.add_header("Authorization", "Basic " + __import__("base64").b64encode(creds.encode()).decode())
+                urllib.request.urlopen(req, timeout=20)
+                sent.append("text")
+            except Exception as exc:
+                errors.append(f"text: {exc}")
+        else:
+            errors.append("text not sent — add TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM in Render")
+    return sent, errors
+
+
 def mask_ssn(ssn):
     digits = "".join(ch for ch in (ssn or "") if ch.isdigit())
     if len(digits) >= 4:
@@ -945,11 +1083,22 @@ def save_borrower_from_form(f, bid=None, existing=None):
         f.get("dob"),
         f.get("employer"),
         f.get("occupation"),
+        f.get("employer_phone"),
+        f.get("employer_address"),
+        f.get("employer_city"),
+        f.get("employer_state"),
+        float(f["years_employed"]) if f.get("years_employed") else None,
+        f.get("prev_employer"),
+        money(f.get("monthly_income")) if f.get("monthly_income") else None,
+        money(f.get("liquid_assets")) if f.get("liquid_assets") else None,
+        f.get("credit_events"),
     )
     cols = """name=?, entity_type=?, entity_name=?, email=?, phone=?, credit_score=?,
               password=?, notes=?, address=?, city=?, state=?, zip=?, years_at_address=?,
               prev_address=?, prev_city=?, prev_state=?, prev_zip=?, own_or_rent=?,
-              work_phone=?, ssn=?, dob=?, employer=?, occupation=?"""
+              work_phone=?, ssn=?, dob=?, employer=?, occupation=?, employer_phone=?,
+              employer_address=?, employer_city=?, employer_state=?, years_employed=?,
+              prev_employer=?, monthly_income=?, liquid_assets=?, credit_events=?"""
     if bid:
         db().execute(f"UPDATE borrowers SET {cols} WHERE id=?", payload + (bid,))
     else:
@@ -957,8 +1106,10 @@ def save_borrower_from_form(f, bid=None, existing=None):
             """INSERT INTO borrowers
             (name, entity_type, entity_name, email, phone, credit_score, password, notes,
              address, city, state, zip, years_at_address, prev_address, prev_city, prev_state,
-             prev_zip, own_or_rent, work_phone, ssn, dob, employer, occupation)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             prev_zip, own_or_rent, work_phone, ssn, dob, employer, occupation, employer_phone,
+             employer_address, employer_city, employer_state, years_employed, prev_employer,
+             monthly_income, liquid_assets, credit_events)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             payload,
         )
 
@@ -1294,8 +1445,63 @@ def borrowers():
            FROM borrowers b ORDER BY b.name"""
     ).fetchall()
     return render_template(
-        "borrowers.html", title="Borrowers", nav="borrowers", borrowers=rows
+        "borrowers.html",
+        title="Borrowers",
+        nav="borrowers",
+        borrowers=rows,
+        invite_url=session.pop("last_invite_url", None),
+        invite_note=session.pop("last_invite_note", None),
     )
+
+
+@app.route("/borrowers/invite", methods=["GET", "POST"])
+@staff_required
+def borrower_invite():
+    if request.method == "POST":
+        f = request.form
+        name = (f.get("name") or "").strip()
+        email = (f.get("email") or "").strip().lower()
+        phone = (f.get("phone") or "").strip()
+        channel = f.get("channel") or "email"
+        if not name or (not email and not phone):
+            return render_template(
+                "borrower_invite.html",
+                title="Invite borrower",
+                nav="invite",
+                error="Name and at least an email or mobile number are required.",
+            )
+        existing = None
+        if email:
+            existing = db().execute("SELECT * FROM borrowers WHERE email=?", (email,)).fetchone()
+        if existing:
+            bid = existing["id"]
+        else:
+            placeholder = email or f"invite-{secrets.token_hex(4)}@pending.brittco"
+            db().execute(
+                """INSERT INTO borrowers (name, entity_type, email, phone, password, notes)
+                   VALUES (?,?,?,?,?,?)""",
+                (name, "Individual", placeholder, phone, secrets.token_hex(6), "Invited — profile incomplete"),
+            )
+            db().commit()
+            bid = db().execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        token = secrets.token_urlsafe(24)
+        db().execute(
+            """INSERT INTO invites (token, kind, borrower_id, name, email, phone, channel, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (token, "borrower", bid, name, email, phone, channel, datetime.now().isoformat(timespec="minutes")),
+        )
+        db().commit()
+        link = public_base() + url_for("accept_invite", token=token)
+        sent, errors = send_invite(email, phone, channel, link, name)
+        note = "Invite created."
+        if sent:
+            note += " Sent by " + " and ".join(sent) + "."
+        if errors:
+            note += " " + " ".join(errors)
+        session["last_invite_url"] = link
+        session["last_invite_note"] = note
+        return redirect(url_for("borrowers"))
+    return render_template("borrower_invite.html", title="Invite borrower", nav="invite", error=None)
 
 
 @app.route("/borrowers/new", methods=["GET", "POST"])
@@ -1514,6 +1720,32 @@ def staff_message(did):
     return redirect(url_for("deal_detail", did=did))
 
 
+@app.route("/invite/<token>", methods=["GET", "POST"])
+def accept_invite(token):
+    inv = db().execute("SELECT * FROM invites WHERE token=?", (token,)).fetchone()
+    if not inv:
+        return render_template("invite_accept.html", error="This invite link is not valid.", inv=None, b=None)
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (inv["borrower_id"],)).fetchone()
+    if request.method == "POST":
+        if not request.form.get("password"):
+            return render_template(
+                "invite_accept.html",
+                error="Please choose a password.",
+                inv=inv,
+                b=b,
+            )
+        save_borrower_from_form(request.form, bid=b["id"], existing=b)
+        db().execute(
+            "UPDATE invites SET used_at=? WHERE id=?",
+            (datetime.now().isoformat(timespec="minutes"), inv["id"]),
+        )
+        db().commit()
+        session.clear()
+        session["borrower_id"] = b["id"]
+        return redirect(url_for("portal_home", msg="Welcome. Finish any remaining required fields, then you can apply."))
+    return render_template("invite_accept.html", error=None, inv=inv, b=b)
+
+
 @app.route("/portal/login", methods=["GET", "POST"])
 def portal_login():
     error = None
@@ -1553,14 +1785,36 @@ def portal_home():
     docs = db().execute(
         "SELECT * FROM documents WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
     ).fetchall()
-    return render_template("portal.html", b=b, deals=deals, loans=loans, messages=messages, docs=docs, flash=None)
+    ready, missing = profile_ready(b)
+    return render_template(
+        "portal.html",
+        b=b,
+        deals=deals,
+        loans=loans,
+        messages=messages,
+        docs=docs,
+        flash=request.args.get("msg"),
+        ready=ready,
+        missing=missing,
+    )
+
+
+@app.route("/portal/profile", methods=["POST"])
+@borrower_required
+def portal_profile():
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    save_borrower_from_form(request.form, bid=b["id"], existing=b)
+    db().commit()
+    return redirect(url_for("portal_home", msg="Profile saved"))
 
 
 @app.route("/portal/apply", methods=["POST"])
 @borrower_required
 def portal_apply():
     f = request.form
-    if f.get("credit_consent") != "yes":
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    ready, missing = profile_ready(b)
+    if not ready or f.get("credit_consent") != "yes":
         return redirect(url_for("portal_home"))
     cur = db().execute(
         """INSERT INTO deals

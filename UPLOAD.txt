@@ -1,0 +1,9 @@
+Upload this zip so the files sit at the ROOT of the GitHub repo
+(app.py next to Procfile — not inside a folder named brittco).
+
+Then in Render click Manual Deploy.
+
+After deploy you should see:
+- Left menu: Invite borrower  (New borrower is gone)
+- Dashboard: Invite borrower button
+- Borrowers page: Invite borrower button

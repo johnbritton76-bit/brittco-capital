@@ -24,11 +24,23 @@
     {{ b.own_or_rent or "Own/rent not set" }}
     {% if b.years_at_address %} · {{ b.years_at_address }} years at this address{% endif %}
     {% if b.dob %}<br>DOB {{ b.dob }}{% endif %}
-    {% if b.employer %}<br>{{ b.occupation or "Works" }} at {{ b.employer }}{% endif %}
   </p>
   {% if b.years_at_address and b.years_at_address < 2 and b.prev_address %}
   <p class="hint">Previous address (under 2 years): {{ b.prev_address }}, {{ b.prev_city }} {{ b.prev_state }} {{ b.prev_zip }}</p>
   {% endif %}
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Employment</h3>
+  <p>
+    {{ b.occupation or "—" }} at {{ b.employer or "—" }}
+    {% if b.years_employed %} · {{ b.years_employed }} years{% endif %}<br>
+    {% if b.employer_address %}{{ b.employer_address }}, {{ b.employer_city }} {{ b.employer_state }}{% endif %}
+    {% if b.employer_phone %} · {{ b.employer_phone }}{% endif %}
+    {% if b.prev_employer %}<br>Previous employer: {{ b.prev_employer }}{% endif %}
+    {% if b.monthly_income %}<br>Gross monthly income ${{ "{:,.0f}".format(b.monthly_income) }}{% endif %}
+    {% if b.liquid_assets %}<br>Liquid assets ${{ "{:,.0f}".format(b.liquid_assets) }}{% endif %}
+    {% if b.credit_events %}<br>Credit events: {{ b.credit_events }}{% endif %}
+  </p>
 </div>
 {% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
 <div class="card" style="margin-top:14px">

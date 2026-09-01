@@ -33,8 +33,24 @@
   <div><label>Previous city</label><input name="prev_city" value="{{ b.prev_city if b else '' }}"></div>
   <div><label>Previous state</label><input name="prev_state" value="{{ b.prev_state if b else '' }}"></div>
   <div><label>Previous ZIP</label><input name="prev_zip" value="{{ b.prev_zip if b else '' }}"></div>
-  <div><label>Employer</label><input name="employer" value="{{ b.employer if b else '' }}"></div>
-  <div><label>Occupation</label><input name="occupation" value="{{ b.occupation if b else '' }}"></div>
+  <div class="span-2"><h3>Employment</h3></div>
+  <div><label>Current employer</label><input name="employer" value="{{ b.employer if b else '' }}"></div>
+  <div><label>Job title</label><input name="occupation" value="{{ b.occupation if b else '' }}"></div>
+  <div><label>Years at this employer</label><input name="years_employed" type="number" step="0.1" value="{{ b.years_employed if b else '' }}"></div>
+  <div><label>Employer phone</label><input name="employer_phone" value="{{ b.employer_phone if b else '' }}"></div>
+  <div class="span-2"><label>Employer street</label><input name="employer_address" value="{{ b.employer_address if b else '' }}"></div>
+  <div><label>Employer city</label><input name="employer_city" value="{{ b.employer_city if b else '' }}"></div>
+  <div><label>Employer state</label><input name="employer_state" value="{{ b.employer_state if b else '' }}"></div>
+  <div class="span-2"><label>Previous employer</label><input name="prev_employer" value="{{ b.prev_employer if b else '' }}"></div>
+  <div><label>Gross monthly income</label><input name="monthly_income" type="number" step="0.01" value="{{ b.monthly_income if b else '' }}"></div>
+  <div><label>Liquid assets</label><input name="liquid_assets" type="number" step="0.01" value="{{ b.liquid_assets if b else '' }}"></div>
+  <div><label>Bankruptcy / foreclosure (7 yrs)</label>
+    <select name="credit_events">
+      {% for t in ['None','Bankruptcy','Foreclosure','Both'] %}
+      <option value="{{ t }}" {% if b and b.credit_events==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
   <div><label>Credit score</label><input name="credit_score" type="number" value="{{ b.credit_score if b else '' }}"></div>
   <div><label>Portal password (leave blank to keep)</label><input name="password" type="password"></div>
   <div class="span-2"><label>Notes</label><textarea name="notes">{{ b.notes if b else '' }}</textarea></div>

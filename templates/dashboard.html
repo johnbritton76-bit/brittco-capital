@@ -5,7 +5,10 @@
     <div class="tag">Brittco Capital Inc</div>
     <h2>Pipeline</h2>
   </div>
-  <a class="btn" href="{{ url_for('deal_new') }}">New deal</a>
+  <div>
+    <a class="btn" href="{{ url_for('borrower_invite') }}">Invite borrower</a>
+    <a class="btn ghost" href="{{ url_for('deal_new') }}">New deal</a>
+  </div>
 </div>
 <div class="grid cards">
   <div class="card"><h3>Capital available to deploy</h3><div class="n">${{ "{:,.0f}".format(stats.capital_available) }}</div><div class="hint"><a href="{{ url_for('capital_available') }}">View by investor</a></div></div>

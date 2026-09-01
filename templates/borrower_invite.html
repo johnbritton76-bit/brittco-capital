@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Invite a borrower</h2></div>
+<p class="hint">Enter only a name and how to reach them. They complete their own profile from the link.</p>
+{% if error %}<p class="badge bad">{{ error }}</p>{% endif %}
+<form method="post" class="card form-grid">
+  <div><label>Name</label><input name="name" required></div>
+  <div><label>Email</label><input name="email" type="email"></div>
+  <div><label>Mobile (for text)</label><input name="phone" placeholder="4075550100"></div>
+  <div><label>Send how</label>
+    <select name="channel">
+      <option value="email">Email</option>
+      <option value="text">Text</option>
+      <option value="both">Email and text</option>
+    </select>
+  </div>
+  <div class="span-2">
+    <button class="btn" type="submit">Create invite and send</button>
+    <a class="btn ghost" href="{{ url_for('borrowers') }}">Cancel</a>
+  </div>
+</form>
+<p class="hint">Until email/text keys are in Render, the next screen will still show a link you can copy and send yourself.</p>
+{% endblock %}
