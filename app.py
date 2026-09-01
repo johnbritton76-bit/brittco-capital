@@ -1504,6 +1504,8 @@ FORM_DEFS = {
             ("aka", "Other names used (AKA)"),
             ("dob", "Date of birth"),
             ("address", "Current address"),
+            ("phone", "Mobile phone"),
+            ("email", "Email"),
             ("id_type", "ID type (driver license / passport)"),
             ("id_number", "ID number"),
             ("id_state", "ID issuing state"),
@@ -1517,6 +1519,8 @@ FORM_DEFS = {
         "fields": [
             ("borrower_name", "Borrower full legal name"),
             ("entity_name", "Entity name (if any)"),
+            ("phone", "Mobile phone"),
+            ("email", "Email"),
             ("property", "Property address"),
             ("county", "County"),
             ("state", "State"),
@@ -1538,33 +1542,61 @@ FORM_DEFS = {
 }
 
 
+def row_val(row, key):
+    if row is None:
+        return ""
+    try:
+        if key not in row.keys():
+            return ""
+    except Exception:
+        return ""
+    v = row[key]
+    return "" if v is None else str(v)
+
+
 def form_prefill(borrower, deal=None):
-    addr = " ".join(
-        x for x in [
-            borrower["address"] if "address" in borrower.keys() else "",
-            borrower["city"] if "city" in borrower.keys() else "",
-            borrower["state"] if "state" in borrower.keys() else "",
-            borrower["zip"] if "zip" in borrower.keys() else "",
-        ] if x
-    )
-    data = {
-        "guarantor_name": borrower["name"] or "",
-        "borrower_name": borrower["name"] or "",
-        "legal_name": borrower["name"] or "",
-        "entity_name": borrower["entity_name"] or "",
+    parts = [
+        row_val(borrower, "address"),
+        row_val(borrower, "city"),
+        row_val(borrower, "state"),
+        row_val(borrower, "zip"),
+    ]
+    addr = ", ".join(p for p in parts if p)
+    name = row_val(borrower, "name")
+    entity = row_val(borrower, "entity_name")
+    state = row_val(borrower, "state") or "FL"
+    amt = ""
+    if deal:
+        raw = money(deal["loan_amount"]) if "loan_amount" in deal.keys() else 0
+        amt = f"{raw:,.2f}" if raw else ""
+    return {
+        "guarantor_name": name,
+        "borrower_name": name,
+        "legal_name": name,
+        "entity_name": entity,
         "address": addr,
-        "dob": borrower["dob"] if "dob" in borrower.keys() else "",
-        "state": (borrower["state"] if "state" in borrower.keys() else "") or "FL",
+        "phone": row_val(borrower, "phone"),
+        "email": row_val(borrower, "email"),
+        "dob": row_val(borrower, "dob"),
+        "state": state,
         "county": "",
         "aka": "",
         "id_type": "Driver license",
         "id_number": "",
-        "id_state": borrower["state"] if "state" in borrower.keys() else "",
+        "id_state": state,
         "occupancy": "Investment",
-        "property": deal["address"] if deal else "",
-        "loan_amount": f"{money(deal['loan_amount']):,.2f}" if deal else "",
+        "property": row_val(deal, "address") if deal else "",
+        "loan_amount": amt,
         "closing_date": "",
     }
+
+
+def merge_form_data(stored, borrower, deal=None):
+    filled = form_prefill(borrower, deal)
+    data = dict(stored or {})
+    for key, val in filled.items():
+        if not str(data.get(key) or "").strip() and val:
+            data[key] = val
     return data
 
 
@@ -2203,38 +2235,52 @@ def borrower_detail(bid):
 @staff_required
 def send_borrower_form(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
-    key = request.form.get("form_key")
-    if key not in FORM_DEFS:
+    keys = [k for k in request.form.getlist("form_key") if k in FORM_DEFS]
+    if not keys:
+        single = request.form.get("form_key")
+        if single in FORM_DEFS:
+            keys = [single]
+    if not keys:
+        session["last_form_note"] = "Select at least one form."
         return redirect(url_for("borrower_detail", bid=bid))
-    token = secrets.token_urlsafe(16)
     deal = db().execute(
         "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1", (bid,)
     ).fetchone()
     payload = json.dumps(form_prefill(b, deal))
-    db().execute(
-        """INSERT INTO form_packets
-           (token, form_key, borrower_id, deal_id, status, payload, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
-        (token, key, bid, deal["id"] if deal else None, "Sent", payload, datetime.now().isoformat(timespec="minutes")),
-    )
+    created = []
+    for key in keys:
+        token = secrets.token_urlsafe(16)
+        db().execute(
+            """INSERT INTO form_packets
+               (token, form_key, borrower_id, deal_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, key, bid, deal["id"] if deal else None, "Sent", payload, datetime.now().isoformat(timespec="minutes")),
+        )
+        created.append((key, token))
     db().commit()
-    link = public_base() + url_for("fill_form", token=token)
-    title = FORM_DEFS[key]["title"]
+    lines = []
+    for key, token in created:
+        link = public_base() + url_for("fill_form", token=token)
+        lines.append(f"{FORM_DEFS[key]['title']}: {link}")
     mailed = False
-    if b["email"]:
+    if b["email"] and lines:
         try:
             mailed = send_mail(
                 b["email"],
-                f"Brittco form to complete: {title}",
+                "Brittco forms to complete and notarize",
                 f"Hello {b['name'] or ''},\n\n"
-                f"Please type your information into this Brittco Capital form, then download or print it "
-                f"and sign in wet ink in front of a notary public.\n\n{link}\n",
+                "Please complete these Brittco Capital forms. Your profile information is already filled in. "
+                "Download or print each one and sign in wet ink in front of a notary public.\n\n"
+                + "\n".join(lines)
+                + "\n",
             )
         except Exception:
             mailed = False
-    session["last_form_url"] = link
+    session["last_form_url"] = public_base() + url_for("fill_form", token=created[0][1])
     session["last_form_note"] = (
-        f"{title} ready. {'Emailed to ' + b['email'] + '.' if mailed else 'Email not sent — copy the link.'} {link}"
+        f"{len(created)} form(s) ready. "
+        + ("Emailed to " + b["email"] + ". " if mailed else "Email not sent — copy the links from the list below. ")
+        + " | ".join(lines)
     )
     return redirect(url_for("borrower_detail", bid=bid))
 
@@ -2249,7 +2295,14 @@ def fill_form(token):
     if not spec.get("title"):
         return "Unknown form.", 404
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
-    data = json.loads(row["payload"] or "{}")
+    deal = None
+    if row["deal_id"]:
+        deal = db().execute("SELECT * FROM deals WHERE id=?", (row["deal_id"],)).fetchone()
+    if not deal:
+        deal = db().execute(
+            "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1", (row["borrower_id"],)
+        ).fetchone()
+    data = merge_form_data(json.loads(row["payload"] or "{}"), b, deal)
     if request.method == "POST":
         for key, _label in spec["fields"]:
             data[key] = request.form.get(key) or ""
@@ -2281,7 +2334,10 @@ def form_pdf(token):
     spec = dict(FORM_DEFS.get(row["form_key"]) or {})
     spec["key"] = row["form_key"]
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
-    data = json.loads(row["payload"] or "{}")
+    deal = None
+    if row["deal_id"]:
+        deal = db().execute("SELECT * FROM deals WHERE id=?", (row["deal_id"],)).fetchone()
+    data = merge_form_data(json.loads(row["payload"] or "{}"), b, deal)
     pdf = form_packet_pdf(spec, data, b["name"] if b else "")
     return send_file(BytesIO(pdf), mimetype="application/pdf", as_attachment=True, download_name=f"{row['form_key']}.pdf")
 
