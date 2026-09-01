@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 <div class="top"><h2>Nate Holland management fee</h2></div>
-<p class="hint">Nate is paid {{ 25 }}% of net profit only after the investor has their basis back (loan paid off). Monthly payments are not split.</p>
+<p class="hint">Nate is paid {{ 25 }}% of each loans realized net profit.</p>
 <div class="grid cards">
   <div class="card"><h3>Payable now</h3><div class="n">${{ "{:,.2f}".format(total) }}</div></div>
   <div class="card"><h3>This year payable</h3><div class="n">${{ "{:,.2f}".format(ytd) }}</div></div>
