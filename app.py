@@ -418,8 +418,130 @@ def init_db():
             )
         c.commit()
     seed_demo_books(c)
+    seed_transactional_sample(c)
     c.commit()
     c.close()
+
+
+def seed_transactional_sample(c):
+    if c.execute("SELECT 1 FROM loans WHERE loan_number=?", ("BC-TX-1001",)).fetchone():
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("jordan@example.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Jordan Pike",
+                "LLC",
+                "Pike Close LLC",
+                "jordan@example.com",
+                "(813) 555-0177",
+                724,
+                "borrower",
+                "Sample transactional borrower. 7-day close.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("jordan@example.com",)).fetchone()
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("apex@example.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors
+            (name, entity_name, email, phone, notes, ach_status, password, capital_available)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Apex Short-Term Fund",
+                "Apex Short-Term Fund LLC",
+                "apex@example.com",
+                "(813) 555-0108",
+                "Sample lender for transactional loans.",
+                "Not connected",
+                "investor",
+                400000,
+            ),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("apex@example.com",)).fetchone()
+    if not b or not inv:
+        return
+    bid, iid = b[0], inv[0]
+    today = date.today()
+    c.execute(
+        """INSERT INTO deals
+        (borrower_id, loan_type, address, purchase_price, as_is_value, arv,
+         rehab_budget, loan_amount, rate, points, term_months, status,
+         exit_strategy, notes, ltv_override_reason, created_at, acked)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            "Transactional Loan",
+            "910 Harbor Court, Tampa, FL",
+            310000,
+            310000,
+            None,
+            0,
+            275000,
+            None,
+            3.0,
+            0,
+            "Funded",
+            "Close within 7 days",
+            "Sample transactional loan. 3% flat fee for up to 7 days.",
+            "",
+            datetime.now().isoformat(timespec="minutes"),
+            1,
+        ),
+    )
+    deal_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    start = today - timedelta(days=2)
+    maturity = start + timedelta(days=7)
+    c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-1001",
+            "Transactional Loan",
+            "910 Harbor Court, Tampa, FL",
+            275000,
+            275000,
+            None,
+            3.0,
+            start.isoformat(),
+            maturity.isoformat(),
+            "Flat fee",
+            8250,
+            "One time",
+            maturity.isoformat(),
+            0,
+            "Current",
+            "Sample transactional loan. 3% flat fee ($8,250) due at payoff within 7 days. Extensions negotiable.",
+        ),
+    )
+    lid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.execute(
+        """INSERT INTO participations
+        (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+         max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            lid,
+            iid,
+            275000,
+            3.0,
+            0,
+            0,
+            0,
+            0,
+            "Funded",
+            start.isoformat(),
+            "Sample lender 100% of transactional loan. 3% / 7 days.",
+            25,
+        ),
+    )
 
 
 def seed_demo_books(c):
