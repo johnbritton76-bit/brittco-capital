@@ -18,17 +18,14 @@
 {% endif %}
 <div class="card" style="margin-top:14px">
   <h3>Notary forms</h3>
-  <p class="hint">Borrower types the form, then downloads or prints it and signs in wet ink in front of a notary.</p>
-  <form method="post" action="{{ url_for('send_borrower_form', bid=b.id) }}" class="form-grid">
-    <div>
-      <label>Form</label>
-      <select name="form_key">
-        {% for key, spec in form_defs.items() %}
-        <option value="{{ key }}">{{ spec.title }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div><button class="btn" type="submit">Send form to borrower</button></div>
+  <p class="hint">Check every form you need. Profile name, address, phone, email, entity, and the latest deal property/amount are filled in automatically. The borrower can still edit before printing.</p>
+  <form method="post" action="{{ url_for('send_borrower_form', bid=b.id) }}">
+    {% for key, spec in form_defs.items() %}
+    <label style="display:block;margin:6px 0">
+      <input type="checkbox" name="form_key" value="{{ key }}"> {{ spec.title }}
+    </label>
+    {% endfor %}
+    <button class="btn" type="submit" style="margin-top:8px">Send selected forms</button>
   </form>
   <table class="table" style="margin-top:10px">
     <tr><th>Form</th><th>Status</th><th>When</th><th></th></tr>
