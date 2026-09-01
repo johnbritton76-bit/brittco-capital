@@ -30,22 +30,55 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  {% if perf.closed %}
+  <h3>Realized return</h3>
+  <p>
+    This loan is closed.
+    Gross interest income <strong>${{ "{:,.2f}".format(perf.actual_gross) }}</strong>.
+    Nate’s fee <strong>${{ "{:,.2f}".format(perf.actual_nate) }}</strong>.
+    Net to investors <strong>${{ "{:,.2f}".format(perf.actual_net) }}</strong>.
+  </p>
+  {% else %}
+  <h3>Estimated return</h3>
+  <p>
+    Planned term is <strong>{{ perf.days }} days</strong>.
+    Estimated interest income <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>
+    (<strong>{{ "%.0f"|format(perf.est_ann or 0) }}%</strong> annualized).
+    Nate’s {{ parts[0].fee if parts else 25 }}% fee is estimated at
+    <strong>${{ "{:,.2f}".format(perf.est_nate) }}</strong> and is not payable until basis is paid off and a profit is realized.
+    Investor net after that fee would be
+    <strong>${{ "{:,.2f}".format(perf.est_net) }}</strong>
+    (<strong>{{ "%.0f"|format(perf.est_ann_net or 0) }}%</strong> annualized).
+  </p>
+  <p class="hint">Example: 7 days at 3% is about 156% annualized. After Nate’s 25% of realized profit, the investor net is about 117% annualized.</p>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
   <h3>Who funded this loan</h3>
-  <p class="hint">Example: 3 months at 10% (40% annualized), then 2% per month on extensions. After the max extensions, term the loan.</p>
+  <p class="hint">Open loans show estimates. Closed loans show actual interest received and Nate’s realized fee.</p>
   <table class="table">
-    <tr><th>Investor</th><th>Amount</th><th>Gross rate</th><th>Nate fee %</th><th>Investor net / ann.</th><th>Ext</th><th></th></tr>
+    <tr><th>Investor</th><th>Amount</th><th>Term rate</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
     {% for p in parts %}
     <tr>
       <td><a href="{{ url_for('investor_detail', iid=p.investor_id) }}">{{ p.investor_name }}</a></td>
       <td>${{ "{:,.0f}".format(p.amount or 0) }}</td>
-      <td>{{ p.base }}% / {{ p.term }} mo</td>
+      <td>{{ "%.2f"|format(p.rate or p.base) }}% / {{ p.days }} days</td>
       <td>
         <form method="post" action="{{ url_for('set_mgmt_fee', lid=loan.id, pid=p.id) }}" style="display:flex;gap:6px;align-items:center">
           <input name="mgmt_fee_pct" type="number" step="0.01" value="{{ p.fee }}" style="width:70px">
           <button class="btn ghost" type="submit">Save</button>
         </form>
       </td>
-      <td>{{ "%.1f"|format(p.net_base) }}% · {{ "%.1f"|format(p.annualized_net or 0) }}% ann.</td>
+      <td>
+        {% if p.show_actual %}
+        Actual net ${{ "{:,.2f}".format(p.actual_net) }} · {{ "%.0f"|format(p.actual_ann_net or 0) }}% ann.
+        <div class="hint">Gross ${{ "{:,.2f}".format(p.actual_gross) }} · Nate ${{ "{:,.2f}".format(p.actual_nate) }}</div>
+        {% else %}
+        Est. ${{ "{:,.2f}".format(p.est_gross) }} · {{ "%.0f"|format(p.est_ann or 0) }}% ann.
+        <div class="hint">After Nate {{ "%.0f"|format(p.est_ann_net or 0) }}% ann. (${{ "{:,.2f}".format(p.est_net) }}). Fee payable when profit is realized.</div>
+        {% endif %}
+      </td>
       <td>{{ p.used }} / {{ p.max_ext }}</td>
       <td>
         <form method="post" action="{{ url_for('add_extension', lid=loan.id, pid=p.id) }}">
