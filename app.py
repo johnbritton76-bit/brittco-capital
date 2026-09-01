@@ -1620,9 +1620,18 @@ def dashboard():
         "servicing": book["bal"],
         "alerts": len(alerts),
         "year": year,
+        "nate_payable": sum(
+            investor_books(i["id"])["nate_all"]
+            for i in db().execute("SELECT id FROM investors").fetchall()
+        ),
     }
     return render_template(
-        "dashboard.html", title="Dashboard", nav="dash", deals=deals, stats=stats, alerts=alerts
+        "dashboard.html",
+        title="Dashboard",
+        nav="dash",
+        deals=deals[:5],
+        stats=stats,
+        alerts=alerts,
     )
 
 
@@ -1867,6 +1876,9 @@ def deal_detail(did):
     docs = db().execute(
         "SELECT * FROM documents WHERE deal_id=? ORDER BY id DESC", (did,)
     ).fetchall()
+    existing_loan = db().execute(
+        "SELECT id, loan_number FROM loans WHERE deal_id=? ORDER BY id DESC", (did,)
+    ).fetchone()
     return render_template(
         "deal_detail.html",
         title=d["address"],
@@ -1876,7 +1888,54 @@ def deal_detail(did):
         messages=messages,
         checklist=checklist,
         docs=docs,
+        existing_loan=existing_loan,
     )
+
+
+@app.route("/deals/<int:did>/create-loan", methods=["POST"])
+@staff_required
+def deal_create_loan(did):
+    d = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    existing = db().execute("SELECT id FROM loans WHERE deal_id=?", (did,)).fetchone()
+    if existing:
+        return redirect(url_for("loan_detail", lid=existing["id"]))
+    principal = money(d["loan_amount"])
+    start = date.today()
+    months = int(d["term_months"] or 12)
+    maturity = (start + timedelta(days=30 * months)).isoformat()
+    nxt = (start + timedelta(days=30)).isoformat()
+    number = f"BC-{did:04d}"
+    cur = db().execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            d["borrower_id"],
+            did,
+            number,
+            d["loan_type"],
+            d["address"],
+            principal,
+            principal,
+            money(d["rate"]) or None,
+            money(d["points"]) or None,
+            start.isoformat(),
+            maturity,
+            "Interest only",
+            None,
+            "Monthly",
+            nxt,
+            0,
+            "Current",
+            "Created from funded deal",
+        ),
+    )
+    db().execute("UPDATE deals SET status=? WHERE id=?", ("Funded", did))
+    db().commit()
+    return redirect(url_for("loan_detail", lid=cur.lastrowid))
 
 
 @app.route("/deals/<int:did>/edit", methods=["GET", "POST"])

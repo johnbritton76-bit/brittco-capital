@@ -19,7 +19,7 @@
       <td>{{ "%.1f"|format(r.fee) }}%</td>
       <td>${{ "{:,.2f}".format(r.nate_accrued) }}</td>
       <td>${{ "{:,.2f}".format(r.nate_fee) }}</td>
-      <td>{% if r.nate_due %}Due — basis returned{% else %}Not due until payoff{% endif %}</td>
+      <td>{% if r.nate_due %}Payable — profit realized{% else %}Not payable until basis is paid off and a profit is realized{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
