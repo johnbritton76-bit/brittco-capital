@@ -7,6 +7,7 @@
     <p class="hint">{{ inv.entity_name }} · {{ inv.email }} · {{ inv.phone }}</p>
   </div>
   <div>
+    <a class="btn" href="{{ url_for('investor_statement_staff', iid=inv.id) }}">Print PDF statement</a>
     <a class="btn" href="{{ url_for('investor_profile', iid=inv.id) }}">Profile</a>
     <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
   </div>

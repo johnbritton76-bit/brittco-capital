@@ -13,6 +13,7 @@
       <div class="tag">Your investment account</div>
       <h2 style="margin:4px 0 0">Hello, {{ inv.name }}</h2>
     </div>
+    <a class="btn" href="{{ url_for('investor_statement_self') }}">Print PDF statement</a>
     <a class="btn" href="/investor/profile">Profile</a>
     <a class="btn ghost" href="/investor/logout">Sign out</a>
   </div>
