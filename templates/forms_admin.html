@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Administration</div>
+    <h2>Forms</h2>
+  </div>
+</div>
+{% if saved %}<div class="flash">Form saved.</div>{% endif %}
+<p class="hint">These templates are used when staff send forms to a borrower. Edit the legal text here. Field tokens look like {{ '{{property}}' }} and are filled from the borrower profile and the form fields.</p>
+<div class="card">
+<table class="table">
+  <tr><th>Form</th><th>Updated</th><th></th></tr>
+  {% for key, spec in forms.items() %}
+  <tr>
+    <td>
+      <strong>{{ spec.title }}</strong>
+      <div class="hint">{{ spec.blurb }}</div>
+    </td>
+    <td class="hint">{{ key }}</td>
+    <td><a class="btn" href="{{ url_for('admin_form_edit', key=key) }}">View / edit</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="3">No templates yet.</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

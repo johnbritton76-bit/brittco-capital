@@ -26,9 +26,13 @@
 
   <form method="post" class="card form-grid">
     {% for key, label in spec.fields %}
-    <div class="{% if key in ['property','address','aka'] %}span-2{% endif %}">
+    <div class="{% if key in ['property','address','aka','legal_description','borrower_notice_address','lender_notice_address','guarantor_address'] %}span-2{% endif %}">
       <label>{{ label }}</label>
+      {% if key == 'legal_description' %}
+      <textarea name="{{ key }}" rows="3">{{ data.get(key, '') }}</textarea>
+      {% else %}
       <input name="{{ key }}" value="{{ data.get(key, '') }}">
+      {% endif %}
     </div>
     {% endfor %}
     <div class="span-2 no-print">
@@ -38,6 +42,13 @@
       <button class="btn ghost" type="button" onclick="window.print()">Print this page</button>
     </div>
   </form>
+
+  {% if preview %}
+  <div class="card" style="margin-top:14px">
+    <h3>Document preview</h3>
+    <div style="white-space:pre-wrap;font-size:14px;line-height:1.45">{{ preview }}</div>
+  </div>
+  {% endif %}
 
   <div class="card" style="margin-top:14px">
     <h3>Signature — wet ink only</h3>

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Edit form</div>
+    <h2>{{ row.title }}</h2>
+  </div>
+  <a class="btn ghost" href="{{ url_for('admin_forms') }}">All forms</a>
+</div>
+<form method="post" class="card">
+  <p><label>Title</label><input name="title" value="{{ row.title }}"></p>
+  <p><label>Short description</label><input name="blurb" value="{{ row.blurb }}"></p>
+  <p>
+    <label>Legal text</label>
+    <textarea name="body" rows="22" style="width:100%">{{ row.body }}</textarea>
+  </p>
+  <p class="hint">Keep tokens such as {{ '{{property}}' }}, {{ '{{note_principal}}' }}, and {{ '{{borrower_legal_name}}' }} so borrower data fills in automatically.</p>
+  <p><button class="btn" type="submit">Save form</button></p>
+</form>
+<div class="card" style="margin-top:14px">
+  <h3>Fields the borrower or staff complete</h3>
+  <ul>
+    {% for pair in fields %}
+    <li><code>{{ pair[0] }}</code> — {{ pair[1] }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

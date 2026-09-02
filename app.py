@@ -19,6 +19,8 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
+from forms_catalog import DEFAULTS as FORM_DEFAULTS
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "brittco.db")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
@@ -282,6 +284,14 @@ def init_db():
             payload TEXT,
             created_at TEXT,
             completed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS form_templates (
+            form_key TEXT PRIMARY KEY,
+            title TEXT,
+            blurb TEXT,
+            fields_json TEXT,
+            body TEXT,
+            updated_at TEXT
         );
         """
     )
@@ -712,6 +722,17 @@ try:
             completed_at TEXT
         )"""
     )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS form_templates (
+            form_key TEXT PRIMARY KEY,
+            title TEXT,
+            blurb TEXT,
+            fields_json TEXT,
+            body TEXT,
+            updated_at TEXT
+        )"""
+    )
+    _c.commit()
     deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
     if deal_cols and "acked" not in deal_cols:
         _c.execute("ALTER TABLE deals ADD COLUMN acked INTEGER")
@@ -1472,74 +1493,65 @@ def send_invite(email, phone, channel, link, name):
     return sent, errors
 
 
-FORM_DEFS = {
-    "personal_guarantee": {
-        "title": "Personal Guaranty",
-        "blurb": "Guarantor agrees to stand behind the loan. Print and sign in front of a notary.",
-        "fields": [
-            ("guarantor_name", "Guarantor full legal name"),
-            ("entity_name", "Borrowing entity (if any)"),
-            ("property", "Property address securing the loan"),
-            ("loan_amount", "Loan amount"),
-            ("county", "County"),
-            ("state", "State"),
-        ],
-    },
-    "occupancy_affidavit": {
-        "title": "Affidavit of Occupancy / Investment Intent",
-        "blurb": "States whether the property is investment or owner-occupied. Notarize the wet signature.",
-        "fields": [
-            ("borrower_name", "Borrower full legal name"),
-            ("property", "Property address"),
-            ("occupancy", "Occupancy (Investment / Primary / Second home)"),
-            ("county", "County"),
-            ("state", "State"),
-        ],
-    },
-    "identity_affidavit": {
-        "title": "Identity / One and the Same Affidavit",
-        "blurb": "Confirms legal name and any other names used. Take a photo ID to the notary.",
-        "fields": [
-            ("legal_name", "Current legal name"),
-            ("aka", "Other names used (AKA)"),
-            ("dob", "Date of birth"),
-            ("address", "Current address"),
-            ("phone", "Mobile phone"),
-            ("email", "Email"),
-            ("id_type", "ID type (driver license / passport)"),
-            ("id_number", "ID number"),
-            ("id_state", "ID issuing state"),
-            ("county", "County"),
-            ("state", "State"),
-        ],
-    },
-    "info_authorization": {
-        "title": "Authorization to Release Information",
-        "blurb": "Lets Brittco pull or confirm credit, title, insurance, and banking information.",
-        "fields": [
-            ("borrower_name", "Borrower full legal name"),
-            ("entity_name", "Entity name (if any)"),
-            ("phone", "Mobile phone"),
-            ("email", "Email"),
-            ("property", "Property address"),
-            ("county", "County"),
-            ("state", "State"),
-        ],
-    },
-    "closing_affidavit": {
-        "title": "Borrower Closing Affidavit",
-        "blurb": "Closing certifications for wet signature in front of a notary at or before funding.",
-        "fields": [
-            ("borrower_name", "Borrower full legal name"),
-            ("entity_name", "Entity name (if any)"),
-            ("property", "Property address"),
-            ("loan_amount", "Loan amount"),
-            ("closing_date", "Expected closing date"),
-            ("county", "County"),
-            ("state", "State"),
-        ],
-    },
-}
+def seed_form_templates(conn=None):
+    c = conn or db()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS form_templates (
+            form_key TEXT PRIMARY KEY,
+            title TEXT,
+            blurb TEXT,
+            fields_json TEXT,
+            body TEXT,
+            updated_at TEXT
+        )"""
+    )
+    now = datetime.now().isoformat(timespec="minutes")
+    for key, spec in FORM_DEFAULTS.items():
+        exists = c.execute("SELECT 1 FROM form_templates WHERE form_key=?", (key,)).fetchone()
+        if exists:
+            continue
+        c.execute(
+            """INSERT INTO form_templates (form_key, title, blurb, fields_json, body, updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (key, spec["title"], spec["blurb"], json.dumps(spec["fields"]), spec["body"], now),
+        )
+    if conn is None:
+        c.commit()
+
+
+def load_form_defs():
+    seed_form_templates()
+    rows = db().execute("SELECT * FROM form_templates ORDER BY title").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            fields = json.loads(r["fields_json"] or "[]")
+            fields = [tuple(x) for x in fields]
+        except Exception:
+            fields = []
+        out[r["form_key"]] = {
+            "key": r["form_key"],
+            "title": r["title"],
+            "blurb": r["blurb"],
+            "fields": fields,
+            "body": r["body"] or "",
+        }
+    return out
+
+
+def get_form_spec(key):
+    defs = load_form_defs()
+    return defs.get(key)
+
+
+def apply_form_body(body, data):
+    text = body or ""
+    for key, val in (data or {}).items():
+        text = text.replace("{{" + key + "}}", str(val or ""))
+    return text
+
+
+FORM_DEFS = FORM_DEFAULTS
 
 
 def row_val(row, key):
@@ -1569,6 +1581,7 @@ def form_prefill(borrower, deal=None):
     if deal:
         raw = money(deal["loan_amount"]) if "loan_amount" in deal.keys() else 0
         amt = f"{raw:,.2f}" if raw else ""
+    lender_addr = os.environ.get("LENDER_ADDRESS") or "Brittco Capital Inc"
     return {
         "guarantor_name": name,
         "borrower_name": name,
@@ -1588,6 +1601,35 @@ def form_prefill(borrower, deal=None):
         "property": row_val(deal, "address") if deal else "",
         "loan_amount": amt,
         "closing_date": "",
+        "effective_date": date.today().isoformat(),
+        "secured_amount": amt,
+        "secured_amount_words": "",
+        "borrower_legal_name": entity or name,
+        "borrower_entity_type": row_val(borrower, "entity_type") or "Limited Liability Company",
+        "borrower_formation_state": state,
+        "borrower_notice_address": addr,
+        "lender_notice_address": lender_addr,
+        "lender_phone": os.environ.get("LENDER_PHONE") or "",
+        "trustee_name": os.environ.get("TRUSTEE_NAME") or "",
+        "trustee_address": os.environ.get("TRUSTEE_ADDRESS") or "",
+        "note_principal": amt,
+        "note_principal_words": "",
+        "legal_description": "",
+        "insurance_amount": "",
+        "signatory_name": name,
+        "signatory_title": "Authorized Member",
+        "notary_state": state,
+        "notary_county": "",
+        "profit_fee": "",
+        "profit_fee_words": "",
+        "maturity_date": "",
+        "extension_rate": "",
+        "extension_payment": "",
+        "outside_date": "",
+        "payment_day": "28",
+        "late_charge_rate": "10",
+        "late_charge_per_day": "",
+        "guarantor_address": addr,
     }
 
 
@@ -1600,41 +1642,12 @@ def merge_form_data(stored, borrower, deal=None):
     return data
 
 
-def form_body_lines(key, data):
-    name = data.get("borrower_name") or data.get("guarantor_name") or data.get("legal_name") or "the undersigned"
-    entity = data.get("entity_name") or "the undersigned individually"
-    prop = data.get("property") or "[property address]"
-    amount = data.get("loan_amount") or "[loan amount]"
-    if key == "personal_guarantee":
-        return [
-            f"I, {data.get('guarantor_name') or name}, personally guarantee full and prompt payment of the loan made by Brittco Capital Inc to {entity} relating to {prop}, in the approximate amount of ${amount}.",
-            "This guaranty is unconditional. Brittco may proceed against me without first exhausting remedies against the borrower or the collateral.",
-            "I signed this guaranty after an opportunity to review it. I will execute the wet-ink original in front of a notary public.",
-        ]
-    if key == "occupancy_affidavit":
-        return [
-            f"I, {name}, swear that the property at {prop} will be used as: {data.get('occupancy') or 'Investment'}.",
-            "I have not entered a contract to sell or lease the property except as disclosed to Brittco Capital Inc in writing.",
-            "I understand this affidavit is made to induce Brittco to fund the loan and will be relied upon at closing.",
-        ]
-    if key == "identity_affidavit":
-        return [
-            f"I am one and the same person as {data.get('legal_name') or name}.",
-            f"Other names I have used: {data.get('aka') or 'None'}.",
-            f"Date of birth: {data.get('dob') or '—'}. Current address: {data.get('address') or '—'}.",
-            f"Identification presented: {data.get('id_type') or '—'} number {data.get('id_number') or '—'} issued by {data.get('id_state') or '—'}.",
-        ]
-    if key == "info_authorization":
-        return [
-            f"I, {name}, on behalf of {entity}, authorize Brittco Capital Inc and its agents to obtain and verify credit, employment, deposit, insurance, and title information in connection with a loan secured by {prop}.",
-            "This authorization includes a soft credit inquiry, which I understand will not have an adverse effect on my credit score solely by reason of the inquiry type.",
-            "A photocopy or electronic copy of this authorization may be treated as an original.",
-        ]
-    return [
-        f"I, {name}, on behalf of {entity}, certify that the information given to Brittco Capital Inc for the loan on {prop} (amount ${amount}) is true and complete.",
-        "There is no pending bankruptcy, foreclosure, or undisclosed lien that I have failed to disclose.",
-        f"Expected closing date: {data.get('closing_date') or 'to be scheduled'}. I will sign the wet-ink original in front of a notary.",
-    ]
+def form_body_lines(spec, data):
+    body = apply_form_body((spec or {}).get("body") or "", data)
+    parts = [p.strip() for p in body.replace("\r\n", "\n").split("\n\n") if p.strip()]
+    if parts:
+        return parts
+    return [p.strip() for p in body.split("\n") if p.strip()] or ["Complete the fields above."]
 
 
 def form_packet_pdf(spec, data, borrower_name):
@@ -1667,8 +1680,16 @@ def form_packet_pdf(spec, data, borrower_name):
     story.append(Paragraph(spec["title"], ParagraphStyle("H", parent=styles["Heading2"], fontSize=13, textColor=colors.HexColor("#16324f"))))
     story.append(Paragraph("Complete on screen, then download or print. Sign in wet ink before a notary public. This working form is not legal advice.", small))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#c5d3e0"), spaceAfter=10, spaceBefore=6))
-    for line in form_body_lines(spec.get("key") or "", data):
-        story.append(Paragraph(line, body))
+    def xml_esc(s):
+        return (
+            str(s or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    for line in form_body_lines(spec, data):
+        story.append(Paragraph(xml_esc(line), body))
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Typed information</b>", body))
     rows = [[Paragraph("<b>Field</b>", small), Paragraph("<b>Value</b>", small)]]
@@ -2224,7 +2245,7 @@ def borrower_detail(bid):
                WHERE t.borrower_id=? ORDER BY t.id DESC""",
             (bid,),
         ).fetchall(),
-        form_defs=FORM_DEFS,
+        form_defs=load_form_defs(),
         packets=db().execute(
             "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (bid,)
         ).fetchall(),
@@ -2235,10 +2256,11 @@ def borrower_detail(bid):
 @staff_required
 def send_borrower_form(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
-    keys = [k for k in request.form.getlist("form_key") if k in FORM_DEFS]
+    defs = load_form_defs()
+    keys = [k for k in request.form.getlist("form_key") if k in defs]
     if not keys:
         single = request.form.get("form_key")
-        if single in FORM_DEFS:
+        if single in defs:
             keys = [single]
     if not keys:
         session["last_form_note"] = "Select at least one form."
@@ -2261,7 +2283,7 @@ def send_borrower_form(bid):
     lines = []
     for key, token in created:
         link = public_base() + url_for("fill_form", token=token)
-        lines.append(f"{FORM_DEFS[key]['title']}: {link}")
+        lines.append(f"{defs[key]['title']}: {link}")
     mailed = False
     if b["email"] and lines:
         try:
@@ -2290,10 +2312,10 @@ def fill_form(token):
     row = db().execute("SELECT * FROM form_packets WHERE token=?", (token,)).fetchone()
     if not row:
         return "This form link is not valid.", 404
-    spec = dict(FORM_DEFS.get(row["form_key"]) or {})
-    spec["key"] = row["form_key"]
-    if not spec.get("title"):
+    spec = get_form_spec(row["form_key"])
+    if not spec:
         return "Unknown form.", 404
+    spec = dict(spec)
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
     deal = None
     if row["deal_id"]:
@@ -2323,6 +2345,7 @@ def fill_form(token):
         packet=row,
         borrower=b,
         saved=request.args.get("saved"),
+        preview=apply_form_body(spec.get("body") or "", data),
     )
 
 
@@ -2331,8 +2354,8 @@ def form_pdf(token):
     row = db().execute("SELECT * FROM form_packets WHERE token=?", (token,)).fetchone()
     if not row:
         return "This form link is not valid.", 404
-    spec = dict(FORM_DEFS.get(row["form_key"]) or {})
-    spec["key"] = row["form_key"]
+    spec = get_form_spec(row["form_key"]) or {}
+    spec = dict(spec)
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
     deal = None
     if row["deal_id"]:
@@ -2659,7 +2682,7 @@ def portal_home():
         ready=ready,
         missing=missing,
         packets=packets,
-        form_defs=FORM_DEFS,
+        form_defs=load_form_defs(),
     )
 
 
@@ -3358,6 +3381,47 @@ def cron_reminders():
     alerts = loan_alerts()
     sent = post_reminders(alerts)
     return {"ok": True, "alerts": len(alerts), "new_reminders": sent}
+
+
+@app.route("/admin/forms")
+@staff_required
+def admin_forms():
+    return render_template(
+        "forms_admin.html",
+        title="Forms",
+        nav="forms",
+        forms=load_form_defs(),
+        saved=request.args.get("saved"),
+    )
+
+
+@app.route("/admin/forms/<key>", methods=["GET", "POST"])
+@staff_required
+def admin_form_edit(key):
+    seed_form_templates()
+    row = db().execute("SELECT * FROM form_templates WHERE form_key=?", (key,)).fetchone()
+    if not row:
+        return "Unknown form.", 404
+    if request.method == "POST":
+        db().execute(
+            """UPDATE form_templates SET title=?, blurb=?, body=?, updated_at=? WHERE form_key=?""",
+            (
+                request.form.get("title") or row["title"],
+                request.form.get("blurb") or row["blurb"],
+                request.form.get("body") or row["body"],
+                datetime.now().isoformat(timespec="minutes"),
+                key,
+            ),
+        )
+        db().commit()
+        return redirect(url_for("admin_forms", saved=1))
+    return render_template(
+        "form_edit.html",
+        title="Edit form",
+        nav="forms",
+        row=row,
+        fields=json.loads(row["fields_json"] or "[]"),
+    )
 
 
 if __name__ == "__main__":
