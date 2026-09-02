@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My funding accounts</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:860px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Investor only</div>
+      <h2 style="margin:4px 0 0">Funding accounts</h2>
+    </div>
+    <a class="btn ghost" href="{{ url_for('investor_portal') }}">Back to account</a>
+  </div>
+  {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+  <p class="hint">Brittco staff cannot see these accounts, rates, or last-four digits. Use this only to track which pocket funded a deal and the interest you pay your own bank.</p>
+
+  <div class="card">
+    <h3>Add an account</h3>
+    <form method="post" class="form-grid">
+      <div><label>Nickname</label><input name="nickname" required placeholder="Chase HELOC — Oak St"></div>
+      <div>
+        <label>Type</label>
+        <select name="kind">
+          {% for k in account_kinds %}<option>{{ k }}</option>{% endfor %}
+        </select>
+      </div>
+      <div><label>Bank name</label><input name="bank_name"></div>
+      <div><label>Last 4 digits only</label><input name="last4" maxlength="4" inputmode="numeric"></div>
+      <div>
+        <label>This is borrowed money (HELOC / LOC / card)</label>
+        <select name="is_borrowed">
+          <option value="">No — cash / checking / savings</option>
+          <option value="1">Yes — I pay interest on this</option>
+        </select>
+      </div>
+      <div><label>Interest rate you pay (% per year)</label><input name="apr" placeholder="8.5"></div>
+      <div><button class="btn" type="submit">Save account</button></div>
+    </form>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h3>Your accounts</h3>
+    <table class="table">
+      <tr><th>Name</th><th>Type</th><th>Last 4</th><th>Your rate</th><th></th></tr>
+      {% for a in accounts %}
+      <tr>
+        <td>{{ a.nickname }}{% if a.bank_name %}<br><span class="hint">{{ a.bank_name }}</span>{% endif %}</td>
+        <td>{{ a.kind }}{% if a.status=='Archived' %} · archived{% endif %}</td>
+        <td>{% if a.last4 %}••••{{ a.last4 }}{% else %}—{% endif %}</td>
+        <td>{% if a.is_borrowed %}{{ "%.2f"|format(a.apr or 0) }}%{% else %}Cash — no carry{% endif %}</td>
+        <td>
+          {% if a.status != 'Archived' %}
+          <form method="post" action="{{ url_for('investor_account_archive', aid=a.id) }}">
+            <button class="btn ghost" type="submit">Archive</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No accounts yet.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</main>
+</body>
+</html>

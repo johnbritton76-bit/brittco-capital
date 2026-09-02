@@ -14,6 +14,7 @@
       <h2 style="margin:4px 0 0">Hello, {{ inv.name }}</h2>
     </div>
     <a class="btn" href="{{ url_for('investor_statement_self') }}">PDF Statement</a>
+    <a class="btn" href="{{ url_for('investor_accounts') }}">My accounts</a>
     <a class="btn" href="/investor/profile">Profile</a>
     <a class="btn ghost" href="/investor/logout">Sign out</a>
   </div>
@@ -27,7 +28,11 @@
       All-time net profit is <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
       ({{ "%.1f"|format(books.all_ror) }}%).
       Nate’s fee on your book is <strong>${{ "{:,.2f}".format(books.nate_all) }}</strong>.
-      On an annualized basis that book is running about
+      Estimated interest you paid on HELOC / credit sources is
+      <strong>${{ "{:,.2f}".format(books.carry_all or 0) }}</strong>,
+      so your personal net after cost of funds is
+      <strong>${{ "{:,.2f}".format(books.net_after_carry or books.all_profit) }}</strong>.
+      On an annualized basis the Brittco book is running about
       <strong>{{ "%.1f"|format(books.ann_rate) }}%</strong>.
     </p>
     <p class="hint">
@@ -41,6 +46,8 @@
     <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(books.ytd_ror) }}%</div></div>
     <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(books.all_ror) }}%</div></div>
     <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(books.ann_rate) }}%</div></div>
+    <div class="card"><h3>Your carry cost</h3><div class="n">${{ "{:,.2f}".format(books.carry_all or 0) }}</div><div class="hint">Interest you pay your bank</div></div>
+    <div class="card"><h3>Net after carry</h3><div class="n">${{ "{:,.2f}".format(books.net_after_carry or books.all_profit) }}</div><div class="hint">Your number only — not on Brittco books</div></div>
   </div>
 
   <div class="card" style="margin-top:14px">
@@ -51,6 +58,7 @@
         <th>Deal</th><th>Your capital</th>
         <th>Gross profit</th><th>Nate’s fee</th>
         <th>Your net $</th><th>Your net rate</th>
+        <th>Your carry cost</th><th>Net after carry</th>
         <th>YTD net $</th><th>Annualized net</th>
       </tr>
       {% for r in books.rows %}
@@ -61,6 +69,8 @@
         <td>${{ "{:,.2f}".format(r.nate_fee) }}{% if not r.nate_due %} <span class="hint">(est. ${{ "{:,.2f}".format(r.nate_accrued) }} at payoff)</span>{% endif %}</td>
         <td>${{ "{:,.2f}".format(r.profit) }}</td>
         <td>{{ "%.1f"|format(r.ror) }}%</td>
+        <td>${{ "{:,.2f}".format(r.carry or 0) }}</td>
+        <td>${{ "{:,.2f}".format(r.net_after_carry or r.profit) }}</td>
         <td>${{ "{:,.2f}".format(r.ytd_int) }}</td>
         <td>{{ "%.1f"|format(r.ann_rate) }}%</td>
       </tr>
@@ -72,6 +82,8 @@
         <td>${{ "{:,.2f}".format(books.nate_all) }}</td>
         <td>${{ "{:,.2f}".format(books.all_profit) }}</td>
         <td>{{ "%.1f"|format(books.all_ror) }}%</td>
+        <td>${{ "{:,.2f}".format(books.carry_all or 0) }}</td>
+        <td>${{ "{:,.2f}".format(books.net_after_carry or books.all_profit) }}</td>
         <td>${{ "{:,.2f}".format(books.ytd_profit) }}</td>
         <td>{{ "%.1f"|format(books.ann_rate) }}%</td>
       </tr>
@@ -84,6 +96,39 @@
     <h3>{{ r.loan_number }}</h3>
     <p class="hint">{{ r.property }} · {{ r.status }} · {{ r.term }} months at {{ r.base }}%</p>
     <p>{{ r.story }}</p>
+    <p class="hint">
+      Funded from:
+      {% for s in r.sources or [] %}
+        {{ s.nickname }} ({{ s.kind }}{% if s.last4 %} ••••{{ s.last4 }}{% endif %}) ${{ "{:,.0f}".format(s.amount) }}
+        {% if s.borrowed %} · your rate {{ "%.2f"|format(s.apr) }}% · carry ${{ "{:,.2f}".format(s.cost) }} over {{ s.days }} days{% endif %}
+        <form method="post" action="{{ url_for('investor_source_remove', sid=s.id) }}" style="display:inline">
+          <button class="btn ghost" type="submit">Remove</button>
+        </form>
+      {% else %}
+        not tagged yet
+      {% endfor %}
+    </p>
+    {% if accounts %}
+    {% for p in parts if p.loan_id == r.loan_id %}
+    <form method="post" action="{{ url_for('investor_tag_source', pid=p.id) }}" class="form-grid">
+      <div>
+        <label>Add funding source for ${{ "{:,.0f}".format(p.amount or 0) }}</label>
+        <select name="account_id">
+          {% for a in accounts %}
+          <option value="{{ a.id }}">{{ a.nickname }} · {{ a.kind }}{% if a.last4 %} ••••{{ a.last4 }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div><label>Amount from this account</label><input name="amount" value="{{ p.amount }}"></div>
+      <div><button class="btn" type="submit">Tag source</button></div>
+    </form>
+    {% endfor %}
+    {% else %}
+    <p class="hint"><a href="{{ url_for('investor_accounts') }}">Add a bank / HELOC account</a> to tag this deal.</p>
+    {% endif %}
+    {% if r.carry %}
+    <p>Brittco net on this deal ${{ "{:,.2f}".format(r.profit) }}. Your estimated carry ${{ "{:,.2f}".format(r.carry) }}. Personal net after carry ${{ "{:,.2f}".format(r.net_after_carry) }} ({{ "%.1f"|format(r.net_after_carry_ror) }}%).</p>
+    {% endif %}
     <table class="table">
       <tr><th>Date</th><th>Type</th><th>Paid to you</th></tr>
       {% for line in r.lines %}
