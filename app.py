@@ -22,8 +22,10 @@ from werkzeug.utils import secure_filename
 from forms_catalog import DEFAULTS as FORM_DEFAULTS
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(APP_DIR, "brittco.db")
-UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
+DATA_DIR = os.environ.get("DATA_DIR") or ("/data" if os.path.isdir("/data") else APP_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "brittco.db")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 ALLOWED_UPLOADS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".doc", ".docx"}
 CLOSING_DEFAULTS = [
