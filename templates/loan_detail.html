@@ -5,6 +5,22 @@
     <div class="tag">{{ loan.loan_type }} · {{ loan.status }}</div>
     <h2>{{ loan.loan_number or ("Loan " ~ loan.id) }}</h2>
     <p class="hint">{{ loan.borrower_name }} · {{ loan.property_address }}</p>
+    {% if loan.archived %}<p class="hint">This loan is archived. Accounting is unchanged.</p>{% endif %}
+  </div>
+  <div>
+    {% if loan.archived %}
+    <form method="post" action="{{ url_for('loan_restore', lid=loan.id) }}">
+      <button class="btn" type="submit">Restore to working list</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('loan_archive', lid=loan.id) }}">
+      <button class="btn ghost" type="submit">Archive</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{{ url_for('loan_delete', lid=loan.id) }}" style="margin-top:8px" onsubmit="return confirm('This permanently deletes the loan and its payments.');">
+      <input name="confirm" placeholder="Type DELETE" style="width:120px">
+      <button class="btn ghost" type="submit">Delete loan</button>
+    </form>
   </div>
 </div>
 <div class="grid cards">
