@@ -1419,20 +1419,33 @@ def annualized_days(rate_pct, days):
     return money(rate_pct) * (365.0 / days)
 
 
+def _row_months(row):
+    if row is None:
+        return 0
+    try:
+        if "term_months" not in row.keys():
+            return 0
+        return int(row["term_months"] or 0)
+    except Exception:
+        return 0
+
+
 def loan_term_days(loan, p=None):
-    start = parse_date((loan["start_date"] if loan else None) or "")
-    end = parse_date((loan["maturity_date"] if loan else None) or "")
-    if start and end:
-        return max(1, (end - start).days)
-    if loan and (loan["loan_type"] or "") == "Transactional Loan":
+    loan_type = row_val(loan, "loan_type") if loan is not None else ""
+    months = _row_months(p) or _row_months(loan)
+    if loan_type == "Transactional Loan" and not months:
+        start = parse_date(row_val(loan, "start_date"))
+        end = parse_date(row_val(loan, "maturity_date"))
+        if start and end and (end - start).days >= 2:
+            return (end - start).days
         return 7
-    months = 0
-    if p:
-        months = p["term_months"] or 0
-    if not months and loan:
-        months = loan["term_months"] if "term_months" in loan.keys() else 0
-    months = months or 3
-    return max(1, int(money(months) * 30))
+    if months:
+        return max(1, months * 30)
+    start = parse_date(row_val(loan, "start_date")) if loan is not None else None
+    end = parse_date(row_val(loan, "maturity_date")) if loan is not None else None
+    if start and end and (end - start).days >= 2:
+        return (end - start).days
+    return 90
 
 
 def participation_returns(loan, p, dists_for_investor=None):
@@ -3319,9 +3332,34 @@ def add_participation(lid):
 @app.route("/loans/<int:lid>/fee/<int:pid>", methods=["POST"])
 @staff_required
 def set_mgmt_fee(lid, pid):
+    return update_participation(lid, pid)
+
+
+@app.route("/loans/<int:lid>/participation/<int:pid>", methods=["POST"])
+@staff_required
+def update_participation(lid, pid):
+    f = request.form
+    cur = db().execute("SELECT * FROM participations WHERE id=? AND loan_id=?", (pid, lid)).fetchone()
+    if not cur:
+        return redirect(url_for("loan_detail", lid=lid))
+    inv = f.get("investor_id")
     db().execute(
-        "UPDATE participations SET mgmt_fee_pct=? WHERE id=?",
-        (money(request.form.get("mgmt_fee_pct") or 25), pid),
+        """UPDATE participations SET
+           investor_id=?, amount=?, investor_rate=?, term_months=?,
+           extension_rate=?, max_extensions=?, mgmt_fee_pct=?, funded_on=?
+           WHERE id=? AND loan_id=?""",
+        (
+            int(inv) if inv else cur["investor_id"],
+            money(f.get("amount")) if f.get("amount") not in (None, "") else money(cur["amount"]),
+            money(f.get("investor_rate")) if f.get("investor_rate") not in (None, "") else money(cur["investor_rate"]),
+            int(f.get("term_months") or cur["term_months"] or 3),
+            money(f.get("extension_rate")) if f.get("extension_rate") not in (None, "") else money(cur["extension_rate"]),
+            int(f.get("max_extensions") or cur["max_extensions"] or 3),
+            money(f.get("mgmt_fee_pct") if f.get("mgmt_fee_pct") not in (None, "") else (cur["mgmt_fee_pct"] if cur["mgmt_fee_pct"] is not None else 25)),
+            f.get("funded_on") or cur["funded_on"],
+            pid,
+            lid,
+        ),
     )
     db().commit()
     return redirect(url_for("loan_detail", lid=lid))
