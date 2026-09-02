@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, date, timedelta
 from email.mime.text import MIMEText
+from email.utils import formataddr
 from functools import wraps
 
 from io import BytesIO
@@ -1587,17 +1588,28 @@ def public_base():
     return (os.environ.get("PUBLIC_BASE_URL") or request.url_root or "").rstrip("/")
 
 
+def mail_address():
+    return os.environ.get("MAIL_FROM") or os.environ.get("SMTP_USER") or ""
+
+
+def mail_from_header():
+    addr = mail_address()
+    name = os.environ.get("MAIL_FROM_NAME") or "Brittco Capital Inc"
+    return formataddr((name, addr)) if addr else ""
+
+
 def send_mail(to_email, subject, body):
     host = os.environ.get("SMTP_HOST")
     user = os.environ.get("SMTP_USER")
     password = os.environ.get("SMTP_PASS")
-    mail_from = os.environ.get("MAIL_FROM") or user
+    mail_from = mail_address()
     if not (host and user and password and mail_from and to_email):
         return False
-    msg = MIMEText(body)
+    msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
-    msg["From"] = mail_from
+    msg["From"] = mail_from_header()
     msg["To"] = to_email
+    msg["Reply-To"] = mail_from
     with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT") or 587), timeout=20) as s:
         s.starttls()
         s.login(user, password)
@@ -1608,10 +1620,12 @@ def send_mail(to_email, subject, body):
 def send_invite(email, phone, channel, link, name):
     body = (
         f"Hello {name},\n\n"
-        f"Brittco Capital Inc invited you to complete your borrower profile and apply for a loan.\n"
-        f"Open this secure link on your phone or computer:\n{link}\n\n"
-        f"You will create your password and enter your own information. "
-        f"Brittco staff cannot submit an application for you until that profile is complete.\n"
+        "This message is from Brittco Capital Inc.\n\n"
+        "Please use the link below to complete your borrower profile and loan application. "
+        "The link is unique to you.\n\n"
+        f"{link}\n\n"
+        "If you were not expecting this email, you may ignore it.\n\n"
+        "Brittco Capital Inc\n"
     )
     sent = []
     errors = []
@@ -1624,10 +1638,11 @@ def send_invite(email, phone, channel, link, name):
         mail_from = os.environ.get("MAIL_FROM") or user
         if host and user and password and mail_from:
             try:
-                msg = MIMEText(body)
-                msg["Subject"] = "Your Brittco Capital application invite"
-                msg["From"] = mail_from
+                msg = MIMEText(body, "plain", "utf-8")
+                msg["Subject"] = "Brittco Capital Inc — borrower application"
+                msg["From"] = mail_from_header()
                 msg["To"] = email
+                msg["Reply-To"] = mail_from
                 with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT") or 587), timeout=20) as s:
                     s.starttls()
                     s.login(user, password)
