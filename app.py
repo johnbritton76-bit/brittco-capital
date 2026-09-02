@@ -3033,11 +3033,14 @@ def loan_detail(lid):
            WHERE d.loan_id=? ORDER BY d.id DESC""",
         (lid,),
     ).fetchall()
+    need = money(loan["original_principal"]) or 0
     parts = []
     for p in raw_parts:
         d = dict(p)
         mine = [x for x in dists if x["investor_id"] == p["investor_id"]]
         d.update(participation_returns(loan, p, mine))
+        cap = money(p["amount"])
+        d["funded_pct"] = (cap / need * 100.0) if need else 0.0
         parts.append(d)
     inv_paid = sum(money(d["investor_amount"]) for d in dists)
     brit_paid = sum(money(d["brittco_amount"]) for d in dists)
@@ -3048,7 +3051,9 @@ def loan_detail(lid):
         "matures_in": days_until(loan["maturity_date"]),
         "remaining": money(loan["current_balance"]),
         "funded": funded,
-        "gap": money(loan["original_principal"]) - funded,
+        "need": need,
+        "gap": max(0.0, need - funded),
+        "funded_pct": (funded / need * 100.0) if need else 0.0,
         "investor_paid": inv_paid,
         "brittco_paid": brit_paid,
         "days": loan_term_days(loan, parts[0] if parts else None),
