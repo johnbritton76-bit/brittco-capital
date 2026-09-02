@@ -57,9 +57,22 @@
 
 <div class="card" style="margin-top:14px">
   <h3>Who funded this loan</h3>
+  {% if perf.need %}
+  <p>
+    Loan amount <strong>${{ "{:,.0f}".format(perf.need) }}</strong>.
+    Funded <strong>${{ "{:,.0f}".format(perf.funded) }}</strong>
+    (<strong>{{ "%.1f"|format(perf.funded_pct) }}%</strong>).
+    {% if perf.gap > 0.5 %}
+    Still needed <strong>${{ "{:,.0f}".format(perf.gap) }}</strong>
+    ({{ "%.1f"|format(100 - perf.funded_pct) }}%).
+    {% else %}
+    This loan is <strong>100% funded</strong>.
+    {% endif %}
+  </p>
+  {% endif %}
   <p class="hint">Open loans show estimates. Closed loans show actual interest received and Nate’s realized fee.</p>
   <table class="table">
-    <tr><th>Investor</th><th>Amount</th><th>Rate %</th><th>Term months</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
+    <tr><th>Investor</th><th>Amount</th><th>% of loan</th><th>Rate %</th><th>Term months</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
     {% for p in parts %}
     <tr>
       <td>
@@ -71,6 +84,7 @@
         </select>
       </td>
       <td><input form="edit-p-{{ p.id }}" name="amount" type="number" step="0.01" value="{{ p.amount }}" style="width:110px"></td>
+      <td>{{ "%.1f"|format(p.funded_pct or 0) }}%</td>
       <td><input form="edit-p-{{ p.id }}" name="investor_rate" type="number" step="0.01" value="{{ p.rate or p.base }}" style="width:80px"></td>
       <td><input form="edit-p-{{ p.id }}" name="term_months" type="number" value="{{ p.term or 3 }}" style="width:70px"></td>
       <td><input form="edit-p-{{ p.id }}" name="mgmt_fee_pct" type="number" step="0.01" value="{{ p.fee }}" style="width:70px"></td>
@@ -92,19 +106,24 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="8">No investors on this loan yet.</td></tr>
+    <tr><td colspan="9">No investors on this loan yet.</td></tr>
     {% endfor %}
   </table>
   <form method="post" action="{{ url_for('term_loan', lid=loan.id) }}" style="margin-top:8px">
     <button class="btn ghost" type="submit">Term this loan now</button>
   </form>
-  <form method="post" action="{{ url_for('add_participation', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+  {% if perf.gap > 0.5 or not parts %}
+  <p style="margin-top:12px">
+    <button class="btn" type="button" id="show-add-investor">Add investor</button>
+    <span class="hint">Needed to finish funding: ${{ "{:,.0f}".format(perf.gap) }}</span>
+  </p>
+  <form method="post" action="{{ url_for('add_participation', lid=loan.id) }}" class="form-grid" id="add-investor-form" style="margin-top:12px;display:none">
     <div><label>Investor</label>
       <select name="investor_id" required>
         {% for i in investors %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
       </select>
     </div>
-    <div><label>Amount in this deal</label><input name="amount" type="number" step="0.01" required></div>
+    <div><label>Amount in this deal</label><input name="amount" type="number" step="0.01" required value="{{ '%.2f'|format(perf.gap) }}"></div>
     <div><label>Rate paid to investor % (for the term)</label><input name="investor_rate" type="number" step="0.01" required placeholder="10"></div>
     <div><label>Term (months)</label><input name="term_months" type="number" value="3" required></div>
     <div><label>Extension rate % per month</label><input name="extension_rate" type="number" step="0.01" value="2"></div>
@@ -119,6 +138,19 @@
     <div><label>Funded on</label><input name="funded_on" type="date"></div>
     <div class="span-2"><button class="btn" type="submit">Add investor to this loan</button></div>
   </form>
+  <script>
+    (function () {
+      var btn = document.getElementById("show-add-investor");
+      var form = document.getElementById("add-investor-form");
+      if (btn && form) {
+        btn.addEventListener("click", function () {
+          form.style.display = "grid";
+          btn.style.display = "none";
+        });
+      }
+    })();
+  </script>
+  {% endif %}
 </div>
 
 <div class="card" style="margin-top:14px">
