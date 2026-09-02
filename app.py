@@ -157,7 +157,9 @@ def init_db():
             next_payment_due TEXT,
             late_fee REAL,
             status TEXT,
-            notes TEXT
+            notes TEXT,
+            archived INTEGER,
+            archived_at TEXT
         );
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY,
@@ -730,6 +732,12 @@ try:
     dist_cols = [r[1] for r in _c.execute("PRAGMA table_info(distributions)")]
     if dist_cols and "nate_amount" not in dist_cols:
         _c.execute("ALTER TABLE distributions ADD COLUMN nate_amount REAL")
+    loan_cols = [r[1] for r in _c.execute("PRAGMA table_info(loans)")]
+    if loan_cols and "archived" not in loan_cols:
+        _c.execute("ALTER TABLE loans ADD COLUMN archived INTEGER")
+        _c.execute("UPDATE loans SET archived=0 WHERE archived IS NULL")
+    if loan_cols and "archived_at" not in loan_cols:
+        _c.execute("ALTER TABLE loans ADD COLUMN archived_at TEXT")
     _c.execute(
         """CREATE TABLE IF NOT EXISTS form_packets (
             id INTEGER PRIMARY KEY,
@@ -2100,6 +2108,7 @@ def loan_alerts():
         """SELECT l.*, b.name AS borrower_name, b.email AS borrower_email
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
            WHERE l.status NOT IN ('Paid Off','Sold','Written Off')
+           AND COALESCE(l.archived,0)=0
            ORDER BY l.next_payment_due"""
     ).fetchall()
     alerts = []
@@ -2283,7 +2292,7 @@ def dashboard():
     )
     funded = sum(money(d["loan_amount"]) for d in deals if d["status"] == "Funded")
     book = db().execute(
-        "SELECT COUNT(*) c, COALESCE(SUM(current_balance),0) bal FROM loans WHERE status NOT IN ('Paid Off','Written Off')"
+        "SELECT COUNT(*) c, COALESCE(SUM(current_balance),0) bal FROM loans WHERE status NOT IN ('Paid Off','Written Off') AND COALESCE(archived,0)=0"
     ).fetchone()
     alerts = loan_alerts()
     post_reminders(alerts)
@@ -2298,7 +2307,7 @@ def dashboard():
         (year + "%", year + "%"),
     ).fetchone()["c"]
     active_loans = db().execute(
-        "SELECT COUNT(*) c FROM loans WHERE status NOT IN ('Paid Off','Closed','Termed','Sold','Written Off')"
+        "SELECT COUNT(*) c FROM loans WHERE status NOT IN ('Paid Off','Closed','Termed','Sold','Written Off') AND COALESCE(archived,0)=0"
     ).fetchone()["c"]
     active_investors = db().execute(
         """SELECT COUNT(*) c FROM investors i
@@ -2957,9 +2966,15 @@ def portal_message():
 @app.route("/loans")
 @staff_required
 def loans():
+    show = request.args.get("show") or "active"
+    if show == "archived":
+        where = "COALESCE(l.archived,0)=1"
+    else:
+        where = "COALESCE(l.archived,0)=0"
     rows = db().execute(
-        """SELECT l.*, b.name AS borrower_name
+        f"""SELECT l.*, b.name AS borrower_name
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           WHERE {where}
            ORDER BY l.id DESC"""
     ).fetchall()
     enriched = []
@@ -2968,7 +2983,21 @@ def loans():
         d["due_in"] = days_until(r["next_payment_due"])
         d["matures_in"] = days_until(r["maturity_date"])
         enriched.append(d)
-    return render_template("loans.html", title="Loan management", nav="loans", loans=enriched)
+    counts = db().execute(
+        """SELECT
+             SUM(CASE WHEN COALESCE(archived,0)=0 THEN 1 ELSE 0 END) AS active_n,
+             SUM(CASE WHEN COALESCE(archived,0)=1 THEN 1 ELSE 0 END) AS archived_n
+           FROM loans"""
+    ).fetchone()
+    return render_template(
+        "loans.html",
+        title="Loan management",
+        nav="loans",
+        loans=enriched,
+        show=show,
+        active_n=counts["active_n"] or 0,
+        archived_n=counts["archived_n"] or 0,
+    )
 
 
 @app.route("/loans/new", methods=["GET", "POST"])
@@ -3407,6 +3436,44 @@ def term_loan(lid):
     )
     db().commit()
     return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/archive", methods=["POST"])
+@staff_required
+def loan_archive(lid):
+    db().execute(
+        "UPDATE loans SET archived=1, archived_at=? WHERE id=?",
+        (datetime.now().isoformat(timespec="minutes"), lid),
+    )
+    db().commit()
+    return redirect(url_for("loans"))
+
+
+@app.route("/loans/<int:lid>/restore", methods=["POST"])
+@staff_required
+def loan_restore(lid):
+    db().execute("UPDATE loans SET archived=0, archived_at=NULL WHERE id=?", (lid,))
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/delete", methods=["POST"])
+@staff_required
+def loan_delete(lid):
+    if (request.form.get("confirm") or "").strip().upper() != "DELETE":
+        return redirect(url_for("loan_detail", lid=lid))
+    db().execute("DELETE FROM distributions WHERE loan_id=?", (lid,))
+    db().execute("DELETE FROM payments WHERE loan_id=?", (lid,))
+    db().execute("DELETE FROM extensions WHERE loan_id=?", (lid,))
+    db().execute(
+        "DELETE FROM participation_sources WHERE participation_id IN (SELECT id FROM participations WHERE loan_id=?)",
+        (lid,),
+    )
+    db().execute("DELETE FROM participations WHERE loan_id=?", (lid,))
+    db().execute("DELETE FROM reminder_log WHERE loan_id=?", (lid,))
+    db().execute("DELETE FROM loans WHERE id=?", (lid,))
+    db().commit()
+    return redirect(url_for("loans"))
 
 
 @app.route("/investor/login", methods=["GET", "POST"])
