@@ -215,6 +215,24 @@ def init_db():
             notes TEXT,
             mgmt_fee_pct REAL
         );
+        CREATE TABLE IF NOT EXISTS investor_accounts (
+            id INTEGER PRIMARY KEY,
+            investor_id INTEGER,
+            nickname TEXT,
+            kind TEXT,
+            last4 TEXT,
+            bank_name TEXT,
+            is_borrowed INTEGER,
+            apr REAL,
+            status TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS participation_sources (
+            id INTEGER PRIMARY KEY,
+            participation_id INTEGER,
+            account_id INTEGER,
+            amount REAL
+        );
         CREATE TABLE IF NOT EXISTS extensions (
             id INTEGER PRIMARY KEY,
             participation_id INTEGER,
@@ -723,6 +741,28 @@ try:
         )"""
     )
     _c.execute(
+        """CREATE TABLE IF NOT EXISTS investor_accounts (
+            id INTEGER PRIMARY KEY,
+            investor_id INTEGER,
+            nickname TEXT,
+            kind TEXT,
+            last4 TEXT,
+            bank_name TEXT,
+            is_borrowed INTEGER,
+            apr REAL,
+            status TEXT,
+            created_at TEXT
+        )"""
+    )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS participation_sources (
+            id INTEGER PRIMARY KEY,
+            participation_id INTEGER,
+            account_id INTEGER,
+            amount REAL
+        )"""
+    )
+    _c.execute(
         """CREATE TABLE IF NOT EXISTS form_templates (
             form_key TEXT PRIMARY KEY,
             title TEXT,
@@ -1047,18 +1087,111 @@ def investor_books(iid):
     }
 
 
+ACCOUNT_KINDS = [
+    "Checking",
+    "Savings",
+    "HELOC",
+    "Line of credit",
+    "Credit card",
+    "Other",
+]
+
+
+def investor_funding_accounts(iid, include_archived=False):
+    q = "SELECT * FROM investor_accounts WHERE investor_id=?"
+    args = [iid]
+    if not include_archived:
+        q += " AND COALESCE(status,'Active') != 'Archived'"
+    q += " ORDER BY nickname"
+    return db().execute(q, args).fetchall()
+
+
+def carry_days(loan, part):
+    start = parse_date(row_val(part, "funded_on")) or parse_date(row_val(loan, "start_date"))
+    if not start:
+        start = date.today()
+    status = row_val(loan, "status")
+    if status in ("Paid Off", "Termed", "Closed", "Sold"):
+        end = parse_date(row_val(loan, "maturity_date")) or date.today()
+    else:
+        end = date.today()
+    return max(1, (end - start).days)
+
+
+def attach_investor_carry(iid, books):
+    """Investor-only cost-of-funds overlay. Does not change Brittco books."""
+    accs = {a["id"]: a for a in investor_funding_accounts(iid, include_archived=True)}
+    parts = db().execute(
+        """SELECT p.*, l.start_date, l.maturity_date, l.status AS loan_status, l.id AS lid
+           FROM participations p JOIN loans l ON l.id=p.loan_id
+           WHERE p.investor_id=?""",
+        (iid,),
+    ).fetchall()
+    by_loan = {}
+    total_carry = 0.0
+    for p in parts:
+        sources = db().execute(
+            """SELECT s.*, a.nickname, a.kind, a.last4, a.is_borrowed, a.apr, a.bank_name
+               FROM participation_sources s
+               JOIN investor_accounts a ON a.id=s.account_id
+               WHERE s.participation_id=?""",
+            (p["id"],),
+        ).fetchall()
+        days = carry_days(p, p)
+        carry = 0.0
+        tagged = []
+        for s in sources:
+            amt = money(s["amount"]) or money(p["amount"])
+            apr = money(s["apr"]) if s["is_borrowed"] else 0.0
+            cost = round(amt * (apr / 100.0) * (days / 365.0), 2) if apr else 0.0
+            carry += cost
+            tagged.append(
+                {
+                    "id": s["id"],
+                    "nickname": s["nickname"],
+                    "kind": s["kind"],
+                    "last4": s["last4"],
+                    "amount": amt,
+                    "apr": apr,
+                    "days": days,
+                    "cost": cost,
+                    "borrowed": bool(s["is_borrowed"]),
+                }
+            )
+        total_carry += carry
+        by_loan.setdefault(p["lid"] if "lid" in p.keys() else p["loan_id"], {"carry": 0.0, "sources": []})
+        lid = p["loan_id"]
+        slot = by_loan.setdefault(lid, {"carry": 0.0, "sources": []})
+        slot["carry"] += carry
+        slot["sources"].extend(tagged)
+        slot["days"] = days
+    for r in books.get("rows") or []:
+        extra = by_loan.get(r["loan_id"]) or {"carry": 0.0, "sources": [], "days": 0}
+        r["carry"] = extra["carry"]
+        r["sources"] = extra["sources"]
+        r["net_after_carry"] = (r.get("profit") or 0) - extra["carry"]
+        cap = r.get("capital") or 0
+        r["net_after_carry_ror"] = (r["net_after_carry"] / cap * 100) if cap else 0
+    books["carry_all"] = total_carry
+    books["net_after_carry"] = (books.get("all_profit") or 0) - total_carry
+    deployed = books.get("deployed") or 0
+    books["net_after_carry_ror"] = (books["net_after_carry"] / deployed * 100) if deployed else 0
+    books["accounts"] = [dict(a) for a in investor_funding_accounts(iid)]
+    return books
+
+
 def money_txt(n):
     return f"${money(n):,.2f}"
 
 
-def investor_statement_pdf(inv, books):
+def investor_statement_pdf(inv, books, include_carry=False):
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable, PageBreak,
     )
 
     buf = BytesIO()
@@ -1212,6 +1345,39 @@ def investor_statement_pdf(inv, books):
         "This statement is for account review and is not a tax form.",
         foot,
     ))
+    if include_carry:
+        story.append(PageBreak())
+        story.append(Paragraph("Personal cost of funds — for your records only", title))
+        story.append(Paragraph(
+            "Brittco Capital does not keep this worksheet. Carry cost is estimated from the accounts and rates you entered "
+            f"(drawn × rate ÷ 365 × days). Estimated carry ${money(books.get('carry_all') or 0):,.2f}. "
+            f"Net after carry ${money(books.get('net_after_carry') or 0):,.2f}.",
+            small,
+        ))
+        rows = [["Deal", "Funded from", "Carry cost", "Net after carry"]]
+        for r in books.get("rows") or []:
+            src = ", ".join(
+                f"{s['nickname']} {s['kind']} {money_txt(s['amount'])}"
+                for s in (r.get("sources") or [])
+            ) or "Not tagged"
+            rows.append([
+                Paragraph(f"{r['loan_number']}<br/><font size='7'>{r.get('property') or ''}</font>", small),
+                Paragraph(src, small),
+                money_txt(r.get("carry") or 0),
+                money_txt(r.get("net_after_carry") or r.get("profit") or 0),
+            ])
+        ct = Table(rows, colWidths=[1.8*inch, 2.6*inch, 1.2*inch, 1.4*inch], repeatRows=1)
+        ct.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16324f")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c5d3e0")),
+            ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(Spacer(1, 8))
+        story.append(ct)
     doc.build(story)
     return buf.getvalue()
 
@@ -3227,15 +3393,25 @@ def investor_portal():
            WHERE p.investor_id=? ORDER BY e.id DESC""",
         (inv["id"],),
     ).fetchall()
-    books = investor_books(inv["id"])
-    return render_template("investor_portal.html", inv=inv, parts=parts, exts=exts, books=books)
+    books = attach_investor_carry(inv["id"], investor_books(inv["id"]))
+    accounts = investor_funding_accounts(inv["id"])
+    return render_template(
+        "investor_portal.html",
+        inv=inv,
+        parts=parts,
+        exts=exts,
+        books=books,
+        accounts=accounts,
+        account_kinds=ACCOUNT_KINDS,
+    )
 
 
 @app.route("/investor/statement.pdf")
 @investor_required
 def investor_statement_self():
     inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
-    data = investor_statement_pdf(inv, investor_books(inv["id"]))
+    books = attach_investor_carry(inv["id"], investor_books(inv["id"]))
+    data = investor_statement_pdf(inv, books, include_carry=True)
     name = f"Brittco-statement-{inv['name'].replace(' ', '-')}.pdf"
     return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
 
@@ -3258,6 +3434,91 @@ def investor_self_profile():
         db().commit()
         return redirect(url_for("investor_portal"))
     return render_template("investor_self_profile.html", inv=inv, staff=False)
+
+
+@app.route("/investor/accounts", methods=["GET", "POST"])
+@investor_required
+def investor_accounts():
+    iid = session["investor_id"]
+    if request.method == "POST":
+        nick = (request.form.get("nickname") or "").strip()
+        kind = request.form.get("kind") if request.form.get("kind") in ACCOUNT_KINDS else "Other"
+        last4 = "".join(ch for ch in (request.form.get("last4") or "") if ch.isdigit())[-4:]
+        borrowed = 1 if request.form.get("is_borrowed") else 0
+        if nick:
+            db().execute(
+                """INSERT INTO investor_accounts
+                   (investor_id, nickname, kind, last4, bank_name, is_borrowed, apr, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    iid,
+                    nick,
+                    kind,
+                    last4,
+                    request.form.get("bank_name") or "",
+                    borrowed,
+                    money(request.form.get("apr")),
+                    "Active",
+                    datetime.now().isoformat(timespec="minutes"),
+                ),
+            )
+            db().commit()
+        return redirect(url_for("investor_accounts"))
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    return render_template(
+        "investor_accounts.html",
+        inv=inv,
+        accounts=investor_funding_accounts(iid, include_archived=True),
+        account_kinds=ACCOUNT_KINDS,
+        msg=request.args.get("msg"),
+    )
+
+
+@app.route("/investor/accounts/<int:aid>/archive", methods=["POST"])
+@investor_required
+def investor_account_archive(aid):
+    db().execute(
+        "UPDATE investor_accounts SET status='Archived' WHERE id=? AND investor_id=?",
+        (aid, session["investor_id"]),
+    )
+    db().commit()
+    return redirect(url_for("investor_accounts", msg="Account archived"))
+
+
+@app.route("/investor/participations/<int:pid>/source", methods=["POST"])
+@investor_required
+def investor_tag_source(pid):
+    iid = session["investor_id"]
+    part = db().execute(
+        "SELECT * FROM participations WHERE id=? AND investor_id=?", (pid, iid)
+    ).fetchone()
+    if not part:
+        return redirect(url_for("investor_portal"))
+    acc_id = int(request.form.get("account_id") or 0)
+    acc = db().execute(
+        "SELECT * FROM investor_accounts WHERE id=? AND investor_id=?", (acc_id, iid)
+    ).fetchone()
+    if not acc:
+        return redirect(url_for("investor_portal"))
+    amt = money(request.form.get("amount")) or money(part["amount"])
+    db().execute(
+        "INSERT INTO participation_sources (participation_id, account_id, amount) VALUES (?,?,?)",
+        (pid, acc_id, amt),
+    )
+    db().commit()
+    return redirect(url_for("investor_portal"))
+
+
+@app.route("/investor/sources/<int:sid>/remove", methods=["POST"])
+@investor_required
+def investor_source_remove(sid):
+    db().execute(
+        """DELETE FROM participation_sources WHERE id=? AND participation_id IN
+           (SELECT id FROM participations WHERE investor_id=?)""",
+        (sid, session["investor_id"]),
+    )
+    db().commit()
+    return redirect(url_for("investor_portal"))
 
 
 @app.route("/ach", methods=["GET", "POST"])
