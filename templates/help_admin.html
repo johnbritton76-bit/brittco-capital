@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <h2>Ask Brittco answers</h2>
+    <p class="hint">These questions appear under Ask Brittco on the borrower portal. Click an answer, change it, Save.</p>
+  </div>
+  <a class="btn ghost" href="{{ url_for('borrowers') }}">Back to borrowers</a>
+</div>
+{% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+
+{% for item in items %}
+<div class="card" style="margin-top:12px">
+  <form method="post" action="{{ url_for('help_admin_save', hid=item.id) }}">
+    <div class="form-grid">
+      <div class="span-2"><label>Question</label><input name="question" value="{{ item.question }}"></div>
+      <div class="span-2"><label>Answer</label><textarea name="answer" rows="5">{{ item.answer }}</textarea></div>
+      <div><label>Order</label><input name="sort_order" type="number" value="{{ item.sort_order }}"></div>
+    </div>
+    <p style="margin-top:8px">
+      <button class="btn" type="submit">Save</button>
+    </p>
+  </form>
+  <form method="post" action="{{ url_for('help_admin_delete', hid=item.id) }}" onsubmit="return confirm('Remove this question?');">
+    <button class="btn ghost" type="submit">Remove</button>
+  </form>
+</div>
+{% endfor %}
+
+<div class="card" style="margin-top:18px">
+  <h3>Add a question</h3>
+  <form method="post" class="form-grid">
+    <div class="span-2"><label>Question</label><input name="new_question" required></div>
+    <div class="span-2"><label>Answer</label><textarea name="new_answer" rows="5"></textarea></div>
+    <div class="span-2"><button class="btn" type="submit">Add Q&amp;A</button></div>
+  </form>
+</div>
+{% endblock %}
