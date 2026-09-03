@@ -2352,50 +2352,121 @@ def underwriting_memo(deal, borrower, uw, complete=None):
     return " ".join(lines)
 
 
+BORROWER_HELP_EXAMPLES = [
+    "What documents do I need?",
+    "What is the minimum credit score?",
+    "How long does it take to get approved?",
+    "What is LTV?",
+    "Do you do fix and flip loans?",
+    "What is a transactional loan?",
+    "Will a credit pull hurt my score?",
+    "Who can borrow?",
+    "How do I sign the forms?",
+]
+
+
 def answer_borrower_help(question, borrower, deals, loans, missing):
     q = (question or "").strip().lower()
     name = (borrower["name"] if borrower else None) or "there"
     if not q:
-        return "Ask about documents, credit pulls, LTV, or what is still needed on your file."
-    if any(w in q for w in ("document", "upload", "paper", "what do i need", "checklist")):
+        return "Ask about documents, credit score, approval time, LTV, or what is still needed on your file."
+    if any(w in q for w in ("minimum credit", "credit score", "fico", "qualify", "qualification", "680")):
+        return (
+            "Our preference is a credit score of at least 680. We take a holistic look at the borrower, "
+            "the property, the market, and the exit strategy, and we may make exceptions for scores under 680."
+        )
+    if any(w in q for w in ("soft pull", "hurt my credit", "affect my credit", "lower my score", "hard pull")):
+        return (
+            "When you submit an application you consent to a soft credit pull. "
+            "A soft pull is visible to you. It is not shown to other lenders as a new application "
+            "and it does not have an adverse effect on your credit report or score."
+        )
+    if any(
+        w in q
+        for w in (
+            "how long",
+            "how fast",
+            "turnaround",
+            "approval time",
+            "time to approve",
+            "fund",
+            "when will i know",
+            "how soon",
+            "24-48",
+            "24 hours",
+            "seven day",
+        )
+    ):
+        return (
+            "After the application is complete and submitted with all of the required documentation, "
+            "we can usually process a loan request in 7 days or less and, if approved, fund within that period. "
+            "For repeat borrowers we can usually fund deals in 24–48 hours."
+        )
+    if any(w in q for w in ("document", "upload", "paperwork", "what do i need", "checklist", "what to send")):
         return (
             "Typical items: government ID, purchase contract or HUD if you have one, "
             "insurance quote, rehab bid or budget on a fix-and-flip, entity documents if you borrow in an LLC, "
             "and photos of the property. Brittco will send notary forms when they are needed. "
             "You type the form, print it, and sign in wet ink in front of a notary."
         )
-    if any(w in q for w in ("credit", "soft pull", "score", "fico")):
-        return (
-            "When you submit an application you consent to a soft credit pull. "
-            "A soft pull is visible to you. It is not shown to other lenders as a new application "
-            "and it does not lower your score."
-        )
-    if "ltv" in q or "loan to value" in q:
+    if "ltv" in q or "loan to value" in q or "how much can i borrow" in q:
         return (
             "LTV is the loan amount divided by the as-is value (or purchase price if as-is is blank). "
-            "Brittco’s general guideline is 75%. Staff can go higher only after a holistic review."
+            "Brittco’s general guideline is 75%. We have flexibility after a holistic review of the borrower, "
+            "the market, the exit strategy, and the property."
         )
-    if any(w in q for w in ("arv", "flip", "rehab", "profit")):
+    if any(w in q for w in ("arv", "fix and flip", "fix-and-flip", "rehab", "projected profit")):
         return (
-            "On a fix-and-flip, Brittco prefers the after-repair value to leave at least 25% net projected profit "
-            "after purchase price and rehab. Enter ARV and rehab so that math can run."
+            "Yes, we make fix-and-flip loans. We prefer an after-repair value that leaves at least 25% "
+            "net projected profit after purchase price and rehab. Enter ARV and rehab so that math can run."
         )
-    if any(w in q for w in ("transactional", "7 day", "seven day", "3%")):
+    if any(w in q for w in ("bridge", "hard money", "types of loan", "what loans", "loan type")):
         return (
-            "A transactional loan is a short close. The standard fee is 3% flat for up to 7 days. "
-            "Time beyond 7 days is negotiated."
+            "Brittco Capital focuses on hard money, bridge, fix-and-flip, and transactional loans. "
+            "These are short-term loans based mainly on the property and the exit, not a 30-year mortgage."
         )
-    if any(w in q for w in ("notary", "sign", "wet")):
+    if any(w in q for w in ("transactional", "3%", "3 percent", "seven days")):
         return (
-            "Open the form from Forms to complete, type the fields, download or print the PDF, "
-            "and sign only when the notary is present."
+            "A transactional loan is a short close. The standard fee is a flat 3% for loans up to 7 days. "
+            "Extensions beyond 7 days are negotiated."
         )
-    if any(w in q for w in ("password", "login", "invite")):
+    if any(w in q for w in ("notary", "wet sign", "wet ink", "print the form")):
+        return (
+            "Open the form Brittco sent, type the fields, download or print the PDF, "
+            "and sign only when a physical notary is present. Do not e-sign those packets."
+        )
+    if any(w in q for w in ("prepay", "pay off early", "payoff")):
+        return (
+            "Ask staff for the payoff figure on your specific loan. Terms can vary by deal. "
+            "This box cannot quote a legal payoff."
+        )
+    if any(w in q for w in ("who can borrow", "first time", "first-time", "entity", "llc", "do i need an llc")):
+        return (
+            "Individuals and entities (often an LLC) can apply. You do not have to be a repeat investor, "
+            "but complete documents and a clear exit help. First-time borrowers should expect the full review, "
+            "not the 24–48 hour repeat-borrower timeline."
+        )
+    if any(w in q for w in ("where do you lend", "what state", "florida", "out of state")):
+        return (
+            "Talk to staff about the property state on your deal. This portal stores the file; "
+            "it does not automatically approve a state."
+        )
+    if any(w in q for w in ("ach", "wire", "how do i pay", "payment method")):
+        return (
+            "Staff will give wire or ACH instructions for your loan. You can store bank details on your profile "
+            "so Brittco can set up ACH when it applies. Do not send banking passwords in this box."
+        )
+    if any(w in q for w in ("rate", "interest", "points", "cost", "fees")):
+        return (
+            "Rate, points, and fees are set per deal. Transactional loans use a standard 3% flat fee for up to 7 days. "
+            "Other products are quoted after underwriting. This box cannot lock a rate."
+        )
+    if any(w in q for w in ("password", "login", "invite", "forgot")):
         return (
             "Use the invite link from Brittco to create your password. "
             "Your profile is reused on later applications so you do not retype everything."
         )
-    if any(w in q for w in ("status", "where", "approved", "decision", "how long")):
+    if any(w in q for w in ("my status", "my application", "where is my", "was i approved", "decision on my")):
         if deals:
             latest = deals[0]
             return (
@@ -2404,21 +2475,22 @@ def answer_borrower_help(question, borrower, deals, loans, missing):
                 "This box cannot approve a loan."
             )
         return "No application is on file yet. Complete your profile, then submit an application on this page."
-    if any(w in q for w in ("missing", "complete", "left", "still need", "required")):
+    if any(w in q for w in ("missing", "still need", "required field", "profile complete")):
         if missing:
             return "Still needed on your profile: " + ", ".join(missing) + "."
         return "Your required profile fields look complete. You can submit an application from this page."
     if loans:
         live = [ln for ln in loans if (ln["status"] or "") not in ("Paid Off", "Termed", "Closed", "Sold")]
-        if live and any(w in q for w in ("balance", "payment", "due", "owe")):
+        if live and any(w in q for w in ("balance", "payment due", "what do i owe", "next payment")):
             ln = live[0]
             return (
                 f"Loan {ln['loan_number'] or ln['id']} current balance is "
                 f"${money(ln['current_balance']):,.2f}. Next payment due: {ln['next_payment_due'] or 'not set'}."
             )
     return (
-        "I can answer questions about your Brittco file: documents, credit pulls, LTV, transactional terms, "
-        "notary forms, and what is still missing. For anything else, send a message to staff in the box below."
+        "I can answer common Brittco questions: documents, credit score, approval time, LTV, loan types, "
+        "transactional terms, notary forms, and what is still missing on your file. "
+        "For anything else, send a message to staff on this page."
     )
 
 
@@ -3168,6 +3240,7 @@ def portal_home():
         form_defs=load_form_defs(),
         help_q=help_q,
         help_a=help_a,
+        help_examples=BORROWER_HELP_EXAMPLES,
     )
 
 
