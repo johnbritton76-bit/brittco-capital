@@ -2240,6 +2240,270 @@ def underwrite(deal, credit_score):
     }
 
 
+def _blank(row, key):
+    if row is None:
+        return True
+    try:
+        if key not in row.keys():
+            return True
+        val = row[key]
+    except Exception:
+        return True
+    if val is None:
+        return True
+    if isinstance(val, (int, float)) and val == 0:
+        return True
+    return not str(val).strip()
+
+
+def application_completeness(borrower, deal=None, docs=None):
+    missing = []
+    warnings = []
+    ready, prof = profile_ready(borrower)
+    missing.extend(prof)
+    if deal is not None:
+        for label, key in [
+            ("Property address", "address"),
+            ("Loan type", "loan_type"),
+            ("Requested loan amount", "loan_amount"),
+            ("Exit strategy", "exit_strategy"),
+        ]:
+            if _blank(deal, key):
+                missing.append(label)
+        if not money(deal["purchase_price"] if "purchase_price" in deal.keys() else 0) and not money(
+            deal["as_is_value"] if "as_is_value" in deal.keys() else 0
+        ):
+            missing.append("Purchase price or as-is value")
+        lt = (deal["loan_type"] if "loan_type" in deal.keys() else "") or ""
+        if lt == "Fix and Flip":
+            if not money(deal["arv"] if "arv" in deal.keys() else 0):
+                missing.append("After-repair value (ARV)")
+            if not money(deal["rehab_budget"] if "rehab_budget" in deal.keys() else 0):
+                missing.append("Rehab budget")
+        if lt == "Transactional Loan":
+            pts = money(deal["points"] if "points" in deal.keys() else 0)
+            if not pts:
+                warnings.append("Transactional fee is blank. Standard is a 3% flat fee for up to 7 days.")
+        if lt != "Transactional Loan" and _blank(deal, "term_months"):
+            warnings.append("Term (months) is blank.")
+    if not (docs or []):
+        warnings.append("No documents or photos are on this file yet.")
+    holes = len(missing)
+    score = 100 if holes == 0 else max(15, 90 - holes * 12)
+    if warnings and score > 92:
+        score = 92
+    return {
+        "profile_ready": ready,
+        "missing": missing,
+        "warnings": warnings,
+        "score": score,
+        "ok": holes == 0,
+    }
+
+
+def underwriting_memo(deal, borrower, uw, complete=None):
+    name = (borrower["name"] if borrower else None) or "The borrower"
+    addr = (deal["address"] if deal else None) or "the property"
+    kind = (deal["loan_type"] if deal else None) or "this loan type"
+    amount = money(deal["loan_amount"]) if deal else 0
+    ltv = uw.get("ltv") or 0
+    credit = uw.get("credit")
+    net = uw.get("net_profit_pct")
+    decision = uw.get("decision") or "Review"
+    lines = [
+        f"{name} requested a {kind} of ${amount:,.0f} on {addr}.",
+        f"Calculated LTV is {ltv:.1f}% against a 75% guideline. "
+        + (
+            "That is inside the standard band."
+            if ltv <= 75
+            else "That is above guideline and needs a written override and holistic review."
+        ),
+    ]
+    if credit:
+        if credit < 680:
+            lines.append(f"Reported credit score is {credit}, below the 680 minimum.")
+        else:
+            lines.append(f"Reported credit score is {credit}, at or above the 680 minimum.")
+    else:
+        lines.append("No credit score is on the file yet. Run or confirm the soft pull before a final call.")
+    if net is not None:
+        extra = "meets" if net >= 25 else "is below"
+        lines.append(f"Net projected profit on ARV is {net:.1f}%, which {extra} the 25% preference.")
+    exit_s = ""
+    if deal is not None and "exit_strategy" in deal.keys():
+        exit_s = deal["exit_strategy"] or ""
+    if exit_s:
+        lines.append(f"Stated exit strategy: {exit_s}.")
+    else:
+        lines.append("No exit strategy is written on the deal.")
+    if complete and complete.get("missing"):
+        lines.append("File gaps: " + "; ".join(complete["missing"]) + ".")
+    if (deal["ltv_override_reason"] if deal and "ltv_override_reason" in deal.keys() else "") or "":
+        lines.append("Staff override note: " + deal["ltv_override_reason"])
+    if decision == "Approve":
+        lines.append(
+            "Guideline result: Approve. Still apply judgment on the borrower, the market, the property, and the exit."
+        )
+    elif decision == "Review":
+        lines.append("Guideline result: Holistic review. A person must decide before this file moves to closing.")
+    else:
+        lines.append(f"Guideline result: {decision}. A person must decide before this file moves to closing.")
+    lines.append("This memo is generated from Brittco rules already in the software. It is not an appraisal or a credit decision by a third party.")
+    return " ".join(lines)
+
+
+def answer_borrower_help(question, borrower, deals, loans, missing):
+    q = (question or "").strip().lower()
+    name = (borrower["name"] if borrower else None) or "there"
+    if not q:
+        return "Ask about documents, credit pulls, LTV, or what is still needed on your file."
+    if any(w in q for w in ("document", "upload", "paper", "what do i need", "checklist")):
+        return (
+            "Typical items: government ID, purchase contract or HUD if you have one, "
+            "insurance quote, rehab bid or budget on a fix-and-flip, entity documents if you borrow in an LLC, "
+            "and photos of the property. Brittco will send notary forms when they are needed. "
+            "You type the form, print it, and sign in wet ink in front of a notary."
+        )
+    if any(w in q for w in ("credit", "soft pull", "score", "fico")):
+        return (
+            "When you submit an application you consent to a soft credit pull. "
+            "A soft pull is visible to you. It is not shown to other lenders as a new application "
+            "and it does not lower your score."
+        )
+    if "ltv" in q or "loan to value" in q:
+        return (
+            "LTV is the loan amount divided by the as-is value (or purchase price if as-is is blank). "
+            "Brittco’s general guideline is 75%. Staff can go higher only after a holistic review."
+        )
+    if any(w in q for w in ("arv", "flip", "rehab", "profit")):
+        return (
+            "On a fix-and-flip, Brittco prefers the after-repair value to leave at least 25% net projected profit "
+            "after purchase price and rehab. Enter ARV and rehab so that math can run."
+        )
+    if any(w in q for w in ("transactional", "7 day", "seven day", "3%")):
+        return (
+            "A transactional loan is a short close. The standard fee is 3% flat for up to 7 days. "
+            "Time beyond 7 days is negotiated."
+        )
+    if any(w in q for w in ("notary", "sign", "wet")):
+        return (
+            "Open the form from Forms to complete, type the fields, download or print the PDF, "
+            "and sign only when the notary is present."
+        )
+    if any(w in q for w in ("password", "login", "invite")):
+        return (
+            "Use the invite link from Brittco to create your password. "
+            "Your profile is reused on later applications so you do not retype everything."
+        )
+    if any(w in q for w in ("status", "where", "approved", "decision", "how long")):
+        if deals:
+            latest = deals[0]
+            return (
+                f"Hi {name}. Your latest file on {latest['address'] or 'the property'} "
+                f"is marked {latest['status'] or 'in review'}. Staff will update that status. "
+                "This box cannot approve a loan."
+            )
+        return "No application is on file yet. Complete your profile, then submit an application on this page."
+    if any(w in q for w in ("missing", "complete", "left", "still need", "required")):
+        if missing:
+            return "Still needed on your profile: " + ", ".join(missing) + "."
+        return "Your required profile fields look complete. You can submit an application from this page."
+    if loans:
+        live = [ln for ln in loans if (ln["status"] or "") not in ("Paid Off", "Termed", "Closed", "Sold")]
+        if live and any(w in q for w in ("balance", "payment", "due", "owe")):
+            ln = live[0]
+            return (
+                f"Loan {ln['loan_number'] or ln['id']} current balance is "
+                f"${money(ln['current_balance']):,.2f}. Next payment due: {ln['next_payment_due'] or 'not set'}."
+            )
+    return (
+        "I can answer questions about your Brittco file: documents, credit pulls, LTV, transactional terms, "
+        "notary forms, and what is still missing. For anything else, send a message to staff in the box below."
+    )
+
+
+def loan_staff_assist(loan, perf):
+    bits = []
+    gap = money(perf.get("gap") or 0)
+    if gap > 0.5:
+        bits.append(f"Funding is short ${gap:,.0f}. Add another investor or change a participation amount.")
+    due = perf.get("due_in")
+    if due is not None and due < 0:
+        bits.append(f"Payment is {abs(due)} days past due. Call or text the borrower and log the contact.")
+    elif due is not None and due <= 7:
+        bits.append(f"Payment is due in {due} days. A reminder can go to the borrower now.")
+    mat = perf.get("matures_in")
+    if mat is not None and mat <= 14:
+        bits.append(f"Maturity is in {mat} days. Decide extension vs term and talk to the investor.")
+    if perf.get("closed"):
+        bits.append("Loan is closed. Archive it from the working list when the file is tidy.")
+    if not bits:
+        bits.append("No urgent flags. Record payments as they arrive and keep the investor stack at 100%.")
+    return " ".join(bits)
+
+
+def reminder_draft(loan, perf):
+    name = row_val(loan, "borrower_name") or "there"
+    num = row_val(loan, "loan_number") or "your Brittco loan"
+    due = row_val(loan, "next_payment_due") or "the due date on file"
+    mat = row_val(loan, "maturity_date") or "maturity"
+    amt = money(row_val(loan, "payment_amount"))
+    pay = f"${amt:,.2f} " if amt else ""
+    if perf.get("due_in") is not None and perf["due_in"] < 0:
+        return (
+            f"Hello {name}, this is Brittco Capital Inc. Your {pay}payment on loan {num} was due {due} "
+            f"and is now past due. Please send payment or call us today so we can update your file."
+        )
+    if perf.get("due_in") is not None and perf["due_in"] <= 7:
+        return (
+            f"Hello {name}, this is Brittco Capital Inc. A {pay}payment on loan {num} is due {due}. "
+            f"Reply if you need wire or ACH instructions."
+        )
+    if perf.get("matures_in") is not None and perf["matures_in"] <= 14:
+        return (
+            f"Hello {name}, loan {num} matures {mat}. Please confirm payoff, sale, refinance, or an extension "
+            f"so we can notify the investor in time."
+        )
+    return (
+        f"Hello {name}, a reminder from Brittco Capital Inc on loan {num}. "
+        f"Next payment due {due}. Maturity {mat}."
+    )
+
+
+def answer_investor_help(question, inv, books):
+    q = (question or "").strip().lower()
+    if not q:
+        return "Ask about net vs gross, Nate’s fee, annualized return, or cost of funds."
+    if any(w in q for w in ("nate", "fee", "25")):
+        return (
+            "Nate is paid 25% of each loan’s realized net profit, only after your basis is returned and a profit is realized. "
+            "Monthly interest is not split. You can change that percent on a deal if the agreement changes."
+        )
+    if any(w in q for w in ("annual", "annualized", "40%")):
+        return (
+            "Annualized return scales the term rate to a year. 10% earned in 90 days is about 40% annualized "
+            "(10% × 365/90). It is a way to compare short deals, not a promise you will earn that for 12 months."
+        )
+    if any(w in q for w in ("carry", "heloc", "cost of funds", "after carry")):
+        return (
+            "Carry cost is the interest you pay your own bank on HELOC or credit used to fund a deal. "
+            "Brittco does not keep those accounts. Net after carry is your personal number only."
+        )
+    if any(w in q for w in ("gross", "net", "profit")):
+        return (
+            f"All-time net profit on this account is ${money(books.get('all_profit') or 0):,.2f} after Nate’s realized fee. "
+            f"Gross is before that fee. Capital still in deals is ${money(books.get('still_out') or 0):,.0f}."
+        )
+    if any(w in q for w in ("pdf", "statement", "tax")):
+        return (
+            "PDF Statement is an account review. It is not a tax form. Year-end is the prior calendar year. YTD is this year."
+        )
+    return (
+        "I can explain Nate’s fee, annualized return, carry cost, and the totals on this page. "
+        "For a wiring or legal question, contact Brittco staff."
+    )
+
+
 def deal_rows(rows):
     out = []
     for r in rows:
@@ -2454,6 +2718,13 @@ def borrower_detail(bid):
         packets=db().execute(
             "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (bid,)
         ).fetchall(),
+        complete=application_completeness(
+            b,
+            db().execute(
+                "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1", (bid,)
+            ).fetchone(),
+            db().execute("SELECT id FROM documents WHERE borrower_id=?", (bid,)).fetchall(),
+        ),
     )
 
 
@@ -2691,6 +2962,7 @@ def deal_detail(did):
            FROM deals d JOIN borrowers b ON b.id=d.borrower_id WHERE d.id=?""",
         (did,),
     ).fetchone()
+    borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (d["borrower_id"],)).fetchone()
     uw = underwrite(d, d["credit_score"])
     messages = db().execute(
         "SELECT * FROM messages WHERE deal_id=? OR (borrower_id=? AND deal_id IS NULL) ORDER BY id",
@@ -2707,6 +2979,8 @@ def deal_detail(did):
     existing_loan = db().execute(
         "SELECT id, loan_number FROM loans WHERE deal_id=? ORDER BY id DESC", (did,)
     ).fetchone()
+    complete = application_completeness(borrower, d, docs)
+    memo = underwriting_memo(d, borrower, uw, complete)
     return render_template(
         "deal_detail.html",
         title=d["address"],
@@ -2717,6 +2991,8 @@ def deal_detail(did):
         checklist=checklist,
         docs=docs,
         existing_loan=existing_loan,
+        complete=complete,
+        memo=memo,
     )
 
 
@@ -2876,6 +3152,8 @@ def portal_home():
     packets = db().execute(
         "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
     ).fetchall()
+    help_q = request.args.get("q") or ""
+    help_a = answer_borrower_help(help_q, b, deals, loans, missing) if help_q else None
     return render_template(
         "portal.html",
         b=b,
@@ -2888,6 +3166,8 @@ def portal_home():
         missing=missing,
         packets=packets,
         form_defs=load_form_defs(),
+        help_q=help_q,
+        help_a=help_a,
     )
 
 
@@ -3096,6 +3376,7 @@ def loan_detail(lid):
         "actual_nate": sum(p.get("actual_nate") or 0 for p in parts),
         "actual_net": sum(p.get("actual_net") or 0 for p in parts),
     }
+    staff_assist = loan_staff_assist(loan, perf)
     return render_template(
         "loan_detail.html",
         title=loan["loan_number"],
@@ -3106,6 +3387,8 @@ def loan_detail(lid):
         parts=parts,
         dists=dists,
         investors=investors,
+        staff_assist=staff_assist,
+        reminder_draft=reminder_draft(loan, perf),
     )
 
 
@@ -3522,6 +3805,8 @@ def investor_portal():
     ).fetchall()
     books = attach_investor_carry(inv["id"], investor_books(inv["id"]))
     accounts = investor_funding_accounts(inv["id"])
+    help_q = request.args.get("q") or ""
+    help_a = answer_investor_help(help_q, inv, books) if help_q else None
     return render_template(
         "investor_portal.html",
         inv=inv,
@@ -3530,6 +3815,8 @@ def investor_portal():
         books=books,
         accounts=accounts,
         account_kinds=ACCOUNT_KINDS,
+        help_q=help_q,
+        help_a=help_a,
     )
 
 
