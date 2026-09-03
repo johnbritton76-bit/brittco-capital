@@ -13,6 +13,7 @@
       <div class="tag">Borrower portal</div>
       <h2 style="margin:4px 0 0">Hello, {{ b.name }}</h2>
     </div>
+    <a class="btn" href="{{ url_for('portal_calculator') }}">Deal calculator</a>
     <a class="btn ghost" href="/portal/logout" style="margin-left:auto">Sign out</a>
   </div>
   {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}

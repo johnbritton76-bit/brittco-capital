@@ -35,7 +35,7 @@
   </div>
   <div class="span-2"><label>Exit strategy</label><input name="exit_strategy" value="{{ d.exit_strategy if d else '' }}"></div>
   <div class="span-2"><label>Market / property notes</label><textarea name="notes">{{ d.notes if d else '' }}</textarea></div>
-  <div class="span-2"><label>Override LTV guideline? (reason required if LTV over 75%)</label>
+  <div class="span-2"><label>Override guideline? (use if loan is over 100% of current value, or all-in is over 75% of ARV)</label>
     <textarea name="ltv_override_reason">{{ d.ltv_override_reason if d else '' }}</textarea></div>
   <div class="span-2"><button class="btn" type="submit">Save and run underwriting</button></div>
 </form>

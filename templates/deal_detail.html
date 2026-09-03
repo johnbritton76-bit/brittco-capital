@@ -26,10 +26,10 @@
     {% else %}<span class="badge bad">{{ uw.decision }}</span>{% endif %}
   </p>
   <div class="metrics">
-    <div class="metric"><span>LTV vs as-is / purchase</span><strong>{{ "%.1f"|format(uw.ltv) }}%</strong> <small>(guideline 75%)</small></div>
+    <div class="metric"><span>Loan vs current value</span><strong>{{ "%.1f"|format(uw.ltv) }}%</strong> <small>(up to 100% of property being rehabbed)</small></div>
     <div class="metric"><span>Credit</span><strong>{{ uw.credit or "—" }}</strong> <small>(min 680)</small></div>
-    {% if uw.net_profit_pct is not none %}
-    <div class="metric"><span>Net projected profit on ARV</span><strong>{{ "%.1f"|format(uw.net_profit_pct) }}%</strong> <small>(prefer 25%+)</small></div>
+    {% if uw.all_in_arv is not none %}
+    <div class="metric"><span>All-in vs ARV</span><strong>{{ "%.1f"|format(uw.all_in_arv) }}%</strong> <small>(prefer 75% or less)</small></div>
     {% endif %}
     <div class="metric"><span>Loan amount</span><strong>${{ "{:,.0f}".format(d.loan_amount or 0) }}</strong></div>
   </div>

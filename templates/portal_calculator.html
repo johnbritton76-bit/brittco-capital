@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deal calculator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:920px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Borrower tools</div>
+      <h2 style="margin:4px 0 0">Flip / BRRRR calculator</h2>
+    </div>
+    <a class="btn ghost" href="{{ url_for('portal_home') }}">Back to portal</a>
+  </div>
+  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  <p class="hint">Same purchase and rehab numbers. Switch Flip or BRRRR for the last section. This does not approve a loan.</p>
+
+  <p>
+    <a class="btn {% if mode!='brrr' %}{% else %}ghost{% endif %}" href="{{ url_for('portal_calculator', mode='flip') }}">Flip</a>
+    <a class="btn {% if mode=='brrr' %}{% else %}ghost{% endif %}" href="{{ url_for('portal_calculator', mode='brrr') }}">BRRRR</a>
+  </p>
+
+  <form method="post" class="card" style="margin-top:8px">
+    <input type="hidden" name="mode" value="{{ mode }}">
+    <div class="form-grid">
+      <div class="span-2"><label>Property address (optional)</label><input name="address" value="{{ form.get('address','') }}"></div>
+      <div><label>Purchase price</label><input name="purchase_price" type="number" step="0.01" value="{{ form.get('purchase_price','') }}"></div>
+      <div><label>As-is value (if different)</label><input name="as_is_value" type="number" step="0.01" value="{{ form.get('as_is_value','') }}"></div>
+      <div><label>Rehab</label><input name="rehab_budget" type="number" step="0.01" value="{{ form.get('rehab_budget','') }}"></div>
+      <div><label>Closing costs to buy</label><input name="buy_costs" type="number" step="0.01" value="{{ form.get('buy_costs','') }}"></div>
+      <div><label>Hold months</label><input name="hold_months" type="number" step="1" value="{{ form.get('hold_months','6') }}"></div>
+      <div><label>Holding cost / month</label><input name="hold_monthly" type="number" step="0.01" value="{{ form.get('hold_monthly','') }}"></div>
+      <div><label>After-repair value (ARV)</label><input name="arv" type="number" step="0.01" value="{{ form.get('arv','') }}"></div>
+      <div><label>Loan amount you may request</label><input name="loan_amount" type="number" step="0.01" value="{{ form.get('loan_amount','') }}"></div>
+      {% if mode=='flip' %}
+      <div><label>Selling costs %</label><input name="sell_pct" type="number" step="0.1" value="{{ form.get('sell_pct','8') }}"></div>
+      {% else %}
+      <div><label>Market rent / month</label><input name="rent" type="number" step="0.01" value="{{ form.get('rent','') }}"></div>
+      <div><label>Vacancy %</label><input name="vacancy_pct" type="number" step="0.1" value="{{ form.get('vacancy_pct','8') }}"></div>
+      <div><label>Operating expenses / month (blank = 40% of rent after vacancy)</label><input name="opex_monthly" type="number" step="0.01" value="{{ form.get('opex_monthly','') }}"></div>
+      <div><label>Refinance LTV % of ARV</label><input name="refi_ltv" type="number" step="0.1" value="{{ form.get('refi_ltv','75') }}"></div>
+      <div><label>Refinance rate %</label><input name="refi_rate" type="number" step="0.01" value="{{ form.get('refi_rate','') }}"></div>
+      {% endif %}
+    </div>
+    <p style="margin-top:12px">
+      <button class="btn" type="submit" name="calculate" value="1">Calculate</button>
+    </p>
+  </form>
+
+  {% if result %}
+  <div class="card" style="margin-top:14px">
+    <h3>{% if mode=='brrr' %}BRRRR result{% else %}Flip result{% endif %}</h3>
+    <div class="grid cards">
+      <div class="card"><h3>All-in cost</h3><div class="n">${{ "{:,.0f}".format(result.all_in) }}</div></div>
+      <div class="card"><h3>ARV</h3><div>${{ "{:,.0f}".format(result.arv) }}</div></div>
+      <div class="card"><h3>All-in vs ARV</h3>
+        <div>{% if result.complete_pct is not none %}{{ "%.1f"|format(result.complete_pct) }}%{% else %}—{% endif %}</div>
+        <div class="hint">{% if result.arv_ok %}At or under 75% preference{% elif result.complete_pct is not none %}Above 75% of ARV{% endif %}</div>
+      </div>
+      {% if result.ltv is not none %}
+      <div class="card"><h3>Requested LTV</h3>
+        <div>{{ "%.1f"|format(result.ltv) }}%</div>
+        <div class="hint">{% if result.ltv_ok %}Within 100% of current value{% else %}Over 100% of current value — staff review{% endif %}</div>
+      </div>
+      {% endif %}
+    </div>
+    {% if mode=='flip' %}
+    <p>
+      Sale after {{ result.sell_pct }}% costs:
+      <strong>${{ "{:,.0f}".format(result.sale_net) }}</strong>.
+      Profit after all-in:
+      <strong>${{ "{:,.0f}".format(result.flip_profit) }}</strong>
+      {% if result.flip_pct is not none %}({{ "%.1f"|format(result.flip_pct) }}% of ARV){% endif %}.
+    </p>
+    <p class="hint">
+      Brittco prefers purchase + rehab (all-in when complete) at 75% of ARV or less. Holding and selling costs are for your planning only.
+      {% if result.arv_ok %}This deal meets that preference.{% else %}This deal is above 75% of ARV. Staff can still review.{% endif %}
+    </p>
+    {% else %}
+    <p>
+      Refinance at {{ result.refi_ltv }}% of ARV:
+      <strong>${{ "{:,.0f}".format(result.refi) }}</strong>.
+      {% if result.cash_left >= 0 %}
+      Cash left in the deal: <strong>${{ "{:,.0f}".format(result.cash_left) }}</strong>.
+      {% else %}
+      Cash out: <strong>${{ "{:,.0f}".format(result.cash_out) }}</strong>.
+      {% endif %}
+      Annual NOI <strong>${{ "{:,.0f}".format(result.noi) }}</strong>.
+      Estimated cash flow after refinance interest
+      <strong>${{ "{:,.0f}".format(result.cf) }}</strong>/year.
+      {% if result.coc is not none %}Cash-on-cash {{ "%.1f"|format(result.coc) }}%.{% endif %}
+    </p>
+    <p class="hint">Refinance math is a planning estimate (interest-only on refi proceeds). A bank loan will differ. Brittco still prefers purchase + rehab at 75% of ARV or less.</p>
+    {% endif %}
+
+    {% if ready %}
+    <form method="post" style="margin-top:12px">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="send" value="1">
+      {% for key in ['address','purchase_price','as_is_value','rehab_budget','buy_costs','hold_months','hold_monthly','arv','loan_amount','sell_pct','rent','vacancy_pct','opex_monthly','refi_ltv','refi_rate'] %}
+      <input type="hidden" name="{{ key }}" value="{{ form.get(key,'') }}">
+      {% endfor %}
+      <button class="btn" type="submit">Send data to application</button>
+    </form>
+    {% else %}
+    <p class="hint">Finish required profile fields before sending a deal: {{ missing|join(', ') }}.</p>
+    <p><a class="btn" href="{{ url_for('portal_home') }}">Complete profile</a></p>
+    {% endif %}
+  </div>
+  {% endif %}
+</main>
+</body>
+</html>
