@@ -25,6 +25,12 @@
       <button class="btn" type="submit">Ask</button>
     </form>
     {% if help_a %}<p style="margin-top:10px">{{ help_a }}</p>{% endif %}
+    <p class="hint" style="margin-top:10px">Common questions:</p>
+    <p>
+      {% for ex in help_examples %}
+      <a class="btn ghost" href="{{ url_for('portal_home', q=ex) }}" style="margin:4px 4px 0 0">{{ ex }}</a>
+      {% endfor %}
+    </p>
   </div>
 
   <div class="card" style="margin-top:18px">
