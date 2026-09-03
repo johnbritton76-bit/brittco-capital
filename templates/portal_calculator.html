@@ -4,6 +4,12 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Deal calculator</title>
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    @media print {
+      .portal-head a, .no-print, form.card { display: none !important; }
+      main { max-width: 100% !important; }
+    }
+  </style>
 </head>
 <body>
 <main class="main" style="max-width:920px;margin:0 auto">
@@ -13,14 +19,14 @@
       <div class="tag">Borrower tools</div>
       <h2 style="margin:4px 0 0">Flip / BRRRR calculator</h2>
     </div>
-    <a class="btn ghost" href="{{ url_for('portal_home') }}">Back to portal</a>
+    <a class="btn ghost no-print" href="{{ home_url }}">Back to portal</a>
   </div>
   {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
   <p class="hint">Same purchase and rehab numbers. Switch Flip or BRRRR for the last section. This does not approve a loan.</p>
 
   <p>
-    <a class="btn {% if mode!='brrr' %}{% else %}ghost{% endif %}" href="{{ url_for('portal_calculator', mode='flip') }}">Flip</a>
-    <a class="btn {% if mode=='brrr' %}{% else %}ghost{% endif %}" href="{{ url_for('portal_calculator', mode='brrr') }}">BRRRR</a>
+    <a class="btn no-print {% if mode!='brrr' %}{% else %}ghost{% endif %}" href="{{ calc_url }}?mode=flip">Flip</a>
+    <a class="btn no-print {% if mode=='brrr' %}{% else %}ghost{% endif %}" href="{{ calc_url }}?mode=brrr">BRRRR</a>
   </p>
 
   <form method="post" class="card" style="margin-top:8px">
@@ -96,19 +102,28 @@
     <p class="hint">Refinance math is a planning estimate (interest-only on refi proceeds). A bank loan will differ. Brittco still prefers purchase + rehab at 75% of ARV or less.</p>
     {% endif %}
 
-    {% if ready %}
-    <form method="post" style="margin-top:12px">
-      <input type="hidden" name="mode" value="{{ mode }}">
-      <input type="hidden" name="send" value="1">
-      {% for key in ['address','purchase_price','as_is_value','rehab_budget','buy_costs','hold_months','hold_monthly','arv','loan_amount','sell_pct','rent','vacancy_pct','opex_monthly','refi_ltv','refi_rate'] %}
-      <input type="hidden" name="{{ key }}" value="{{ form.get(key,'') }}">
-      {% endfor %}
-      <button class="btn" type="submit">Send data to application</button>
-    </form>
-    {% else %}
-    <p class="hint">Finish required profile fields before sending a deal: {{ missing|join(', ') }}.</p>
-    <p><a class="btn" href="{{ url_for('portal_home') }}">Complete profile</a></p>
-    {% endif %}
+    <div class="no-print" style="margin-top:12px">
+      <form method="post" action="{{ pdf_url }}" style="display:inline">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        {% for key in calc_fields %}
+        <input type="hidden" name="{{ key }}" value="{{ form.get(key,'') }}">
+        {% endfor %}
+        <button class="btn" type="submit">Download/Print</button>
+      </form>
+      {% if role=='borrower' and ready %}
+      <form method="post" action="{{ calc_url }}" style="display:inline">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="send" value="1">
+        {% for key in calc_fields %}
+        <input type="hidden" name="{{ key }}" value="{{ form.get(key,'') }}">
+        {% endfor %}
+        <button class="btn" type="submit">Send data to application</button>
+      </form>
+      {% elif role=='borrower' %}
+      <p class="hint">Finish required profile fields before sending a deal: {{ missing|join(', ') }}.</p>
+      <p><a class="btn" href="{{ home_url }}">Complete profile</a></p>
+      {% endif %}
+    </div>
   </div>
   {% endif %}
 </main>
