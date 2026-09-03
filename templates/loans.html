@@ -4,12 +4,22 @@
   <h2>Loan management</h2>
   <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
 </div>
-<p class="hint">Track funded loans, payments, and upcoming due dates.</p>
+<p>
+  <a class="btn {% if show!='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans') }}">Working loans ({{ active_n }})</a>
+  <a class="btn {% if show=='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans', show='archived') }}">Archive ({{ archived_n }})</a>
+</p>
+<p class="hint">
+  {% if show=='archived' %}
+  Archived loans stay in investor accounting. Open one and click Restore to put it back on this list.
+  {% else %}
+  Track funded loans, payments, and upcoming due dates. Archive a termed loan to hide it here without losing the books. Delete is for test loans only.
+  {% endif %}
+</p>
 <div class="card">
 <table class="table">
   <tr>
     <th>Loan #</th><th>Borrower</th><th>Property</th><th>Balance</th>
-    <th>Next payment</th><th>Matures</th><th>Status</th>
+    <th>Next payment</th><th>Matures</th><th>Status</th><th></th>
   </tr>
   {% for l in loans %}
   <tr>
@@ -24,7 +34,20 @@
     </td>
     <td>{{ l.maturity_date or "—" }}</td>
     <td><span class="badge">{{ l.status }}</span></td>
+    <td>
+      {% if show=='archived' %}
+      <form method="post" action="{{ url_for('loan_restore', lid=l.id) }}">
+        <button class="btn" type="submit">Restore</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('loan_archive', lid=l.id) }}">
+        <button class="btn ghost" type="submit">Archive</button>
+      </form>
+      {% endif %}
+    </td>
   </tr>
+  {% else %}
+  <tr><td colspan="8">{% if show=='archived' %}No archived loans.{% else %}No working loans.{% endif %}</td></tr>
   {% endfor %}
 </table>
 </div>
