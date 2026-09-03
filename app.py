@@ -3359,6 +3359,122 @@ def flip_brrrr_math(f):
     }
 
 
+CALC_FIELDS = [
+    "address",
+    "purchase_price",
+    "as_is_value",
+    "rehab_budget",
+    "buy_costs",
+    "hold_months",
+    "hold_monthly",
+    "arv",
+    "loan_amount",
+    "sell_pct",
+    "rent",
+    "vacancy_pct",
+    "opex_monthly",
+    "refi_ltv",
+    "refi_rate",
+]
+
+
+def calculator_result_pdf(mode, result, who=""):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.7 * inch,
+        rightMargin=0.7 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.6 * inch,
+        title="Brittco deal calculator",
+    )
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("T", parent=styles["Heading1"], fontSize=16, textColor=colors.HexColor("#16324f"))
+    body = ParagraphStyle("B", parent=styles["Normal"], fontSize=10, leading=14)
+    small = ParagraphStyle("S", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#5b6b7a"))
+    story = []
+    kind = "BRRRR" if mode == "brrr" else "Flip"
+    story.append(Paragraph("Brittco Capital Inc — deal calculator", title))
+    story.append(Paragraph(f"{kind} worksheet" + (f" for {who}" if who else ""), small))
+    if result.get("address"):
+        story.append(Paragraph(result["address"], body))
+    story.append(Paragraph(f"Date {date.today().isoformat()}", small))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#c5d3e0"), spaceAfter=10))
+    rows = [
+        ["Purchase", money_txt(result["purchase"])],
+        ["Rehab", money_txt(result["rehab"])],
+        ["Buy costs", money_txt(result["buy_costs"])],
+        ["Hold months / monthly", f"{result['months']:g} mo · {money_txt(result['hold_mo'])}"],
+        ["Planning all-in (incl. hold)", money_txt(result["all_in"])],
+        ["Purchase + rehab (Brittco all-in)", money_txt(result.get("complete_cost") or 0)],
+        ["ARV", money_txt(result["arv"])],
+        [
+            "All-in vs ARV",
+            f"{result['complete_pct']:.1f}%" if result.get("complete_pct") is not None else "—",
+        ],
+        ["Requested loan", money_txt(result["loan_req"])],
+        ["Loan vs current value", f"{result['ltv']:.1f}%" if result.get("ltv") is not None else "—"],
+    ]
+    if mode == "flip":
+        rows += [
+            [f"Sale after {result['sell_pct']:g}% costs", money_txt(result["sale_net"])],
+            ["Flip profit after planning all-in", money_txt(result["flip_profit"])],
+        ]
+    else:
+        rows += [
+            ["Refi proceeds", money_txt(result["refi"])],
+            ["Cash left in / cash out", money_txt(result["cash_left"])],
+            ["NOI / year", money_txt(result["noi"])],
+            ["Est. cash flow / year", money_txt(result["cf"])],
+        ]
+        if result.get("coc") is not None:
+            rows.append(["Cash-on-cash", f"{result['coc']:.1f}%"])
+    t = Table(rows, colWidths=[3.4 * inch, 3.2 * inch])
+    t.setStyle(
+        TableStyle(
+            [
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#d0dbe6")),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f7fb")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(t)
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            "Brittco can lend up to 100% of the current value of the property being rehabbed. "
+            "Preference is purchase + rehab at 75% of ARV or less. "
+            "This worksheet is a planning tool. It is not an approval or a loan quote.",
+            small,
+        )
+    )
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _calc_view(audience="borrower"):
+    mode = request.values.get("mode") or "flip"
+    if mode not in ("flip", "brrr"):
+        mode = "flip"
+    src = request.form if request.method == "POST" else request.args
+    ran = any(src.get(k) for k in ("purchase_price", "rehab_budget", "arv", "calculate", "send", "pdf"))
+    result = flip_brrrr_math(src) if ran else None
+    return mode, src, result
+
+
 @app.route("/portal/calculator", methods=["GET", "POST"])
 @borrower_required
 def portal_calculator():
@@ -3425,7 +3541,24 @@ def portal_calculator():
         result=result,
         form=src,
         flash=request.args.get("msg"),
+        role="borrower",
+        home_url=url_for("portal_home"),
+        calc_url=url_for("portal_calculator"),
+        pdf_url=url_for("portal_calculator_pdf"),
+        calc_fields=CALC_FIELDS,
     )
+
+
+@app.route("/portal/calculator.pdf", methods=["POST"])
+@borrower_required
+def portal_calculator_pdf():
+    mode, src, result = _calc_view("borrower")
+    if not result:
+        return redirect(url_for("portal_calculator"))
+    b = db().execute("SELECT name FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    data = calculator_result_pdf(mode, result, who=(b["name"] if b else ""))
+    name = f"Brittco-{'BRRRR' if mode=='brrr' else 'Flip'}-calculator.pdf"
+    return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
 
 
 @app.route("/portal/apply", methods=["POST"])
