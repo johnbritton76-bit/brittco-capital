@@ -2191,21 +2191,25 @@ def underwrite(deal, credit_score):
     cost_basis = purchase + rehab
     net_profit = arv - cost_basis if arv else None
     net_pct = (net_profit / arv * 100) if arv and net_profit is not None else None
+    all_in_arv = (cost_basis / arv * 100) if arv and cost_basis else None
     flags = []
     decision = "Approve"
 
     if credit_score and credit_score < 680:
         flags.append(f"Credit {credit_score} is below the 680 minimum.")
         decision = "Decline or exception"
-    if ltv > 75:
-        flags.append(f"LTV {ltv:.1f}% is above the 75% guideline.")
+    if ltv > 100:
+        flags.append(
+            f"Requested loan is {ltv:.1f}% of the as-is / purchase value. "
+            "Guideline is up to 100% of the property being rehabbed."
+        )
         if (deal["ltv_override_reason"] or "").strip():
             flags.append("Override reason is on file — holistic review.")
             if decision == "Approve":
                 decision = "Review"
         else:
             decision = "Review" if decision == "Approve" else decision
-            flags.append("Add an override reason if you want to proceed above 75% LTV.")
+            flags.append("Add an override reason if you want to lend more than 100% of current value.")
     if (deal["loan_type"] or "") == "Transactional Loan":
         flags.append(
             "Transactional Loan standard terms: 3% flat fee for up to 7 days. "
@@ -2216,25 +2220,39 @@ def underwrite(deal, credit_score):
             flags.append(f"Fee is {pts:g}% — standard transactional fee is 3%.")
             if decision == "Approve":
                 decision = "Review"
-    if deal["loan_type"] == "Fix and Flip":
-        if net_pct is None:
-            flags.append("Enter ARV and rehab so projected profit can be calculated.")
+    lt = deal["loan_type"] or ""
+    if lt in ("Fix and Flip", "Hard Money", "Bridge") or (arv and cost_basis and lt != "Transactional Loan"):
+        if lt == "Fix and Flip" and net_pct is None:
+            flags.append("Enter ARV and rehab so all-in vs ARV can be calculated.")
             if decision == "Approve":
                 decision = "Review"
-        elif net_pct < 25:
+        elif all_in_arv is not None and all_in_arv > 75:
             flags.append(
-                f"Net projected profit on ARV is {net_pct:.1f}% (preference is 25%+)."
+                f"All-in cost (purchase + rehab) is {all_in_arv:.1f}% of ARV. "
+                "Preference is 75% of ARV or less when the property is complete."
             )
             if decision == "Approve":
                 decision = "Review"
-        else:
-            flags.append(f"Projected profit {net_pct:.1f}% meets the 25% preference.")
+        elif net_pct is not None and net_pct < 25:
+            flags.append(
+                f"Spread to ARV is {net_pct:.1f}% (same test as all-in at 75% of ARV)."
+            )
+            if decision == "Approve":
+                decision = "Review"
+        elif all_in_arv is not None:
+            flags.append(
+                f"All-in cost is {all_in_arv:.1f}% of ARV, within the 75% preference "
+                f"(about {net_pct:.1f}% spread)." if net_pct is not None
+                else f"All-in cost is {all_in_arv:.1f}% of ARV, within the 75% preference."
+            )
     if not flags:
         flags.append("Within standard guidelines. Still apply holistic judgment.")
     return {
         "ltv": ltv,
         "credit": credit_score,
         "net_profit_pct": net_pct,
+        "all_in_arv": all_in_arv,
+        "cost_basis": cost_basis,
         "decision": decision,
         "flags": flags,
     }
@@ -2312,13 +2330,20 @@ def underwriting_memo(deal, borrower, uw, complete=None):
     decision = uw.get("decision") or "Review"
     lines = [
         f"{name} requested a {kind} of ${amount:,.0f} on {addr}.",
-        f"Calculated LTV is {ltv:.1f}% against a 75% guideline. "
+        f"Requested loan is {ltv:.1f}% of current (as-is / purchase) value. "
         + (
-            "That is inside the standard band."
-            if ltv <= 75
-            else "That is above guideline and needs a written override and holistic review."
+            "That is within the guideline of up to 100% of the property being rehabbed."
+            if ltv <= 100
+            else "That is above 100% of current value and needs a written override and holistic review."
         ),
     ]
+    all_in = uw.get("all_in_arv")
+    if all_in is not None:
+        extra = "meets" if all_in <= 75 else "is above"
+        lines.append(
+            f"All-in cost (purchase + rehab) is {all_in:.1f}% of ARV, which {extra} "
+            "the preference that completed cost stay at or under 75% of ARV."
+        )
     if credit:
         if credit < 680:
             lines.append(f"Reported credit score is {credit}, below the 680 minimum.")
@@ -2327,8 +2352,7 @@ def underwriting_memo(deal, borrower, uw, complete=None):
     else:
         lines.append("No credit score is on the file yet. Run or confirm the soft pull before a final call.")
     if net is not None:
-        extra = "meets" if net >= 25 else "is below"
-        lines.append(f"Net projected profit on ARV is {net:.1f}%, which {extra} the 25% preference.")
+        lines.append(f"That all-in figure leaves about {net:.1f}% of ARV as projected spread.")
     exit_s = ""
     if deal is not None and "exit_strategy" in deal.keys():
         exit_s = deal["exit_strategy"] or ""
@@ -2412,13 +2436,20 @@ def answer_borrower_help(question, borrower, deals, loans, missing):
     if "ltv" in q or "loan to value" in q or "how much can i borrow" in q:
         return (
             "LTV is the loan amount divided by the as-is value (or purchase price if as-is is blank). "
-            "Brittco’s general guideline is 75%. We have flexibility after a holistic review of the borrower, "
-            "the market, the exit strategy, and the property."
+            "Brittco can lend up to 100% of the current value of the property being rehabbed "
+            "(as-is value, or purchase price if as-is is blank). "
+            "We prefer purchase plus rehab (all-in when complete) to be 75% of ARV or less."
+        )
+    if any(w in q for w in ("calculator", "brrr", "brrrr", "analyze a deal")):
+        return (
+            "Open Deal calculator on this portal. Use Flip or BRRRR with the same purchase and rehab numbers. "
+            "When the result looks right, click Send data to application. That creates a Fix and Flip file for staff. "
+            "It does not approve the loan."
         )
     if any(w in q for w in ("arv", "fix and flip", "fix-and-flip", "rehab", "projected profit")):
         return (
-            "Yes, we make fix-and-flip loans. We prefer an after-repair value that leaves at least 25% "
-            "net projected profit after purchase price and rehab. Enter ARV and rehab so that math can run."
+            "Yes, we make fix-and-flip loans. We prefer the projected all-in cost when the property is complete "
+            "(purchase + rehab) to be 75% of ARV or less. Enter ARV and rehab so that math can run."
         )
     if any(w in q for w in ("bridge", "hard money", "types of loan", "what loans", "loan type")):
         return (
@@ -3251,6 +3282,150 @@ def portal_profile():
     save_borrower_from_form(request.form, bid=b["id"], existing=b)
     db().commit()
     return redirect(url_for("portal_home", msg="Profile saved"))
+
+
+def flip_brrrr_math(f):
+    purchase = money(f.get("purchase_price"))
+    rehab = money(f.get("rehab_budget"))
+    buy_costs = money(f.get("buy_costs"))
+    months = money(f.get("hold_months")) or 6
+    hold_mo = money(f.get("hold_monthly"))
+    arv = money(f.get("arv"))
+    sell_pct = money(f.get("sell_pct"))
+    if sell_pct <= 0:
+        sell_pct = 8
+    rent = money(f.get("rent"))
+    vac = money(f.get("vacancy_pct"))
+    if f.get("vacancy_pct") in (None, ""):
+        vac = 8
+    opex_mo = money(f.get("opex_monthly"))
+    refi_ltv = money(f.get("refi_ltv"))
+    if refi_ltv <= 0:
+        refi_ltv = 75
+    refi_rate = money(f.get("refi_rate"))
+    loan_req = money(f.get("loan_amount"))
+    as_is = money(f.get("as_is_value")) or purchase
+    all_in = purchase + rehab + buy_costs + months * hold_mo
+    sale_net = arv * (1 - sell_pct / 100.0) if arv else 0
+    flip_profit = sale_net - all_in
+    flip_pct = (flip_profit / arv * 100.0) if arv else None
+    brittco_net = (arv - purchase - rehab) if arv else None
+    brittco_pct = (brittco_net / arv * 100.0) if arv else None
+    egi = rent * 12 * (1 - vac / 100.0)
+    opex_yr = opex_mo * 12 if opex_mo else egi * 0.40
+    noi = egi - opex_yr
+    refi = arv * refi_ltv / 100.0 if arv else 0
+    cash_left = all_in - refi
+    ds = refi * (refi_rate / 100.0) if refi_rate else 0
+    cf = noi - ds
+    coc = (cf / cash_left * 100.0) if cash_left > 1 else None
+    ltv = (loan_req / as_is * 100.0) if as_is and loan_req else None
+    return {
+        "purchase": purchase,
+        "rehab": rehab,
+        "buy_costs": buy_costs,
+        "months": months,
+        "hold_mo": hold_mo,
+        "arv": arv,
+        "sell_pct": sell_pct,
+        "rent": rent,
+        "vac": vac,
+        "opex_mo": opex_mo,
+        "opex_yr": opex_yr,
+        "refi_ltv": refi_ltv,
+        "refi_rate": refi_rate,
+        "loan_req": loan_req,
+        "as_is": as_is,
+        "address": (f.get("address") or "").strip(),
+        "all_in": all_in,
+        "sale_net": sale_net,
+        "flip_profit": flip_profit,
+        "flip_pct": flip_pct,
+        "brittco_net": brittco_net,
+        "brittco_pct": brittco_pct,
+        "complete_cost": purchase + rehab,
+        "complete_pct": (purchase + rehab) / arv * 100.0 if arv else None,
+        "arv_ok": arv > 0 and (purchase + rehab) / arv * 100.0 <= 75,
+        "egi": egi,
+        "noi": noi,
+        "refi": refi,
+        "cash_left": cash_left,
+        "cash_out": max(0.0, -cash_left),
+        "ds": ds,
+        "cf": cf,
+        "coc": coc,
+        "ltv": ltv,
+        "ltv_ok": ltv is None or ltv <= 100,
+    }
+
+
+@app.route("/portal/calculator", methods=["GET", "POST"])
+@borrower_required
+def portal_calculator():
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    ready, missing = profile_ready(b)
+    mode = request.values.get("mode") or "flip"
+    if mode not in ("flip", "brrr"):
+        mode = "flip"
+    src = request.form if request.method == "POST" else request.args
+    ran = any(
+        src.get(k)
+        for k in ("purchase_price", "rehab_budget", "arv", "calculate", "send")
+    )
+    result = flip_brrrr_math(src) if ran else None
+    if request.method == "POST" and request.form.get("send") == "1":
+        if not ready:
+            return redirect(url_for("portal_calculator", msg="Complete your profile before sending a deal."))
+        r = result or flip_brrrr_math(request.form)
+        exit_s = "Sale after rehab" if mode == "flip" else "Refinance and hold (BRRRR)"
+        note = (
+            f"Sent from Deal calculator ({'Flip' if mode=='flip' else 'BRRRR'}). "
+            f"All-in ${r['all_in']:,.0f}. ARV ${r['arv']:,.0f}. "
+            f"Brittco ARV profit test {r['brittco_pct']:.1f}%." if r["brittco_pct"] is not None
+            else f"Sent from Deal calculator ({mode})."
+        )
+        if mode == "flip" and r["flip_pct"] is not None:
+            note += f" Flip profit after sell costs {r['flip_pct']:.1f}% of ARV."
+        if mode == "brrr":
+            note += f" Refi proceeds ${r['refi']:,.0f}. Cash left in ${r['cash_left']:,.0f}."
+        db().execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                b["id"],
+                "Fix and Flip",
+                r["address"],
+                r["purchase"] or None,
+                r["as_is"] or None,
+                r["arv"] or None,
+                r["rehab"] or None,
+                r["loan_req"] or None,
+                None,
+                None,
+                int(r["months"]) if r["months"] else 6,
+                "Application",
+                exit_s,
+                note,
+                "",
+                datetime.now().isoformat(timespec="minutes"),
+                0,
+            ),
+        )
+        db().commit()
+        return redirect(url_for("portal_home", msg="Calculator data sent to a new application. Review it on this page."))
+    return render_template(
+        "portal_calculator.html",
+        b=b,
+        ready=ready,
+        missing=missing,
+        mode=mode,
+        result=result,
+        form=src,
+        flash=request.args.get("msg"),
+    )
 
 
 @app.route("/portal/apply", methods=["POST"])
