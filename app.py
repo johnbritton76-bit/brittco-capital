@@ -2992,7 +2992,7 @@ def loans():
     return render_template(
         "loans.html",
         title="Loan management",
-        nav="loans",
+        nav="loan_archive" if show == "archived" else "loans",
         loans=enriched,
         show=show,
         active_n=counts["active_n"] or 0,
