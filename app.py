@@ -783,6 +783,15 @@ try:
             updated_at TEXT
         )"""
     )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS help_items (
+            id INTEGER PRIMARY KEY,
+            question TEXT,
+            answer TEXT,
+            sort_order INTEGER,
+            active INTEGER
+        )"""
+    )
     _c.commit()
     deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
     if deal_cols and "acked" not in deal_cols:
@@ -2376,17 +2385,80 @@ def underwriting_memo(deal, borrower, uw, complete=None):
     return " ".join(lines)
 
 
-BORROWER_HELP_EXAMPLES = [
-    "What documents do I need?",
-    "What is the minimum credit score?",
-    "How long does it take to get approved?",
-    "What is LTV?",
-    "Do you do fix and flip loans?",
-    "What is a transactional loan?",
-    "Will a credit pull hurt my score?",
-    "Who can borrow?",
-    "How do I sign the forms?",
+DEFAULT_HELP_ITEMS = [
+    (
+        "What documents do I need?",
+        "Typical items: government ID, purchase contract or HUD if you have one, insurance quote, rehab bid or budget on a fix-and-flip, entity documents if you borrow in an LLC, and photos of the property. Brittco will send notary forms when they are needed. You type the form, print it, and sign in wet ink in front of a notary.",
+    ),
+    (
+        "What is the minimum credit score?",
+        "Our preference is a credit score of at least 680. We take a holistic look at the borrower, the property, the market, and the exit strategy, and we may make exceptions for scores under 680.",
+    ),
+    (
+        "How long does it take to get approved?",
+        "After the application is complete and submitted with all of the required documentation, we can usually process a loan request in 7 days or less and, if approved, fund within that period. For repeat borrowers we can usually fund deals in 24–48 hours.",
+    ),
+    (
+        "What is LTV?",
+        "LTV is the loan amount divided by the as-is value (or purchase price if as-is is blank). Brittco can lend up to 100% of the current value of the property being rehabbed. We prefer purchase plus rehab (all-in when complete) to be 75% of ARV or less.",
+    ),
+    (
+        "Do you do fix and flip loans?",
+        "Yes. We prefer the projected all-in cost when the property is complete (purchase + rehab) to be 75% of ARV or less. Enter ARV and rehab so that math can run.",
+    ),
+    (
+        "What is a transactional loan?",
+        "A transactional loan is a short close. The standard fee is a flat 3% for loans up to 7 days. Extensions beyond 7 days are negotiated.",
+    ),
+    (
+        "Will a credit pull hurt my score?",
+        "When you submit an application you consent to a soft credit pull. A soft pull is visible to you. It is not shown to other lenders as a new application and it does not have an adverse effect on your credit report or score.",
+    ),
+    (
+        "Who can borrow?",
+        "Individuals and entities (often an LLC) can apply. You do not have to be a repeat investor, but complete documents and a clear exit help. First-time borrowers should expect the full review, not the 24–48 hour repeat-borrower timeline.",
+    ),
+    (
+        "How do I sign the forms?",
+        "Open the form Brittco sent, type the fields, download or print the PDF, and sign only when a physical notary is present. Do not e-sign those packets.",
+    ),
 ]
+
+
+def seed_help_items():
+    n = db().execute("SELECT COUNT(*) c FROM help_items").fetchone()["c"]
+    if n:
+        return
+    for i, (q, a) in enumerate(DEFAULT_HELP_ITEMS, start=1):
+        db().execute(
+            "INSERT INTO help_items (question, answer, sort_order, active) VALUES (?,?,?,1)",
+            (q, a, i),
+        )
+    db().commit()
+
+
+def help_catalog():
+    seed_help_items()
+    return db().execute(
+        "SELECT * FROM help_items WHERE COALESCE(active,1)=1 ORDER BY sort_order, id"
+    ).fetchall()
+
+
+def match_help_item(question):
+    q = (question or "").strip().lower()
+    if not q:
+        return None
+    best = None
+    best_len = 0
+    for row in help_catalog():
+        text = (row["question"] or "").strip().lower()
+        if not text:
+            continue
+        if q == text or text in q or q in text:
+            if len(text) > best_len:
+                best = row
+                best_len = len(text)
+    return best
 
 
 def answer_borrower_help(question, borrower, deals, loans, missing):
@@ -2394,6 +2466,9 @@ def answer_borrower_help(question, borrower, deals, loans, missing):
     name = (borrower["name"] if borrower else None) or "there"
     if not q:
         return "Ask about documents, credit score, approval time, LTV, or what is still needed on your file."
+    hit = match_help_item(question)
+    if hit:
+        return hit["answer"]
     if any(w in q for w in ("minimum credit", "credit score", "fico", "qualify", "qualification", "680")):
         return (
             "Our preference is a credit score of at least 680. We take a holistic look at the borrower, "
@@ -2728,6 +2803,57 @@ def borrowers():
         invite_url=session.pop("last_invite_url", None),
         invite_note=session.pop("last_invite_note", None),
     )
+
+
+@app.route("/borrowers/help", methods=["GET", "POST"])
+@staff_required
+def help_admin():
+    seed_help_items()
+    if request.method == "POST":
+        if request.form.get("new_question"):
+            nxt = db().execute("SELECT COALESCE(MAX(sort_order),0)+1 n FROM help_items").fetchone()["n"]
+            db().execute(
+                "INSERT INTO help_items (question, answer, sort_order, active) VALUES (?,?,?,1)",
+                (
+                    request.form.get("new_question").strip(),
+                    request.form.get("new_answer") or "",
+                    nxt,
+                ),
+            )
+            db().commit()
+        return redirect(url_for("help_admin"))
+    items = db().execute("SELECT * FROM help_items ORDER BY sort_order, id").fetchall()
+    return render_template(
+        "help_admin.html",
+        title="Ask Brittco answers",
+        nav="borrowers",
+        items=items,
+        msg=request.args.get("msg"),
+    )
+
+
+@app.route("/borrowers/help/<int:hid>", methods=["POST"])
+@staff_required
+def help_admin_save(hid):
+    db().execute(
+        "UPDATE help_items SET question=?, answer=?, sort_order=? WHERE id=?",
+        (
+            (request.form.get("question") or "").strip(),
+            request.form.get("answer") or "",
+            int(request.form.get("sort_order") or 0),
+            hid,
+        ),
+    )
+    db().commit()
+    return redirect(url_for("help_admin", msg="Saved"))
+
+
+@app.route("/borrowers/help/<int:hid>/delete", methods=["POST"])
+@staff_required
+def help_admin_delete(hid):
+    db().execute("DELETE FROM help_items WHERE id=?", (hid,))
+    db().commit()
+    return redirect(url_for("help_admin", msg="Removed"))
 
 
 @app.route("/borrowers/invite", methods=["GET", "POST"])
@@ -3271,7 +3397,7 @@ def portal_home():
         form_defs=load_form_defs(),
         help_q=help_q,
         help_a=help_a,
-        help_examples=BORROWER_HELP_EXAMPLES,
+        help_examples=help_catalog(),
     )
 
 
