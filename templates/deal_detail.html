@@ -41,6 +41,27 @@
   {% if d.ltv_override_reason %}<p><em>Override notes:</em> {{ d.ltv_override_reason }}</p>{% endif %}
 </div>
 
+<div class="card" style="margin-top:14px">
+  <h3>File completeness</h3>
+  <p>Checklist score <strong>{{ complete.score }}</strong>/100.
+    {% if complete.ok %}<span class="badge good">Required fields present</span>
+    {% else %}<span class="badge warn">Gaps on file</span>{% endif %}
+  </p>
+  {% if complete.missing %}
+  <p>Still needed:</p>
+  <ul>{% for m in complete.missing %}<li>{{ m }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if complete.warnings %}
+  <ul class="hint">{% for w in complete.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Underwriting memo</h3>
+  <p>{{ memo }}</p>
+  <p class="hint">Generated from Brittco guidelines already in this software. A person still decides.</p>
+</div>
+
 <div class="grid cards" style="margin-top:14px">
   <div class="card"><h3>Purchase</h3><div>${{ "{:,.0f}".format(d.purchase_price or 0) }}</div></div>
   <div class="card"><h3>As-is value</h3><div>${{ "{:,.0f}".format(d.as_is_value or 0) }}</div></div>

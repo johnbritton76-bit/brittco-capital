@@ -18,6 +18,16 @@
   {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
 
   <div class="card" style="margin-top:18px">
+    <h3>Ask Brittco</h3>
+    <p class="hint">Answers come from Brittco rules and your file only. This box cannot approve a loan.</p>
+    <form method="get" action="{{ url_for('portal_home') }}">
+      <input name="q" value="{{ help_q or '' }}" placeholder="Example: What documents do I need?" style="width:70%">
+      <button class="btn" type="submit">Ask</button>
+    </form>
+    {% if help_a %}<p style="margin-top:10px">{{ help_a }}</p>{% endif %}
+  </div>
+
+  <div class="card" style="margin-top:18px">
     <h3>Your profile</h3>
     {% if not ready %}
     <p class="badge bad">Complete the required fields below before you can submit an application.</p>

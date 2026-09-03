@@ -39,6 +39,12 @@
       Profit is interest paid to you. Principal coming back is your original capital, not profit.
       Example: $100,000 at 10% in 3 months is $10,000 gross. Nate’s 25% is $2,500. You keep $7,500 (7.5% / 30% annualized).
     </p>
+    <form method="get" action="{{ url_for('investor_portal') }}" style="margin-top:10px">
+      <label>Ask about this statement</label>
+      <input name="q" value="{{ help_q or '' }}" placeholder="Example: When is Nate paid?" style="width:70%">
+      <button class="btn" type="submit">Ask</button>
+    </form>
+    {% if help_a %}<p style="margin-top:8px">{{ help_a }}</p>{% endif %}
   </div>
 
   <div class="grid cards" style="margin-top:14px">

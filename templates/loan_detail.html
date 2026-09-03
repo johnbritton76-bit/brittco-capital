@@ -46,6 +46,13 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  <h3>Staff assist</h3>
+  <p>{{ staff_assist }}</p>
+  <label>Reminder draft (copy into email or text)</label>
+  <textarea rows="4" style="width:100%">{{ reminder_draft }}</textarea>
+</div>
+
+<div class="card" style="margin-top:14px">
   {% if perf.closed %}
   <h3>Realized return</h3>
   <p>

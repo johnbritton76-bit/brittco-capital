@@ -11,6 +11,16 @@
     <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
   </div>
 </div>
+{% if complete %}
+<div class="card">
+  <h3>File completeness</h3>
+  <p>Score <strong>{{ complete.score }}</strong>/100.
+    {% if complete.ok %}<span class="badge good">Ready</span>{% else %}<span class="badge warn">Gaps</span>{% endif %}
+  </p>
+  {% if complete.missing %}<p>Still needed: {{ complete.missing|join(', ') }}</p>{% endif %}
+  {% if complete.warnings %}<p class="hint">{{ complete.warnings|join(' ') }}</p>{% endif %}
+</div>
+{% endif %}
 {% if session.get('last_form_note') %}
 <div class="card"><p>{{ session.pop('last_form_note') }}</p>
 {% if session.get('last_form_url') %}<p><a href="{{ session.get('last_form_url') }}">Open form link</a></p>{% endif %}
