@@ -1116,6 +1116,79 @@ ACCOUNT_KINDS = [
     "Other",
 ]
 
+LOAN_TYPES = [
+    "Hard Money",
+    "Bridge",
+    "Fix and Flip",
+    "Gap Loan",
+    "Transactional Loan",
+]
+
+
+def investor_product_terms(kind):
+    if kind == "Transactional Loan":
+        return {
+            "base": 2.75,
+            "days": 4,
+            "months": 0,
+            "max_ext": 0,
+            "ext_rate": 0,
+            "label": "2.75% for 4 business days",
+        }
+    if kind == "Gap Loan":
+        return {
+            "base": 15.0,
+            "days": 90,
+            "months": 3,
+            "max_ext": 2,
+            "ext_rate": 2.0,
+            "label": "15% for 3 months, two 1-month extensions at 2% each",
+        }
+    # Fix and Flip and Bridge
+    return {
+        "base": 10.0,
+        "days": 120,
+        "months": 4,
+        "max_ext": 2,
+        "ext_rate": 2.0,
+        "label": "10% for 4 months, two 1-month extensions at 2% each",
+    }
+
+
+def investor_return_math(kind, capital, extensions=0):
+    spec = investor_product_terms(kind)
+    ext = max(0, min(int(extensions or 0), spec["max_ext"]))
+    gross_pct = spec["base"] + ext * spec["ext_rate"]
+    days = spec["days"] + ext * 30
+    if kind == "Transactional Loan":
+        days = 4
+    cap = money(capital) or 0
+    gross = cap * gross_pct / 100.0
+    brittco = cap * 0.01
+    after = gross - brittco
+    nate = after * 0.25
+    investor = after - nate
+    inv_pct = (investor / cap * 100.0) if cap else 0
+    after_pct = (after / cap * 100.0) if cap else 0
+    return {
+        **spec,
+        "kind": kind,
+        "capital": cap,
+        "ext": ext,
+        "days": days,
+        "gross_pct": gross_pct,
+        "gross": gross,
+        "brittco": brittco,
+        "after": after,
+        "after_pct": after_pct,
+        "nate": nate,
+        "investor": investor,
+        "investor_pct": inv_pct,
+        "ann_gross": annualized_days(gross_pct, days) or 0,
+        "ann_after": annualized_days(after_pct, days) or 0,
+        "ann_investor": annualized_days(inv_pct, days) or 0,
+    }
+
 
 def investor_funding_accounts(iid, include_archived=False):
     q = "SELECT * FROM investor_accounts WHERE investor_id=?"
@@ -2230,7 +2303,7 @@ def underwrite(deal, credit_score):
             if decision == "Approve":
                 decision = "Review"
     lt = deal["loan_type"] or ""
-    if lt in ("Fix and Flip", "Hard Money", "Bridge") or (arv and cost_basis and lt != "Transactional Loan"):
+    if lt in ("Fix and Flip", "Hard Money", "Bridge", "Gap Loan") or (arv and cost_basis and lt != "Transactional Loan"):
         if lt == "Fix and Flip" and net_pct is None:
             flags.append("Enter ARV and rehab so all-in vs ARV can be calculated.")
             if decision == "Approve":
@@ -4324,6 +4397,32 @@ def investor_portal():
         account_kinds=ACCOUNT_KINDS,
         help_q=help_q,
         help_a=help_a,
+    )
+
+
+@app.route("/investor/returns", methods=["GET", "POST"])
+@investor_required
+def investor_returns():
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
+    kinds = ["Transactional Loan", "Fix and Flip", "Gap Loan", "Bridge"]
+    kind = request.values.get("kind") or "Fix and Flip"
+    if kind not in kinds:
+        kind = "Fix and Flip"
+    spec = investor_product_terms(kind)
+    capital = request.values.get("capital") or "100000"
+    ext = int(request.values.get("extensions") or 0)
+    result = None
+    if request.method == "POST" or request.values.get("capital"):
+        result = investor_return_math(kind, capital, ext)
+    return render_template(
+        "investor_returns.html",
+        inv=inv,
+        kinds=kinds,
+        kind=kind,
+        spec=spec,
+        capital=capital,
+        extensions=ext,
+        result=result,
     )
 
 
