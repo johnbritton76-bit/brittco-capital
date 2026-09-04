@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investor returns calculator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:860px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Investor tools</div>
+      <h2 style="margin:4px 0 0">Returns calculator</h2>
+    </div>
+    <a class="btn ghost" href="{{ url_for('investor_portal') }}">Back to account</a>
+  </div>
+  <p class="hint">
+    Stated gross return, then Brittco keeps 1% of the capital.
+    Nate Holland is paid 25% of what remains. You receive the rest.
+    This is a planning sheet, not a commitment on a specific deal.
+  </p>
+
+  <form method="get" class="card form-grid">
+    <div>
+      <label>Loan type</label>
+      <select name="kind" onchange="this.form.submit()">
+        {% for k in kinds %}
+        <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Capital</label><input name="capital" type="number" step="0.01" value="{{ capital }}"></div>
+    {% if spec.max_ext %}
+    <div>
+      <label>Extension months (0–{{ spec.max_ext }})</label>
+      <select name="extensions">
+        {% for n in range(0, spec.max_ext + 1) %}
+        <option value="{{ n }}" {% if extensions==n %}selected{% endif %}>{{ n }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div><button class="btn" type="submit">Calculate</button></div>
+  </form>
+  <p class="hint">{{ spec.label }}</p>
+
+  {% if result %}
+  <div class="card" style="margin-top:14px">
+    <h3>{{ result.kind }} — {{ result.days }} days</h3>
+    <div class="grid cards">
+      <div class="card"><h3>Stated gross</h3><div class="n">{{ "%.2f"|format(result.gross_pct) }}%</div><div class="hint">${{ "{:,.2f}".format(result.gross) }}</div></div>
+      <div class="card"><h3>Brittco 1% of capital</h3><div>${{ "{:,.2f}".format(result.brittco) }}</div></div>
+      <div class="card"><h3>After Brittco</h3><div>{{ "%.2f"|format(result.after_pct) }}%</div><div class="hint">${{ "{:,.2f}".format(result.after) }}</div></div>
+      <div class="card"><h3>Nate 25%</h3><div>${{ "{:,.2f}".format(result.nate) }}</div></div>
+      <div class="card"><h3>Your flat return</h3><div class="n">{{ "%.2f"|format(result.investor_pct) }}%</div><div class="hint">${{ "{:,.2f}".format(result.investor) }}</div></div>
+      <div class="card"><h3>Your annualized return</h3><div class="n">{{ "%.1f"|format(result.ann_investor) }}%</div></div>
+    </div>
+    <p>
+      On ${{ "{:,.0f}".format(result.capital) }} the stated gross is
+      <strong>{{ "%.2f"|format(result.gross_pct) }}%</strong> (${{ "{:,.2f}".format(result.gross) }}).
+      Brittco’s 1% of capital is ${{ "{:,.2f}".format(result.brittco) }}.
+      After that, ${{ "{:,.2f}".format(result.after) }} remains.
+      Nate’s 25% is ${{ "{:,.2f}".format(result.nate) }}.
+      You keep <strong>${{ "{:,.2f}".format(result.investor) }}</strong>
+      (<strong>{{ "%.2f"|format(result.investor_pct) }}%</strong> flat /
+      <strong>{{ "%.1f"|format(result.ann_investor) }}%</strong> annualized over {{ result.days }} days).
+    </p>
+  </div>
+  {% endif %}
+</main>
+</body>
+</html>
