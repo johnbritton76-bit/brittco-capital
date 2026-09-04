@@ -1155,18 +1155,26 @@ def investor_product_terms(kind):
     }
 
 
-def investor_return_math(kind, capital, extensions=0):
+def investor_return_math(kind, capital, extensions=0, gross_pct=None, brittco_pct=None, nate_pct=None, days=None):
     spec = investor_product_terms(kind)
     ext = max(0, min(int(extensions or 0), spec["max_ext"]))
-    gross_pct = spec["base"] + ext * spec["ext_rate"]
-    days = spec["days"] + ext * 30
-    if kind == "Transactional Loan":
-        days = 4
+    if gross_pct in (None, ""):
+        gross_pct = spec["base"] + ext * spec["ext_rate"]
+    else:
+        gross_pct = money(gross_pct)
+    if days in (None, ""):
+        days = spec["days"] + ext * 30
+        if kind == "Transactional Loan":
+            days = 4
+    else:
+        days = max(1, int(money(days) or 1))
+    brittco_pct = 1.0 if brittco_pct in (None, "") else money(brittco_pct)
+    nate_pct = 25.0 if nate_pct in (None, "") else money(nate_pct)
     cap = money(capital) or 0
     gross = cap * gross_pct / 100.0
-    brittco = cap * 0.01
+    brittco = cap * brittco_pct / 100.0
     after = gross - brittco
-    nate = after * 0.25
+    nate = after * nate_pct / 100.0
     investor = after - nate
     inv_pct = (investor / cap * 100.0) if cap else 0
     after_pct = (after / cap * 100.0) if cap else 0
@@ -1177,6 +1185,8 @@ def investor_return_math(kind, capital, extensions=0):
         "ext": ext,
         "days": days,
         "gross_pct": gross_pct,
+        "brittco_pct": brittco_pct,
+        "nate_pct": nate_pct,
         "gross": gross,
         "brittco": brittco,
         "after": after,
@@ -4411,9 +4421,16 @@ def investor_returns():
     spec = investor_product_terms(kind)
     capital = request.values.get("capital") or "100000"
     ext = int(request.values.get("extensions") or 0)
-    result = None
-    if request.method == "POST" or request.values.get("capital"):
-        result = investor_return_math(kind, capital, ext)
+    custom = request.values.get("gross_pct") not in (None, "")
+    result = investor_return_math(
+        kind,
+        capital,
+        ext,
+        gross_pct=request.values.get("gross_pct") if custom else None,
+        brittco_pct=request.values.get("brittco_pct"),
+        nate_pct=request.values.get("nate_pct"),
+        days=request.values.get("days"),
+    )
     return render_template(
         "investor_returns.html",
         inv=inv,
