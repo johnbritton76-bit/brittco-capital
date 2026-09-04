@@ -4,6 +4,22 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Investor returns calculator</title>
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .play {
+      width: 4.6em;
+      display: inline-block;
+      font-size: 26px;
+      font-weight: 650;
+      color: #12324f;
+      background: transparent;
+      border: 0;
+      border-bottom: 1px dashed #1f7fd4;
+      border-radius: 0;
+      padding: 0 2px;
+      text-align: left;
+    }
+    .play:focus { outline: none; border-bottom-style: solid; background: #f3f8fd; }
+  </style>
 </head>
 <body>
 <main class="main" style="max-width:860px;margin:0 auto">
@@ -16,72 +32,71 @@
     <a class="btn ghost" href="{{ url_for('investor_portal') }}">Back to account</a>
   </div>
   <p class="hint">
-    Click inside a percent or day box, change it, then Calculate (or press Enter).
-    Default: Brittco 1% of capital, then Nate 25% of what remains. You receive the rest.
+    Stated gross return, then Brittco keeps 1% of the capital.
+    Nate Holland is paid 25% of what remains. You receive the rest.
+    Click a dashed number to try a different percent or day count, then leave the box.
     This is a planning sheet, not a commitment on a specific deal.
   </p>
 
-  <form method="get" class="card form-grid" id="ret-form">
-    <div>
-      <label>Loan type</label>
-      <select name="kind" onchange="window.location='{{ url_for('investor_returns') }}?kind='+encodeURIComponent(this.value)+'&capital='+encodeURIComponent(document.querySelector('[name=capital]').value)">
-        {% for k in kinds %}
-        <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k }}</option>
-        {% endfor %}
-      </select>
+  <form method="get" id="ret-form">
+    <div class="card form-grid">
+      <div>
+        <label>Loan type</label>
+        <select name="kind" onchange="window.location='{{ url_for('investor_returns') }}?kind='+encodeURIComponent(this.value)+'&capital='+encodeURIComponent(this.form.capital.value)">
+          {% for k in kinds %}
+          <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div><label>Capital</label><input name="capital" type="number" step="0.01" value="{{ capital }}"></div>
+      {% if spec.max_ext %}
+      <div>
+        <label>Extension months (0–{{ spec.max_ext }})</label>
+        <select name="extensions" onchange="this.form.submit()">
+          {% for n in range(0, spec.max_ext + 1) %}
+          <option value="{{ n }}" {% if extensions==n %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+      <div><label>&nbsp;</label><button class="btn" type="submit">Calculate</button></div>
     </div>
-    <div><label>Capital</label><input name="capital" type="number" step="0.01" value="{{ capital }}"></div>
-    {% if spec.max_ext %}
-    <div>
-      <label>Extension months (0–{{ spec.max_ext }})</label>
-      <select name="extensions">
-        {% for n in range(0, spec.max_ext + 1) %}
-        <option value="{{ n }}" {% if extensions==n %}selected{% endif %}>{{ n }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    {% endif %}
-    <div><button class="btn" type="submit">Calculate</button></div>
+    <p class="hint">{{ spec.label }}</p>
 
     {% if result %}
-    <div class="span-2" style="margin-top:8px">
-      <h3>{{ result.kind }}</h3>
-      <p class="hint">{{ spec.label }}. Boxes below can be edited.</p>
-    </div>
-    <div>
-      <label>Stated gross %</label>
-      <input name="gross_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.gross_pct) }}">
-      <div class="hint">${{ "{:,.2f}".format(result.gross) }}</div>
-    </div>
-    <div>
-      <label>Days</label>
-      <input name="days" type="number" step="1" value="{{ result.days }}">
-    </div>
-    <div>
-      <label>Brittco % of capital</label>
-      <input name="brittco_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.brittco_pct) }}">
-      <div class="hint">${{ "{:,.2f}".format(result.brittco) }}</div>
-    </div>
-    <div>
-      <label>Nate % of remainder</label>
-      <input name="nate_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.nate_pct) }}">
-      <div class="hint">${{ "{:,.2f}".format(result.nate) }}</div>
-    </div>
-    <div>
-      <label>After Brittco</label>
-      <div class="n">{{ "%.2f"|format(result.after_pct) }}%</div>
-      <div class="hint">${{ "{:,.2f}".format(result.after) }}</div>
-    </div>
-    <div>
-      <label>Your flat return</label>
-      <div class="n">{{ "%.2f"|format(result.investor_pct) }}%</div>
-      <div class="hint">${{ "{:,.2f}".format(result.investor) }}</div>
-    </div>
-    <div>
-      <label>Your annualized return</label>
-      <div class="n">{{ "%.1f"|format(result.ann_investor) }}%</div>
-    </div>
-    <div class="span-2">
+    <div class="card" style="margin-top:14px">
+      <h3>{{ result.kind }} — <input class="play" name="days" type="number" step="1" value="{{ result.days }}" onchange="this.form.submit()"> days</h3>
+      <div class="grid cards">
+        <div class="card">
+          <h3>Stated gross</h3>
+          <div class="n"><input class="play" name="gross_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.gross_pct) }}" onchange="this.form.submit()">%</div>
+          <div class="hint">${{ "{:,.2f}".format(result.gross) }}</div>
+        </div>
+        <div class="card">
+          <h3>Brittco % of capital</h3>
+          <div class="n"><input class="play" name="brittco_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.brittco_pct) }}" onchange="this.form.submit()">%</div>
+          <div class="hint">${{ "{:,.2f}".format(result.brittco) }}</div>
+        </div>
+        <div class="card">
+          <h3>After Brittco</h3>
+          <div class="n">{{ "%.2f"|format(result.after_pct) }}%</div>
+          <div class="hint">${{ "{:,.2f}".format(result.after) }}</div>
+        </div>
+        <div class="card">
+          <h3>Nate % of remainder</h3>
+          <div class="n"><input class="play" name="nate_pct" type="number" step="0.01" value="{{ '%.2f'|format(result.nate_pct) }}" onchange="this.form.submit()">%</div>
+          <div class="hint">${{ "{:,.2f}".format(result.nate) }}</div>
+        </div>
+        <div class="card">
+          <h3>Your flat return</h3>
+          <div class="n">{{ "%.2f"|format(result.investor_pct) }}%</div>
+          <div class="hint">${{ "{:,.2f}".format(result.investor) }}</div>
+        </div>
+        <div class="card">
+          <h3>Your annualized return</h3>
+          <div class="n">{{ "%.1f"|format(result.ann_investor) }}%</div>
+        </div>
+      </div>
       <p>
         On ${{ "{:,.0f}".format(result.capital) }} the stated gross is
         <strong>{{ "%.2f"|format(result.gross_pct) }}%</strong> (${{ "{:,.2f}".format(result.gross) }}).
