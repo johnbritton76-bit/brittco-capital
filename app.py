@@ -1021,6 +1021,8 @@ try:
         ("bank_account", "TEXT"),
         ("bank_account_type", "TEXT"),
         ("ach_authorized", "INTEGER"),
+        ("complete_token", "TEXT"),
+        ("gap_email_at", "TEXT"),
     ]:
         if b_cols and col not in b_cols:
             _c.execute(f"ALTER TABLE borrowers ADD COLUMN {col} {spec}")
@@ -1907,6 +1909,94 @@ def profile_ready(b):
         if not str(b["prev_employer"] if "prev_employer" in b.keys() else "" or "").strip():
             missing.append("Previous employer (required if under 2 years on the job)")
     return (len(missing) == 0), missing
+
+
+PROFILE_GAP_FIELDS = [
+    ("Full name", "name", "text"),
+    ("Email", "email", "email"),
+    ("Mobile phone", "phone", "tel"),
+    ("Date of birth", "dob", "date"),
+    ("Social Security number", "ssn", "text"),
+    ("Street address", "address", "text"),
+    ("City", "city", "text"),
+    ("State", "state", "text"),
+    ("ZIP", "zip", "text"),
+    ("Own or rent", "own_or_rent", "ownrent"),
+    ("Years at current address", "years_at_address", "number"),
+    ("Previous address (required if under 2 years)", "prev_address", "text"),
+    ("Current employer", "employer", "text"),
+    ("Job title / occupation", "occupation", "text"),
+    ("Years with current employer", "years_employed", "number"),
+    ("Previous employer (required if under 2 years on the job)", "prev_employer", "text"),
+]
+
+
+def gap_inputs(missing):
+    want = set(missing or [])
+    return [row for row in PROFILE_GAP_FIELDS if row[0] in want]
+
+
+def apply_gap_form(bid, form):
+    allowed = {row[1] for row in PROFILE_GAP_FIELDS}
+    sets, vals = [], []
+    for key in allowed:
+        if key not in form:
+            continue
+        raw = form.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if key in ("years_at_address", "years_employed"):
+            try:
+                raw = float(raw)
+            except (TypeError, ValueError):
+                continue
+        sets.append(f"{key}=?")
+        vals.append(raw)
+    if not sets:
+        return False
+    db().execute(f"UPDATE borrowers SET {', '.join(sets)} WHERE id=?", vals + [bid])
+    db().commit()
+    return True
+
+
+def request_profile_gaps(b, force=False):
+    ready, missing = profile_ready(b)
+    email = (b["email"] if b and "email" in b.keys() else "") or ""
+    if ready or not email:
+        return False
+    last = None
+    raw = b["gap_email_at"] if b and "gap_email_at" in b.keys() else None
+    if raw:
+        try:
+            last = datetime.fromisoformat(raw)
+        except ValueError:
+            last = None
+    if last and not force and (datetime.now() - last) < timedelta(hours=24):
+        return False
+    token = (b["complete_token"] if b and "complete_token" in b.keys() else None) or secrets.token_urlsafe(24)
+    now = datetime.now().isoformat(timespec="minutes")
+    db().execute(
+        "UPDATE borrowers SET complete_token=?, gap_email_at=? WHERE id=?",
+        (token, now, b["id"]),
+    )
+    db().commit()
+    link = f"{public_base()}/portal/complete/{token}"
+    items = "\n".join(f"- {m}" for m in missing)
+    body = (
+        f"Hello {b['name'] or 'there'},\n\n"
+        "This message is from Brittco Capital Inc. Your borrower profile is missing a few items we need "
+        "before we can finish review. Please send only the items listed below:\n\n"
+        f"{items}\n\n"
+        "Use this link to enter them. The file updates as soon as you save — no staff step is required.\n\n"
+        f"{link}\n\n"
+        "If you were not expecting this email, you may ignore it.\n\n"
+        "Brittco Capital Inc\n"
+    )
+    try:
+        send_mail(email, "Brittco Capital Inc — information needed on your file", body)
+    except Exception:
+        return False
+    return True
 
 
 def public_base():
@@ -3943,6 +4033,8 @@ def portal_home():
         "SELECT * FROM documents WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
     ).fetchall()
     ready, missing = profile_ready(b)
+    if not ready:
+        request_profile_gaps(b)
     packets = db().execute(
         "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
     ).fetchall()
@@ -3973,6 +4065,40 @@ def portal_profile():
     save_borrower_from_form(request.form, bid=b["id"], existing=b)
     db().commit()
     return redirect(url_for("portal_home", msg="Profile saved"))
+
+
+@app.route("/portal/complete/<token>", methods=["GET", "POST"])
+def portal_complete(token):
+    b = db().execute("SELECT * FROM borrowers WHERE complete_token=?", (token,)).fetchone()
+    if not b:
+        return render_template("portal_complete.html", error="This link is not valid. Ask Brittco to send a new one.", b=None, fields=[], missing=[])
+    ready, missing = profile_ready(b)
+    if request.method == "POST":
+        apply_gap_form(b["id"], request.form)
+        b = db().execute("SELECT * FROM borrowers WHERE id=?", (b["id"],)).fetchone()
+        ready, missing = profile_ready(b)
+        if ready:
+            session["borrower_id"] = b["id"]
+            return redirect(url_for("portal_home", msg="Thank you. Your profile is complete."))
+        return render_template(
+            "portal_complete.html",
+            b=b,
+            missing=missing,
+            fields=gap_inputs(missing),
+            msg="Saved. Please finish the remaining items.",
+            error=None,
+        )
+    if ready:
+        session["borrower_id"] = b["id"]
+        return redirect(url_for("portal_home", msg="Your profile is already complete."))
+    return render_template(
+        "portal_complete.html",
+        b=b,
+        missing=missing,
+        fields=gap_inputs(missing),
+        error=None,
+        msg=None,
+    )
 
 
 def flip_brrrr_math(f):
@@ -4258,7 +4384,10 @@ def portal_apply():
     f = request.form
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
     ready, missing = profile_ready(b)
-    if not ready or f.get("credit_consent") != "yes":
+    if not ready:
+        request_profile_gaps(b, force=True)
+        return redirect(url_for("portal_home", msg="Application paused. We emailed the items still needed on your profile."))
+    if f.get("credit_consent") != "yes":
         return redirect(url_for("portal_home"))
     cur = db().execute(
         """INSERT INTO deals
