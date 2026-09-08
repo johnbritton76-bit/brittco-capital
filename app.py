@@ -637,10 +637,11 @@ def seed_crossley_tx(c):
                 shutil.copy2(src, dst)
             except OSError:
                 continue
+            profile = is_profile_document(original)
             c.execute(
                 """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
                    VALUES (?,?,?,?,?,?)""",
-                (deal_id, bid, stored, original, "Upload", "2026-09-08T12:00"),
+                (None if profile else deal_id, bid, stored, original, "Profile" if profile else "Property", "2026-09-08T12:00"),
             )
 
 
@@ -3218,6 +3219,10 @@ def borrower_new():
 @staff_required
 def borrower_detail(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    try:
+        ensure_borrower_file_cabinets(bid)
+    except sqlite3.Error:
+        pass
     deals = deal_rows(
         db().execute("SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)).fetchall()
     )
@@ -3255,6 +3260,88 @@ def borrower_detail(bid):
     )
 
 
+def is_profile_document(name):
+    n = (name or "").lower()
+    keys = (
+        "passport",
+        "license",
+        "driver",
+        "formation",
+        "articles",
+        "operating",
+        "good standing",
+        "certificate of organization",
+        "llc",
+        "w-9",
+        "w9",
+        "kyc",
+        "ein",
+        "id card",
+        "photo id",
+    )
+    return any(k in n for k in keys)
+
+
+def ensure_borrower_file_cabinets(bid):
+    now = datetime.now().isoformat(timespec="minutes")
+    prof = db().execute(
+        "SELECT * FROM doc_files WHERE borrower_id=? AND deal_id IS NULL AND name=?",
+        (bid, "Profile documents"),
+    ).fetchone()
+    if not prof:
+        db().execute(
+            "INSERT INTO doc_files (borrower_id, deal_id, name, created_at) VALUES (?,?,?,?)",
+            (bid, None, "Profile documents", now),
+        )
+        db().commit()
+        prof = db().execute(
+            "SELECT * FROM doc_files WHERE borrower_id=? AND name=?",
+            (bid, "Profile documents"),
+        ).fetchone()
+    deals = db().execute("SELECT * FROM deals WHERE borrower_id=? ORDER BY id", (bid,)).fetchall()
+    for d in deals:
+        label = (d["address"] or "").strip() or f"Deal {d['id']}"
+        row = db().execute(
+            "SELECT * FROM doc_files WHERE borrower_id=? AND deal_id=?",
+            (bid, d["id"]),
+        ).fetchone()
+        if not row:
+            db().execute(
+                "INSERT INTO doc_files (borrower_id, deal_id, name, created_at) VALUES (?,?,?,?)",
+                (bid, d["id"], label, now),
+            )
+            db().commit()
+    docs = db().execute(
+        "SELECT * FROM documents WHERE borrower_id=? OR deal_id IN (SELECT id FROM deals WHERE borrower_id=?)",
+        (bid, bid),
+    ).fetchall()
+    for doc in docs:
+        name = doc["original_name"] or doc["filename"] or ""
+        if is_profile_document(name) and doc["deal_id"]:
+            db().execute("UPDATE documents SET deal_id=NULL WHERE id=?", (doc["id"],))
+            target = prof["id"]
+        elif doc["deal_id"]:
+            slot = db().execute(
+                "SELECT id FROM doc_files WHERE borrower_id=? AND deal_id=?",
+                (bid, doc["deal_id"]),
+            ).fetchone()
+            target = slot["id"] if slot else prof["id"]
+        else:
+            target = prof["id"]
+        if not db().execute(
+            "SELECT 1 FROM doc_file_items WHERE file_id=? AND document_id=?",
+            (target, doc["id"]),
+        ).fetchone():
+            # remove from the other cabinet if it was auto-filed on the wrong one
+            if is_profile_document(name):
+                db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+            db().execute(
+                "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+                (target, doc["id"]),
+            )
+    db().commit()
+
+
 def borrower_property_files(bid):
     deals = db().execute(
         "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)
@@ -3279,17 +3366,19 @@ def borrower_property_files(bid):
         else:
             loose.append(doc)
     groups = []
+    if loose:
+        groups.append({"deal": None, "label": "Profile documents", "docs": loose})
     for d in deals:
         addr = d["address"] or f"Deal {d['id']}"
         groups.append({"deal": d, "label": addr, "docs": by_deal[d["id"]]})
-    if loose:
-        groups.append({"deal": None, "label": "Profile / other files", "docs": loose})
     return groups
 
 
 def borrower_named_files(bid):
     rows = db().execute(
-        "SELECT * FROM doc_files WHERE borrower_id=? ORDER BY id DESC", (bid,)
+        """SELECT * FROM doc_files WHERE borrower_id=?
+           ORDER BY CASE WHEN deal_id IS NULL THEN 0 ELSE 1 END, id DESC""",
+        (bid,),
     ).fetchall()
     out = []
     for row in rows:
