@@ -3234,7 +3234,92 @@ def borrower_detail(bid):
             ).fetchone(),
             db().execute("SELECT id FROM documents WHERE borrower_id=?", (bid,)).fetchall(),
         ),
+        property_files=borrower_property_files(bid),
     )
+
+
+def borrower_property_files(bid):
+    deals = db().execute(
+        "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)
+    ).fetchall()
+    deal_ids = [d["id"] for d in deals]
+    docs = db().execute(
+        """SELECT * FROM documents
+           WHERE borrower_id=? OR deal_id IN ({ids})
+           ORDER BY id DESC""".format(ids=",".join("?" * len(deal_ids)) if deal_ids else "0"),
+        ([bid] + deal_ids) if deal_ids else [bid],
+    ).fetchall()
+    by_deal = {d["id"]: [] for d in deals}
+    loose = []
+    seen = set()
+    for doc in docs:
+        if doc["id"] in seen:
+            continue
+        seen.add(doc["id"])
+        did = doc["deal_id"]
+        if did and did in by_deal:
+            by_deal[did].append(doc)
+        else:
+            loose.append(doc)
+    groups = []
+    for d in deals:
+        addr = d["address"] or f"Deal {d['id']}"
+        groups.append({"deal": d, "label": addr, "docs": by_deal[d["id"]]})
+    if loose:
+        groups.append({"deal": None, "label": "Profile / other files", "docs": loose})
+    return groups
+
+
+@app.route("/borrowers/<int:bid>/property/<int:did>/packet.zip")
+@staff_required
+def borrower_property_packet(bid, did):
+    import zipfile
+
+    d = db().execute(
+        "SELECT * FROM deals WHERE id=? AND borrower_id=?", (did, bid)
+    ).fetchone()
+    if not d:
+        return redirect(url_for("borrower_detail", bid=bid))
+    docs = db().execute(
+        "SELECT * FROM documents WHERE deal_id=? OR (borrower_id=? AND deal_id IS NULL) ORDER BY id",
+        (did, bid),
+    ).fetchall()
+    # property packet = files tied to this deal
+    docs = db().execute("SELECT * FROM documents WHERE deal_id=? ORDER BY id", (did,)).fetchall()
+    buf = BytesIO()
+    used = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for doc in docs:
+            path = os.path.join(UPLOAD_DIR, doc["filename"] or "")
+            if not os.path.isfile(path):
+                continue
+            name = secure_filename(doc["original_name"] or doc["filename"] or "file")
+            if name in used:
+                used[name] += 1
+                base, ext = os.path.splitext(name)
+                name = f"{base}-{used[name]}{ext}"
+            else:
+                used[name] = 1
+            z.write(path, name)
+    buf.seek(0)
+    raw = (d["address"] or f"deal-{did}").replace("/", "-")
+    slug = secure_filename(raw) or f"deal-{did}"
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{slug}-closing-packet.zip",
+    )
+
+
+@app.route("/borrowers/<int:bid>/upload", methods=["POST"])
+@staff_required
+def borrower_upload(bid):
+    did = request.form.get("deal_id")
+    did = int(did) if did else None
+    files = request.files.getlist("docs")
+    save_uploads(did, bid, files)
+    return redirect(url_for("borrower_detail", bid=bid))
 
 
 @app.route("/borrowers/<int:bid>/forms", methods=["POST"])
