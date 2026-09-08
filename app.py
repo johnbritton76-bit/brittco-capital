@@ -2,6 +2,7 @@
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
 import json
 import os
+import re
 import secrets
 import smtplib
 import sqlite3
@@ -466,7 +467,10 @@ def init_db():
     seed_transactional_sample(c)
     seed_crossley_tx(c)
     seed_dos_gringos_tx(c)
-    cleanup_duplicate_loans(c)
+    try:
+        cleanup_duplicate_loans(c)
+    except Exception:
+        pass
     c.commit()
     c.close()
 
