@@ -647,40 +647,88 @@ def seed_crossley_tx(c):
             )
 
 
+def _addr_key(s):
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _row_get(row, key, idx):
+    if isinstance(row, sqlite3.Row):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return row[idx]
+    return row[idx]
+
+
 def cleanup_duplicate_loans(c):
-    rows = c.execute(
-        "SELECT loan_number, MIN(id) AS keep_id, COUNT(*) AS n FROM loans WHERE loan_number IS NOT NULL AND loan_number!='' GROUP BY loan_number HAVING n>1"
+    loans = c.execute(
+        "SELECT id, borrower_id, loan_number, property_address FROM loans ORDER BY id"
     ).fetchall()
-    for r in rows:
-        extras = c.execute(
-            "SELECT id FROM loans WHERE loan_number=? AND id!=?",
-            (r["loan_number"] if isinstance(r, sqlite3.Row) else r[0], r["keep_id"] if isinstance(r, sqlite3.Row) else r[1]),
-        ).fetchall()
-        for extra in extras:
-            eid = extra["id"] if isinstance(extra, sqlite3.Row) else extra[0]
-            c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
+    keep_num, keep_addr, drop = {}, {}, []
+    for row in loans:
+        lid = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        num = (_row_get(row, "loan_number", 2) or "").strip()
+        addr = _addr_key(_row_get(row, "property_address", 3))
+        if num and num in keep_num:
+            drop.append(lid)
+            continue
+        if bid and addr and (bid, addr) in keep_addr:
+            drop.append(lid)
+            continue
+        if num:
+            keep_num[num] = lid
+        if bid and addr:
+            keep_addr[(bid, addr)] = lid
+    for eid in drop:
+        c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
+        try:
             c.execute("DELETE FROM payments WHERE loan_id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        try:
             c.execute("DELETE FROM distributions WHERE loan_id=?", (eid,))
-            c.execute("DELETE FROM loans WHERE id=?", (eid,))
-    deals = c.execute(
-        """SELECT borrower_id, address, MIN(id) AS keep_id, COUNT(*) AS n
-           FROM deals WHERE address IS NOT NULL AND address!=''
-           GROUP BY borrower_id, address HAVING n>1"""
-    ).fetchall()
-    for r in deals:
-        keep = r["keep_id"] if isinstance(r, sqlite3.Row) else r[2]
-        bid = r["borrower_id"] if isinstance(r, sqlite3.Row) else r[0]
-        addr = r["address"] if isinstance(r, sqlite3.Row) else r[1]
-        extras = c.execute(
-            "SELECT id FROM deals WHERE borrower_id=? AND address=? AND id!=?",
-            (bid, addr, keep),
-        ).fetchall()
-        for extra in extras:
-            eid = extra["id"] if isinstance(extra, sqlite3.Row) else extra[0]
-            c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM loans WHERE id=?", (eid,))
+    deals = c.execute("SELECT id, borrower_id, address FROM deals ORDER BY id").fetchall()
+    seen, drop_deals = {}, []
+    for row in deals:
+        did = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        addr = _addr_key(_row_get(row, "address", 2))
+        key = (bid, addr)
+        if addr and key in seen:
+            drop_deals.append((did, seen[key]))
+        elif addr:
+            seen[key] = did
+    for eid, keep in drop_deals:
+        c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
+        try:
             c.execute("UPDATE documents SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        try:
             c.execute("UPDATE form_packets SET deal_id=? WHERE deal_id=?", (keep, eid))
-            c.execute("DELETE FROM deals WHERE id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM deals WHERE id=?", (eid,))
+    people = c.execute("SELECT id, email FROM borrowers WHERE email IS NOT NULL AND email!='' ORDER BY id").fetchall()
+    seen_e = {}
+    for row in people:
+        bid = _row_get(row, "id", 0)
+        em = (_row_get(row, "email", 1) or "").strip().lower()
+        if em in seen_e:
+            keep = seen_e[em]
+            c.execute("UPDATE deals SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            c.execute("UPDATE loans SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            try:
+                c.execute("UPDATE documents SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            except sqlite3.Error:
+                pass
+            c.execute("DELETE FROM borrowers WHERE id=?", (bid,))
+        else:
+            seen_e[em] = bid
 
 
 def seed_dos_gringos_tx(c):
@@ -3484,6 +3532,11 @@ def logout():
 @app.route("/")
 @staff_required
 def dashboard():
+    try:
+        cleanup_duplicate_loans(db())
+        db().commit()
+    except sqlite3.Error:
+        pass
     deals = deal_rows(
         db().execute(
             """SELECT d.*, b.name AS borrower_name
@@ -4981,6 +5034,11 @@ def portal_message():
 @app.route("/loans")
 @staff_required
 def loans():
+    try:
+        cleanup_duplicate_loans(db())
+        db().commit()
+    except sqlite3.Error:
+        pass
     show = request.args.get("show") or "active"
     if show == "archived":
         where = "COALESCE(l.archived,0)=1"
