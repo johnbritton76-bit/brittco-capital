@@ -466,6 +466,7 @@ def init_db():
     seed_transactional_sample(c)
     seed_crossley_tx(c)
     seed_dos_gringos_tx(c)
+    cleanup_duplicate_loans(c)
     c.commit()
     c.close()
 
@@ -646,6 +647,42 @@ def seed_crossley_tx(c):
             )
 
 
+def cleanup_duplicate_loans(c):
+    rows = c.execute(
+        "SELECT loan_number, MIN(id) AS keep_id, COUNT(*) AS n FROM loans WHERE loan_number IS NOT NULL AND loan_number!='' GROUP BY loan_number HAVING n>1"
+    ).fetchall()
+    for r in rows:
+        extras = c.execute(
+            "SELECT id FROM loans WHERE loan_number=? AND id!=?",
+            (r["loan_number"] if isinstance(r, sqlite3.Row) else r[0], r["keep_id"] if isinstance(r, sqlite3.Row) else r[1]),
+        ).fetchall()
+        for extra in extras:
+            eid = extra["id"] if isinstance(extra, sqlite3.Row) else extra[0]
+            c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
+            c.execute("DELETE FROM payments WHERE loan_id=?", (eid,))
+            c.execute("DELETE FROM distributions WHERE loan_id=?", (eid,))
+            c.execute("DELETE FROM loans WHERE id=?", (eid,))
+    deals = c.execute(
+        """SELECT borrower_id, address, MIN(id) AS keep_id, COUNT(*) AS n
+           FROM deals WHERE address IS NOT NULL AND address!=''
+           GROUP BY borrower_id, address HAVING n>1"""
+    ).fetchall()
+    for r in deals:
+        keep = r["keep_id"] if isinstance(r, sqlite3.Row) else r[2]
+        bid = r["borrower_id"] if isinstance(r, sqlite3.Row) else r[0]
+        addr = r["address"] if isinstance(r, sqlite3.Row) else r[1]
+        extras = c.execute(
+            "SELECT id FROM deals WHERE borrower_id=? AND address=? AND id!=?",
+            (bid, addr, keep),
+        ).fetchall()
+        for extra in extras:
+            eid = extra["id"] if isinstance(extra, sqlite3.Row) else extra[0]
+            c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
+            c.execute("UPDATE documents SET deal_id=? WHERE deal_id=?", (keep, eid))
+            c.execute("UPDATE form_packets SET deal_id=? WHERE deal_id=?", (keep, eid))
+            c.execute("DELETE FROM deals WHERE id=?", (eid,))
+
+
 def seed_dos_gringos_tx(c):
     import shutil
 
@@ -708,6 +745,12 @@ def seed_dos_gringos_tx(c):
             ("John Britton", "Brittco Capital Inc", "john@brittcocapital.com", "(816) 694-1658", "President.", "Not connected", "investor"),
         )
     inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    already = c.execute(
+        "SELECT id FROM loans WHERE property_address LIKE ? OR loan_number=?",
+        ("%409 S Maple%", "BC-TX-409SM"),
+    ).fetchone()
+    if already:
+        return
     deal = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%409 S Maple%",)).fetchone()
     if deal:
         deal_id = deal[0]
@@ -1206,8 +1249,11 @@ except sqlite3.Error:
     pass
 try:
     _s = sqlite3.connect(DB_PATH)
+    _s.row_factory = sqlite3.Row
+    cleanup_duplicate_loans(_s)
     seed_crossley_tx(_s)
     seed_dos_gringos_tx(_s)
+    cleanup_duplicate_loans(_s)
     _s.commit()
     _s.close()
 except Exception:
