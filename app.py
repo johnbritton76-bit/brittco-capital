@@ -1075,7 +1075,7 @@ def inject_new_apps():
         rows = db().execute(
             """SELECT d.id, d.address, b.name AS borrower_name
                FROM deals d JOIN borrowers b ON b.id=d.borrower_id
-               WHERE d.status='Application' AND COALESCE(d.acked,0)=0
+               WHERE d.status IN ('Application','Pending Review') AND COALESCE(d.acked,0)=0
                ORDER BY d.id DESC"""
         ).fetchall()
         return {"new_apps": [dict(r) for r in rows]}
@@ -1325,6 +1325,38 @@ LOAN_TYPES = [
     "Gap Loan",
     "Transactional Loan",
 ]
+
+APPLY_TYPES = ["Fix and Flip", "Bridge", "Transactional Loan"]
+
+LOAN_DEFAULTS = {
+    "Fix and Flip": {
+        "rate": 10.0,
+        "points": 0.0,
+        "term_months": 4,
+        "term_days": 0,
+        "ext": 2,
+        "ext_rate": 2.0,
+        "blurb": "Standard: 10% for 4 months. Two 1-month extensions at 2% each, if later agreed in writing.",
+    },
+    "Bridge": {
+        "rate": 10.0,
+        "points": 0.0,
+        "term_months": 4,
+        "term_days": 0,
+        "ext": 2,
+        "ext_rate": 2.0,
+        "blurb": "Standard: 10% for 4 months. Two 1-month extensions at 2% each, if later agreed in writing.",
+    },
+    "Transactional Loan": {
+        "rate": 0.0,
+        "points": 2.75,
+        "term_months": 0,
+        "term_days": 4,
+        "ext": 0,
+        "ext_rate": 0.0,
+        "blurb": "Standard: 2.75% flat for 4 business days. No automatic extensions.",
+    },
+}
 
 
 def investor_product_terms(kind):
@@ -2229,6 +2261,132 @@ def form_prefill(borrower, deal=None):
         "late_charge_per_day": "",
         "guarantor_address": addr,
     }
+
+
+def add_business_days(start, n):
+    cur = start
+    added = 0
+    while added < n:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            added += 1
+    return cur
+
+
+def money_words(n):
+    n = int(round(money(n) or 0))
+    ones = [
+        "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+        "Seventeen", "Eighteen", "Nineteen",
+    ]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    if n == 0:
+        return "Zero"
+    def chunk(x):
+        if x < 20:
+            return ones[x]
+        if x < 100:
+            return (tens[x // 10] + (" " + ones[x % 10] if x % 10 else "")).strip()
+        return ones[x // 100] + " Hundred" + ((" " + chunk(x % 100)) if x % 100 else "")
+    parts = []
+    scales = [(1_000_000, "Million"), (1000, "Thousand")]
+    for val, name in scales:
+        if n >= val:
+            parts.append(chunk(n // val) + " " + name)
+            n %= val
+    if n:
+        parts.append(chunk(n))
+    return " ".join(parts)
+
+
+def apply_packet_data(b, deal, extra):
+    data = form_prefill(b, deal)
+    amt = money(extra.get("loan_amount")) or money(deal["loan_amount"] if deal else 0)
+    fee = money(extra.get("points"))
+    fee_amt = amt * fee / 100.0 if fee else money(extra.get("fee_amount"))
+    start = parse_date(extra.get("start_date")) or date.today()
+    days = int(money(extra.get("term_days")) or 0)
+    months = int(money(extra.get("term_months")) or 0)
+    if days:
+        mat = add_business_days(start, days)
+    elif months:
+        mat = start + timedelta(days=months * 30)
+    else:
+        mat = parse_date(extra.get("maturity_date")) or start
+    data.update({
+        "property": extra.get("address") or data.get("property"),
+        "county": extra.get("county") or "",
+        "legal_description": extra.get("legal_description") or "",
+        "loan_amount": f"{amt:,.2f}" if amt else "",
+        "note_principal": f"{amt:,.2f}" if amt else "",
+        "secured_amount": f"{amt:,.2f}" if amt else "",
+        "note_principal_words": money_words(amt),
+        "secured_amount_words": money_words(amt),
+        "profit_fee": f"{fee_amt:,.2f}" if fee_amt else "",
+        "profit_fee_words": money_words(fee_amt) if fee_amt else "",
+        "effective_date": start.isoformat(),
+        "closing_date": start.isoformat(),
+        "maturity_date": mat.isoformat(),
+        "extension_rate": extra.get("ext_rate") or "",
+        "insurance_amount": f"{amt:,.2f}" if amt else "",
+        "notary_county": extra.get("county") or "",
+        "trustee_name": extra.get("title_company") or data.get("trustee_name"),
+        "trustee_address": extra.get("title_address") or data.get("trustee_address"),
+    })
+    return data
+
+
+def staff_notify_list():
+    emails = []
+    try:
+        for r in db().execute("SELECT email FROM staff").fetchall():
+            if r["email"]:
+                emails.append(r["email"])
+    except sqlite3.Error:
+        pass
+    extra = os.environ.get("STAFF_NOTIFY") or "nate@brittcocapital.com,john@brittcocapital.com"
+    emails.extend([p.strip() for p in extra.split(",") if p.strip()])
+    seen = set()
+    out = []
+    for e in emails:
+        if e.lower() not in seen:
+            seen.add(e.lower())
+            out.append(e)
+    return out
+
+
+def issue_pending_closing_packet(b, deal, extra):
+    data = apply_packet_data(b, deal, extra)
+    payload = json.dumps(data)
+    created = []
+    for key in ("deed_of_trust", "promissory_note_guaranty"):
+        spec = get_form_spec(key)
+        if not spec:
+            continue
+        token = secrets.token_urlsafe(16)
+        db().execute(
+            """INSERT INTO form_packets
+               (token, form_key, borrower_id, deal_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, key, b["id"], deal["id"], "Pending", payload, datetime.now().isoformat(timespec="minutes")),
+        )
+        created.append((key, token, spec))
+        try:
+            pdf = form_packet_pdf(spec, data, b["name"])
+            stored = f"{deal['id']}_{key}_pending.pdf"
+            path = os.path.join(UPLOAD_DIR, stored)
+            with open(path, "wb") as fh:
+                fh.write(pdf)
+            db().execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (deal["id"], b["id"], stored, spec["title"] + " (pending).pdf", "Closing packet", datetime.now().isoformat(timespec="minutes")),
+            )
+        except Exception:
+            pass
+    db().commit()
+    return created
 
 
 def merge_form_data(stored, borrower, deal=None):
@@ -3865,6 +4023,16 @@ def deal_detail(did):
     ).fetchone()
     complete = application_completeness(borrower, d, docs)
     memo = underwriting_memo(d, borrower, uw, complete)
+    proposal = {}
+    try:
+        proposal = json.loads(d["notes"] or "{}")
+        if not isinstance(proposal, dict):
+            proposal = {}
+    except (TypeError, ValueError):
+        proposal = {}
+    packets = db().execute(
+        "SELECT * FROM form_packets WHERE deal_id=? ORDER BY id DESC", (did,)
+    ).fetchall()
     return render_template(
         "deal_detail.html",
         title=d["address"],
@@ -3877,6 +4045,8 @@ def deal_detail(did):
         existing_loan=existing_loan,
         complete=complete,
         memo=memo,
+        proposal=proposal,
+        packets=packets,
     )
 
 
@@ -4376,6 +4546,156 @@ def portal_calculator_pdf():
     data = calculator_result_pdf(mode, result, who=(b["name"] if b else ""))
     name = f"Brittco-{'BRRRR' if mode=='brrr' else 'Flip'}-calculator.pdf"
     return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
+
+
+@app.route("/portal/apply-new", methods=["GET", "POST"])
+@borrower_required
+def portal_apply_new():
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    ready, missing = profile_ready(b)
+    if not ready:
+        request_profile_gaps(b, force=True)
+        return redirect(url_for("portal_home", msg="Finish your profile first. We emailed only the missing items."))
+    kind = request.values.get("loan_type") or ""
+    if kind not in APPLY_TYPES:
+        return render_template("portal_apply.html", b=b, step="type", loan_type="", spec=None, error=None)
+    spec = LOAN_DEFAULTS[kind]
+    if request.method == "GET":
+        return render_template("portal_apply.html", b=b, step="form", loan_type=kind, spec=spec, error=None, form={})
+    f = request.form
+
+    def need(key, label):
+        if f.get("na_" + key) == "yes":
+            return None
+        val = (f.get(key) or "").strip()
+        if not val:
+            return label
+        return None
+
+    errors = []
+    for key, label in [
+        ("address", "Property address"),
+        ("city", "Property city"),
+        ("state", "Property state"),
+        ("zip", "Property ZIP"),
+        ("county", "County"),
+        ("purchase_price", "Purchase price"),
+        ("loan_amount", "Requested loan amount"),
+        ("exit_strategy", "Exit strategy"),
+    ]:
+        miss = need(key, label)
+        if miss:
+            errors.append(miss)
+    if kind == "Fix and Flip":
+        for key, label in [("arv", "ARV"), ("rehab_budget", "Rehab budget")]:
+            miss = need(key, label)
+            if miss:
+                errors.append(miss)
+    if kind == "Transactional Loan":
+        for key, label in [("resale_price", "Resale / B-C price")]:
+            miss = need(key, label)
+            if miss:
+                errors.append(miss)
+    if f.get("credit_consent") != "yes":
+        errors.append("Soft-pull consent")
+    if errors:
+        return render_template(
+            "portal_apply.html",
+            b=b,
+            step="form",
+            loan_type=kind,
+            spec=spec,
+            error="Complete every field or mark N/A: " + ", ".join(errors),
+            form=f,
+        )
+    rate = money(f.get("rate")) if f.get("rate") not in (None, "") else spec["rate"]
+    points = money(f.get("points")) if f.get("points") not in (None, "") else spec["points"]
+    term_months = int(money(f.get("term_months")) or spec["term_months"] or 0)
+    term_days = int(money(f.get("term_days")) or spec["term_days"] or 0)
+    addr = f.get("address") or ""
+    if f.get("city") or f.get("state") or f.get("zip"):
+        addr = ", ".join(p for p in [f.get("address"), f.get("city"), f.get("state"), f.get("zip")] if p)
+    notes = json.dumps({
+        "source": "Apply For a New Loan",
+        "county": f.get("county"),
+        "legal_description": f.get("legal_description"),
+        "title_company": f.get("title_company"),
+        "title_address": f.get("title_address"),
+        "resale_price": f.get("resale_price"),
+        "end_buyer": f.get("end_buyer"),
+        "term_days": term_days,
+        "ext": spec["ext"],
+        "ext_rate": spec["ext_rate"],
+        "borrower_proposed_rate": rate,
+        "borrower_proposed_points": points,
+        "borrower_proposed_term_months": term_months,
+        "borrower_proposed_term_days": term_days,
+    })
+    cur = db().execute(
+        """INSERT INTO deals
+        (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+         loan_amount, rate, points, term_months, status, exit_strategy, notes,
+         ltv_override_reason, created_at, acked)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            b["id"],
+            kind,
+            addr,
+            money(f.get("purchase_price")) or None,
+            money(f.get("as_is_value")) or money(f.get("purchase_price")) or None,
+            money(f.get("arv")) or money(f.get("resale_price")) or None,
+            money(f.get("rehab_budget")) or None,
+            money(f.get("loan_amount")) or None,
+            rate,
+            points,
+            term_months,
+            "Pending Review",
+            f.get("exit_strategy"),
+            notes,
+            "Rate and term submitted by borrower — staff must verify before title.",
+            datetime.now().isoformat(timespec="minutes"),
+            0,
+        ),
+    )
+    db().commit()
+    did = cur.lastrowid
+    deal = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    extra = {
+        "address": addr,
+        "county": f.get("county"),
+        "legal_description": f.get("legal_description"),
+        "loan_amount": f.get("loan_amount"),
+        "points": points,
+        "fee_amount": money(f.get("loan_amount")) * points / 100.0 if points else 0,
+        "term_months": term_months,
+        "term_days": term_days,
+        "start_date": date.today().isoformat(),
+        "ext_rate": spec["ext_rate"],
+        "title_company": f.get("title_company"),
+        "title_address": f.get("title_address"),
+    }
+    issue_pending_closing_packet(b, deal, extra)
+    save_uploads(did, b["id"], request.files.getlist("docs"))
+    request_soft_pull(
+        b["id"],
+        "Automatic soft pull on Apply For a New Loan. Borrower consented that a soft inquiry will not adversely affect their credit report.",
+    )
+    subj = f"Closing packet ready for {addr or 'new property'}"
+    body = (
+        f"A new {kind} application was submitted by {b['name']}.\n\n"
+        f"Property: {addr}\n"
+        f"Requested loan: ${money(f.get('loan_amount')):,.2f}\n"
+        f"Proposed rate: {rate}%   Proposed points/fee: {points}%\n"
+        f"Proposed term: {term_months} months / {term_days} business days\n\n"
+        "Rate and term are highlighted for staff to verify before documents go to title.\n"
+        f"Open the deal: {public_base()}/deals/{did}\n"
+    )
+    for em in staff_notify_list():
+        try:
+            send_mail(em, subj, body)
+        except Exception:
+            pass
+    return redirect(url_for("portal_home", msg="Application submitted. Closing packet is pending staff review."))
 
 
 @app.route("/portal/apply", methods=["POST"])
@@ -5244,6 +5564,35 @@ def ach():
         loans=loans,
         vendor_ready=bool(os.environ.get("ACH_API_KEY")),
     )
+
+
+@app.route("/deals/<int:did>/decision", methods=["POST"])
+@staff_required
+def deal_decision(did):
+    d = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    if not d:
+        return redirect(url_for("deals"))
+    action = request.form.get("action")
+    rate = request.form.get("rate")
+    points = request.form.get("points")
+    term_months = request.form.get("term_months")
+    db().execute(
+        "UPDATE deals SET rate=?, points=?, term_months=? WHERE id=?",
+        (
+            money(rate) if rate not in (None, "") else d["rate"],
+            money(points) if points not in (None, "") else d["points"],
+            int(term_months) if term_months not in (None, "") else d["term_months"],
+            did,
+        ),
+    )
+    if action == "approve":
+        db().execute("UPDATE deals SET status=?, acked=1 WHERE id=?", ("Closing", did))
+        db().execute("UPDATE form_packets SET status=? WHERE deal_id=? AND status=?", ("Approved", did, "Pending"))
+    elif action == "deny":
+        db().execute("UPDATE deals SET status=?, acked=1 WHERE id=?", ("Denied", did))
+        db().execute("UPDATE form_packets SET status=? WHERE deal_id=? AND status=?", ("Denied", did, "Pending"))
+    db().commit()
+    return redirect(url_for("deal_detail", did=did))
 
 
 @app.route("/alerts/ack/<int:did>", methods=["POST"])
