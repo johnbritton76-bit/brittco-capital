@@ -141,6 +141,43 @@
   </table>
 </div>
 <div class="card" style="margin-top:14px">
+  <h3>Documents</h3>
+  <p class="hint">All files for this borrower. Closing documents for each property download as one zip.</p>
+  <form method="post" action="{{ url_for('borrower_upload', bid=b.id) }}" enctype="multipart/form-data" class="form-grid" style="margin-bottom:16px">
+    <div>
+      <label>Attach to property</label>
+      <select name="deal_id">
+        <option value="">Profile only</option>
+        {% for d in deals %}
+        <option value="{{ d.id }}">{{ d.address or ('Deal ' ~ d.id) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="span-2"><label>Files</label><input type="file" name="docs" multiple></div>
+    <div><button class="btn" type="submit">Upload</button></div>
+  </form>
+  {% for group in property_files %}
+  <h4 style="margin:14px 0 6px">{{ group.label }}</h4>
+  {% if group.deal %}
+  <p><a class="btn ghost" href="{{ url_for('borrower_property_packet', bid=b.id, did=group.deal.id) }}">Download property packet</a></p>
+  {% endif %}
+  <table class="table">
+    <tr><th>File</th><th>Kind</th><th>Added</th></tr>
+    {% for doc in group.docs %}
+    <tr>
+      <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></td>
+      <td>{{ doc.kind }}</td>
+      <td>{{ doc.created_at }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3">No files on this property yet.</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="hint">No files uploaded yet.</p>
+  {% endfor %}
+</div>
+<div class="card" style="margin-top:14px">
   <h3>Deal history</h3>
   <table class="table">
     <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
