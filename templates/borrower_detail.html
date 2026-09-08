@@ -143,6 +143,36 @@
 <div class="card" style="margin-top:14px">
   <h3>Documents</h3>
   <p class="hint">All files for this borrower. Closing documents for each property download as one zip.</p>
+  <form method="post" action="{{ url_for('borrower_named_file_new', bid=b.id) }}" class="form-grid" style="margin-bottom:16px">
+    <div class="span-2"><label>Create a new file</label><input name="name" placeholder="Example: 10 W 96th Terrace closing" required></div>
+    <div>
+      <label>Tied to property (optional)</label>
+      <select name="deal_id">
+        <option value="">None</option>
+        {% for d in deals %}
+        <option value="{{ d.id }}">{{ d.address or ('Deal ' ~ d.id) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><button class="btn" type="submit">Create a new file</button></div>
+  </form>
+  <p class="hint">Drag a document from the lists below onto a named file to add it. Then download that file as one packet.</p>
+  {% for pack in named_files %}
+  <div class="card drop-file" data-add="{{ url_for('borrower_named_file_add', bid=b.id, fid=pack.file.id) }}" style="margin:10px 0;border:2px dashed #c5d3e0;padding:12px">
+    <strong>{{ pack.file.name }}</strong>
+    <a class="btn ghost" href="{{ url_for('borrower_named_file_zip', bid=b.id, fid=pack.file.id) }}">Download</a>
+    <form method="post" action="{{ url_for('borrower_named_file_delete', bid=b.id, fid=pack.file.id) }}" style="display:inline" onsubmit="return confirm('Remove this named file? Documents stay in the lists below.');">
+      <button class="btn ghost" type="submit">Remove file name</button>
+    </form>
+    <ul>
+      {% for doc in pack.docs %}
+      <li><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></li>
+      {% else %}
+      <li class="hint">Drop documents here</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
   <form method="post" action="{{ url_for('borrower_upload', bid=b.id) }}" enctype="multipart/form-data" class="form-grid" style="margin-bottom:16px">
     <div>
       <label>Attach to property</label>
@@ -164,8 +194,8 @@
   <table class="table">
     <tr><th>File</th><th>Kind</th><th>Added</th></tr>
     {% for doc in group.docs %}
-    <tr>
-      <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></td>
+    <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
+      <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a> <span class="hint">drag</span></td>
       <td>{{ doc.kind }}</td>
       <td>{{ doc.created_at }}</td>
     </tr>
@@ -191,4 +221,37 @@
     {% endfor %}
   </table>
 </div>
+<script>
+(function () {
+  var docId = null;
+  document.querySelectorAll(".drag-doc").forEach(function (row) {
+    row.addEventListener("dragstart", function (e) {
+      docId = row.getAttribute("data-doc");
+      e.dataTransfer.setData("text/plain", docId);
+    });
+  });
+  document.querySelectorAll(".drop-file").forEach(function (box) {
+    box.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      box.style.background = "#eef6fd";
+    });
+    box.addEventListener("dragleave", function () {
+      box.style.background = "";
+    });
+    box.addEventListener("drop", function (e) {
+      e.preventDefault();
+      box.style.background = "";
+      var id = e.dataTransfer.getData("text/plain") || docId;
+      if (!id) return;
+      var body = new URLSearchParams();
+      body.set("document_id", id);
+      fetch(box.getAttribute("data-add"), {
+        method: "POST",
+        headers: { "X-Requested-With": "fetch" },
+        body: body
+      }).then(function () { window.location.reload(); });
+    });
+  });
+})();
+</script>
 {% endblock %}
