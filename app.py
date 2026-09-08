@@ -968,6 +968,22 @@ try:
             active INTEGER
         )"""
     )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS doc_files (
+            id INTEGER PRIMARY KEY,
+            borrower_id INTEGER,
+            deal_id INTEGER,
+            name TEXT,
+            created_at TEXT
+        )"""
+    )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS doc_file_items (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER,
+            document_id INTEGER
+        )"""
+    )
     _c.commit()
     deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
     if deal_cols and "acked" not in deal_cols:
@@ -3235,6 +3251,7 @@ def borrower_detail(bid):
             db().execute("SELECT id FROM documents WHERE borrower_id=?", (bid,)).fetchall(),
         ),
         property_files=borrower_property_files(bid),
+        named_files=borrower_named_files(bid),
     )
 
 
@@ -3268,6 +3285,104 @@ def borrower_property_files(bid):
     if loose:
         groups.append({"deal": None, "label": "Profile / other files", "docs": loose})
     return groups
+
+
+def borrower_named_files(bid):
+    rows = db().execute(
+        "SELECT * FROM doc_files WHERE borrower_id=? ORDER BY id DESC", (bid,)
+    ).fetchall()
+    out = []
+    for row in rows:
+        items = db().execute(
+            """SELECT d.* FROM doc_file_items i
+               JOIN documents d ON d.id=i.document_id
+               WHERE i.file_id=? ORDER BY i.id""",
+            (row["id"],),
+        ).fetchall()
+        out.append({"file": row, "docs": items})
+    return out
+
+
+@app.route("/borrowers/<int:bid>/files/new", methods=["POST"])
+@staff_required
+def borrower_named_file_new(bid):
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        return redirect(url_for("borrower_detail", bid=bid))
+    did = request.form.get("deal_id")
+    db().execute(
+        "INSERT INTO doc_files (borrower_id, deal_id, name, created_at) VALUES (?,?,?,?)",
+        (bid, int(did) if did else None, name, datetime.now().isoformat(timespec="minutes")),
+    )
+    db().commit()
+    return redirect(url_for("borrower_detail", bid=bid))
+
+
+@app.route("/borrowers/<int:bid>/files/<int:fid>/add", methods=["POST"])
+@staff_required
+def borrower_named_file_add(bid, fid):
+    doc_id = request.form.get("document_id") or (request.json.get("document_id") if request.is_json else None)
+    if not doc_id:
+        return ("missing document", 400)
+    row = db().execute("SELECT * FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid)).fetchone()
+    if not row:
+        return ("not found", 404)
+    exists = db().execute(
+        "SELECT 1 FROM doc_file_items WHERE file_id=? AND document_id=?",
+        (fid, int(doc_id)),
+    ).fetchone()
+    if not exists:
+        db().execute(
+            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+            (fid, int(doc_id)),
+        )
+        db().commit()
+    if request.is_json or request.headers.get("X-Requested-With") == "fetch":
+        return ("ok", 200)
+    return redirect(url_for("borrower_detail", bid=bid))
+
+
+@app.route("/borrowers/<int:bid>/files/<int:fid>.zip")
+@staff_required
+def borrower_named_file_zip(bid, fid):
+    import zipfile
+
+    row = db().execute("SELECT * FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid)).fetchone()
+    if not row:
+        return redirect(url_for("borrower_detail", bid=bid))
+    docs = db().execute(
+        """SELECT d.* FROM doc_file_items i
+           JOIN documents d ON d.id=i.document_id
+           WHERE i.file_id=? ORDER BY i.id""",
+        (fid,),
+    ).fetchall()
+    buf = BytesIO()
+    used = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for doc in docs:
+            path = os.path.join(UPLOAD_DIR, doc["filename"] or "")
+            if not os.path.isfile(path):
+                continue
+            name = secure_filename(doc["original_name"] or doc["filename"] or "file")
+            if name in used:
+                used[name] += 1
+                base, ext = os.path.splitext(name)
+                name = f"{base}-{used[name]}{ext}"
+            else:
+                used[name] = 1
+            z.write(path, name)
+    buf.seek(0)
+    slug = secure_filename(row["name"] or f"file-{fid}")
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=f"{slug}.zip")
+
+
+@app.route("/borrowers/<int:bid>/files/<int:fid>/delete", methods=["POST"])
+@staff_required
+def borrower_named_file_delete(bid, fid):
+    db().execute("DELETE FROM doc_file_items WHERE file_id=?", (fid,))
+    db().execute("DELETE FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid))
+    db().commit()
+    return redirect(url_for("borrower_detail", bid=bid))
 
 
 @app.route("/borrowers/<int:bid>/property/<int:did>/packet.zip")
