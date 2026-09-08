@@ -142,7 +142,7 @@
 </div>
 <div class="card" style="margin-top:14px">
   <h3>Documents</h3>
-  <p class="hint">All files for this borrower. Closing documents for each property download as one zip.</p>
+  <p class="hint">Profile documents hold ID and company papers once. Each property file is named with that address and holds only that deal’s papers.</p>
   <form method="post" action="{{ url_for('borrower_named_file_new', bid=b.id) }}" class="form-grid" style="margin-bottom:16px">
     <div class="span-2"><label>Create a new file</label><input name="name" placeholder="Example: 10 W 96th Terrace closing" required></div>
     <div>
