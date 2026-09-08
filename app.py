@@ -476,13 +476,22 @@ def seed_crossley_tx(c):
     existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone()
     if existing:
         c.execute(
-            """UPDATE loans SET maturity_date=?, next_payment_due=?, notes=? WHERE loan_number=?""",
+            """UPDATE loans SET maturity_date=?, next_payment_due=?, payment_amount=?,
+               payment_type=?, payment_frequency=?, notes=? WHERE loan_number=?""",
             (
                 "2026-09-11",
                 "2026-09-11",
-                "Transactional double close. Purchase only. Fee $5,000 flat from B-C. Due end of business day 2026-09-11. No automatic extensions. Investor John Britton 100%.",
+                185000,
+                "Fee at payoff",
+                "At payoff",
+                "Transactional double close. Purchase only. $185,000 due end of business day 2026-09-11 (basis $180,000 + $5,000 fee). No automatic extensions. Investor John Britton 100%. Nate fee off.",
                 "BC-TX-10W96",
             ),
+        )
+        c.execute(
+            """UPDATE participations SET term_months=0, max_extensions=0, mgmt_fee_pct=0, investor_rate=2.78
+               WHERE loan_id=?""",
+            (existing[0],),
         )
         return
     if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone():
@@ -585,7 +594,7 @@ def seed_crossley_tx(c):
             "2026-09-09",
             "2026-09-11",
             "Fee at payoff",
-            5000,
+            185000,
             "At payoff",
             "2026-09-11",
             100,
@@ -611,8 +620,8 @@ def seed_crossley_tx(c):
                 0,
                 "Funded",
                 "2026-09-09",
-                "100% of BC-TX-10W96. Stated fee 2.78% ($5,000) on $180,000.",
-                25,
+                "100% of BC-TX-10W96. Flat fee $5,000. Nate fee off — John Britton self-funded.",
+                0,
             ),
         )
     seed_dir = os.path.join(APP_DIR, "seed_docs")
@@ -1705,21 +1714,33 @@ def _row_months(row):
 
 
 def loan_term_days(loan, p=None):
-    loan_type = row_val(loan, "loan_type") if loan is not None else ""
-    months = _row_months(p) or _row_months(loan)
-    if loan_type == "Transactional Loan" and not months:
-        start = parse_date(row_val(loan, "start_date"))
-        end = parse_date(row_val(loan, "maturity_date"))
-        if start and end and (end - start).days >= 2:
-            return (end - start).days
-        return 7
-    if months:
-        return max(1, months * 30)
     start = parse_date(row_val(loan, "start_date")) if loan is not None else None
     end = parse_date(row_val(loan, "maturity_date")) if loan is not None else None
-    if start and end and (end - start).days >= 2:
-        return (end - start).days
+    if start and end:
+        span = (end - start).days
+        if span >= 1:
+            return span
+    loan_type = row_val(loan, "loan_type") if loan is not None else ""
+    months = _row_months(p) or _row_months(loan)
+    if loan_type == "Transactional Loan":
+        return 2
+    if months:
+        return max(1, months * 30)
     return 90
+
+
+def payoff_amount(loan):
+    prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    extra = money(row_val(loan, "payment_amount"))
+    kind = (row_val(loan, "loan_type") or "") + " " + (row_val(loan, "payment_type") or "")
+    if extra and extra < prin * 0.25 and ("Transactional" in kind or "Fee at payoff" in kind or "At payoff" in kind):
+        return prin + extra
+    if extra and extra >= prin * 0.5:
+        return extra
+    pts = money(row_val(loan, "points"))
+    if pts and "Transactional" in kind:
+        return prin + prin * pts / 100.0
+    return extra or prin
 
 
 def participation_returns(loan, p, dists_for_investor=None):
@@ -2882,7 +2903,9 @@ def reminder_draft(loan, perf):
     num = row_val(loan, "loan_number") or "your Brittco loan"
     due = row_val(loan, "next_payment_due") or "the due date on file"
     mat = row_val(loan, "maturity_date") or "maturity"
-    amt = money(row_val(loan, "payment_amount"))
+    amt = money(perf.get("payoff")) if perf else 0
+    if not amt:
+        amt = money(row_val(loan, "payment_amount"))
     pay = f"${amt:,.2f} " if amt else ""
     if perf.get("due_in") is not None and perf["due_in"] < 0:
         return (
@@ -4139,6 +4162,8 @@ def loan_detail(lid):
         "actual_gross": sum(p.get("actual_gross") or 0 for p in parts),
         "actual_nate": sum(p.get("actual_nate") or 0 for p in parts),
         "actual_net": sum(p.get("actual_net") or 0 for p in parts),
+        "payoff": payoff_amount(loan),
+        "nate_on": any((p.get("fee") or 0) > 0.001 for p in parts),
     }
     staff_assist = loan_staff_assist(loan, perf)
     return render_template(
@@ -4416,6 +4441,25 @@ def set_mgmt_fee(lid, pid):
     return update_participation(lid, pid)
 
 
+@app.route("/loans/<int:lid>/participation/<int:pid>/nate-off", methods=["POST"])
+@staff_required
+def nate_fee_off(lid, pid):
+    db().execute(
+        "UPDATE participations SET mgmt_fee_pct=0 WHERE id=? AND loan_id=?",
+        (pid, lid),
+    )
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/nate-off", methods=["POST"])
+@staff_required
+def nate_fee_off_loan(lid):
+    db().execute("UPDATE participations SET mgmt_fee_pct=0 WHERE loan_id=?", (lid,))
+    db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
 @app.route("/loans/<int:lid>/participation/<int:pid>", methods=["POST"])
 @staff_required
 def update_participation(lid, pid):
@@ -4433,7 +4477,7 @@ def update_participation(lid, pid):
             int(inv) if inv else cur["investor_id"],
             money(f.get("amount")) if f.get("amount") not in (None, "") else money(cur["amount"]),
             money(f.get("investor_rate")) if f.get("investor_rate") not in (None, "") else money(cur["investor_rate"]),
-            int(f.get("term_months") or cur["term_months"] or 3),
+            int(f["term_months"]) if f.get("term_months") not in (None, "") else (cur["term_months"] if cur["term_months"] is not None else 0),
             money(f.get("extension_rate")) if f.get("extension_rate") not in (None, "") else money(cur["extension_rate"]),
             int(f.get("max_extensions") or cur["max_extensions"] or 3),
             money(f.get("mgmt_fee_pct") if f.get("mgmt_fee_pct") not in (None, "") else (cur["mgmt_fee_pct"] if cur["mgmt_fee_pct"] is not None else 25)),
