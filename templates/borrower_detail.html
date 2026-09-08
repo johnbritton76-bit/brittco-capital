@@ -156,22 +156,29 @@
     </div>
     <div><button class="btn" type="submit">Create a new file</button></div>
   </form>
-  <p class="hint">Drag a document from the lists below onto a named file to add it. Then download that file as one packet.</p>
+  <p class="hint">Click a file name to open it. Drag a document onto another file name to move it.</p>
   {% for pack in named_files %}
-  <div class="card drop-file" data-add="{{ url_for('borrower_named_file_add', bid=b.id, fid=pack.file.id) }}" style="margin:10px 0;border:2px dashed #c5d3e0;padding:12px">
-    <strong>{{ pack.file.name }}</strong>
-    <a class="btn ghost" href="{{ url_for('borrower_named_file_zip', bid=b.id, fid=pack.file.id) }}">Download</a>
-    <form method="post" action="{{ url_for('borrower_named_file_delete', bid=b.id, fid=pack.file.id) }}" style="display:inline" onsubmit="return confirm('Remove this named file? Documents stay in the lists below.');">
-      <button class="btn ghost" type="submit">Remove file name</button>
-    </form>
+  <details class="drop-file" data-add="{{ url_for('borrower_named_file_add', bid=b.id, fid=pack.file.id) }}" style="margin:8px 0;border:1px solid #d5dee8;border-radius:10px;padding:8px 12px;background:#fff">
+    <summary style="cursor:pointer;font-weight:600">
+      {{ pack.file.name }}
+      <span class="hint">({{ pack.docs|length }})</span>
+    </summary>
+    <p style="margin:8px 0">
+      <a class="btn ghost" href="{{ url_for('borrower_named_file_zip', bid=b.id, fid=pack.file.id) }}">Download</a>
+      <form method="post" action="{{ url_for('borrower_named_file_delete', bid=b.id, fid=pack.file.id) }}" style="display:inline" onsubmit="return confirm('Remove this named file? Documents are not deleted.');">
+        <button class="btn ghost" type="submit">Remove file name</button>
+      </form>
+    </p>
     <ul>
       {% for doc in pack.docs %}
-      <li><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></li>
+      <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+        <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+      </li>
       {% else %}
-      <li class="hint">Drop documents here</li>
+      <li class="hint">Empty — drop documents here</li>
       {% endfor %}
     </ul>
-  </div>
+  </details>
   {% endfor %}
   <form method="post" action="{{ url_for('borrower_upload', bid=b.id) }}" enctype="multipart/form-data" class="form-grid" style="margin-bottom:16px">
     <div>
@@ -186,26 +193,26 @@
     <div class="span-2"><label>Files</label><input type="file" name="docs" multiple></div>
     <div><button class="btn" type="submit">Upload</button></div>
   </form>
-  {% for group in property_files %}
-  <h4 style="margin:14px 0 6px">{{ group.label }}</h4>
-  {% if group.deal %}
-  <p><a class="btn ghost" href="{{ url_for('borrower_property_packet', bid=b.id, did=group.deal.id) }}">Download property packet</a></p>
-  {% endif %}
-  <table class="table">
-    <tr><th>File</th><th>Kind</th><th>Added</th></tr>
-    {% for doc in group.docs %}
-    <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
-      <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a> <span class="hint">drag</span></td>
-      <td>{{ doc.kind }}</td>
-      <td>{{ doc.created_at }}</td>
-    </tr>
+  <details style="margin-top:16px">
+    <summary style="cursor:pointer">All uploads</summary>
+    {% for group in property_files %}
+    <h4 style="margin:14px 0 6px">{{ group.label }}</h4>
+    <table class="table">
+      <tr><th>File</th><th>Kind</th><th>Added</th></tr>
+      {% for doc in group.docs %}
+      <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
+        <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></td>
+        <td>{{ doc.kind }}</td>
+        <td>{{ doc.created_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">No files here yet.</td></tr>
+      {% endfor %}
+    </table>
     {% else %}
-    <tr><td colspan="3">No files on this property yet.</td></tr>
+    <p class="hint">No files uploaded yet.</p>
     {% endfor %}
-  </table>
-  {% else %}
-  <p class="hint">No files uploaded yet.</p>
-  {% endfor %}
+  </details>
 </div>
 <div class="card" style="margin-top:14px">
   <h3>Deal history</h3>
