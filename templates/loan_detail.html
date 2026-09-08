@@ -28,10 +28,10 @@
   <div class="card"><h3>Original principal</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
   <div class="card"><h3>Rate</h3><div>{{ loan.rate or "—" }}%</div></div>
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
-  <div class="card"><h3>Next payment</h3>
-    <div>{{ loan.next_payment_due or "—" }}
-      {% if perf.due_in is not none and perf.due_in < 0 %}<span class="badge bad">{{ perf.due_in|abs }} days late</span>
-      {% elif perf.due_in is not none %}<span class="badge">{{ perf.due_in }} days</span>{% endif %}
+  <div class="card"><h3>Amount due at maturity</h3>
+    <div class="n">${{ "{:,.0f}".format(perf.payoff) }}</div>
+    <div class="hint">{{ loan.maturity_date or loan.next_payment_due or "—" }}
+      {% if perf.matures_in is not none %} · {{ perf.matures_in }} days{% endif %}
     </div>
   </div>
   <div class="card"><h3>Maturity</h3>
@@ -65,16 +65,23 @@
   <h3>Estimated return</h3>
   <p>
     Planned term is <strong>{{ perf.days }} days</strong>
-    {% if parts and parts[0].term %}({{ parts[0].term }} months){% endif %}.
-    Estimated interest income <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>
+    {% if loan.start_date and loan.maturity_date %}
+    ({{ loan.start_date }} through {{ loan.maturity_date }}).
+    {% elif parts and parts[0].term %}({{ parts[0].term }} months).{% else %}.{% endif %}
+    Amount due at maturity <strong>${{ "{:,.2f}".format(perf.payoff) }}</strong>.
+    Estimated interest / fee income <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>
     (<strong>{{ "%.0f"|format(perf.est_ann or 0) }}%</strong> annualized).
+    {% if perf.nate_on %}
     Nate’s {{ parts[0].fee if parts else 25 }}% fee is estimated at
     <strong>${{ "{:,.2f}".format(perf.est_nate) }}</strong> and is not payable until basis is paid off and a profit is realized.
     Investor net after that fee would be
     <strong>${{ "{:,.2f}".format(perf.est_net) }}</strong>
     (<strong>{{ "%.0f"|format(perf.est_ann_net or 0) }}%</strong> annualized).
+    {% else %}
+    Nate’s fee is <strong>off</strong> on this loan. The investor keeps the full return
+    <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>.
+    {% endif %}
   </p>
-  <p class="hint">Example: 7 days at 3% is about 156% annualized. After Nate’s 25% of realized profit, the investor net is about 117% annualized.</p>
   {% endif %}
 </div>
 
@@ -93,9 +100,14 @@
     {% endif %}
   </p>
   {% endif %}
-  <p class="hint">Open loans show estimates. Closed loans show actual interest received and Nate’s realized fee.</p>
+  <p class="hint">Open loans show estimates. Term follows the loan start and maturity dates.</p>
+  {% if perf.nate_on %}
+  <form method="post" action="{{ url_for('nate_fee_off_loan', lid=loan.id) }}" style="margin:8px 0">
+    <button class="btn ghost" type="submit">Remove Nate fee from this loan</button>
+  </form>
+  {% endif %}
   <table class="table">
-    <tr><th>Investor</th><th>Amount</th><th>% of loan</th><th>Rate %</th><th>Term months</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
+    <tr><th>Investor</th><th>Amount</th><th>% of loan</th><th>Rate %</th><th>Term</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
     {% for p in parts %}
     <tr>
       <td>
@@ -109,8 +121,22 @@
       <td><input form="edit-p-{{ p.id }}" name="amount" type="number" step="0.01" value="{{ p.amount }}" style="width:110px"></td>
       <td>{{ "%.1f"|format(p.funded_pct or 0) }}%</td>
       <td><input form="edit-p-{{ p.id }}" name="investor_rate" type="number" step="0.01" value="{{ p.rate or p.base }}" style="width:80px"></td>
-      <td><input form="edit-p-{{ p.id }}" name="term_months" type="number" value="{{ p.term or 3 }}" style="width:70px"></td>
-      <td><input form="edit-p-{{ p.id }}" name="mgmt_fee_pct" type="number" step="0.01" value="{{ p.fee }}" style="width:70px"></td>
+      <td>
+        {% if loan.start_date and loan.maturity_date %}
+        {{ p.days }} days<br><span class="hint">{{ loan.start_date }} → {{ loan.maturity_date }}</span>
+        <input form="edit-p-{{ p.id }}" type="hidden" name="term_months" value="{{ p.term or 0 }}">
+        {% else %}
+        <input form="edit-p-{{ p.id }}" name="term_months" type="number" value="{{ p.term }}" style="width:70px">
+        {% endif %}
+      </td>
+      <td>
+        <input form="edit-p-{{ p.id }}" name="mgmt_fee_pct" type="number" step="0.01" value="{{ p.fee }}" style="width:70px">
+        {% if p.fee %}
+        <form method="post" action="{{ url_for('nate_fee_off', lid=loan.id, pid=p.id) }}" style="margin-top:4px">
+          <button class="btn ghost" type="submit">Remove Nate fee</button>
+        </form>
+        {% endif %}
+      </td>
       <td>
         {% if p.show_actual %}
         Actual net ${{ "{:,.2f}".format(p.actual_net) }} · {{ "%.0f"|format(p.actual_ann_net or 0) }}% ann.
