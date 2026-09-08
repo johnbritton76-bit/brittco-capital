@@ -3316,29 +3316,24 @@ def ensure_borrower_file_cabinets(bid):
         (bid, bid),
     ).fetchall()
     for doc in docs:
+        already = db().execute(
+            "SELECT 1 FROM doc_file_items WHERE document_id=?", (doc["id"],)
+        ).fetchone()
+        if already:
+            continue
         name = doc["original_name"] or doc["filename"] or ""
-        if is_profile_document(name) and doc["deal_id"]:
-            db().execute("UPDATE documents SET deal_id=NULL WHERE id=?", (doc["id"],))
+        if is_profile_document(name) or not doc["deal_id"]:
             target = prof["id"]
-        elif doc["deal_id"]:
+        else:
             slot = db().execute(
                 "SELECT id FROM doc_files WHERE borrower_id=? AND deal_id=?",
                 (bid, doc["deal_id"]),
             ).fetchone()
             target = slot["id"] if slot else prof["id"]
-        else:
-            target = prof["id"]
-        if not db().execute(
-            "SELECT 1 FROM doc_file_items WHERE file_id=? AND document_id=?",
+        db().execute(
+            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
             (target, doc["id"]),
-        ).fetchone():
-            # remove from the other cabinet if it was auto-filed on the wrong one
-            if is_profile_document(name):
-                db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
-            db().execute(
-                "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
-                (target, doc["id"]),
-            )
+        )
     db().commit()
 
 
