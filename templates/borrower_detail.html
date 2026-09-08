@@ -173,6 +173,17 @@
       {% for doc in pack.docs %}
       <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
         <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        <form method="post" style="display:inline;margin-left:8px">
+          <input type="hidden" name="document_id" value="{{ doc.id }}">
+          <select onchange="if(this.value){ this.form.action=this.value; this.form.submit(); }">
+            <option value="">Move to…</option>
+            {% for other in named_files %}
+            {% if other.file.id != pack.file.id %}
+            <option value="{{ url_for('borrower_named_file_add', bid=b.id, fid=other.file.id) }}">{{ other.file.name }}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </form>
       </li>
       {% else %}
       <li class="hint">Empty — drop documents here</li>
@@ -234,12 +245,14 @@
   document.querySelectorAll(".drag-doc").forEach(function (row) {
     row.addEventListener("dragstart", function (e) {
       docId = row.getAttribute("data-doc");
+      e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", docId);
     });
   });
   document.querySelectorAll(".drop-file").forEach(function (box) {
     box.addEventListener("dragover", function (e) {
       e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
       box.style.background = "#eef6fd";
     });
     box.addEventListener("dragleave", function () {
@@ -247,6 +260,7 @@
     });
     box.addEventListener("drop", function (e) {
       e.preventDefault();
+      e.stopPropagation();
       box.style.background = "";
       var id = e.dataTransfer.getData("text/plain") || docId;
       if (!id) return;
@@ -254,8 +268,11 @@
       body.set("document_id", id);
       fetch(box.getAttribute("data-add"), {
         method: "POST",
-        headers: { "X-Requested-With": "fetch" },
-        body: body
+        headers: {
+          "X-Requested-With": "fetch",
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
       }).then(function () { window.location.reload(); });
     });
   });
