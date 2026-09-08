@@ -464,8 +464,165 @@ def init_db():
         c.commit()
     seed_demo_books(c)
     seed_transactional_sample(c)
+    seed_crossley_tx(c)
     c.commit()
     c.close()
+
+
+def seed_crossley_tx(c):
+    """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
+    import shutil
+
+    if c.execute("SELECT 1 FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone():
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Katherine Marie Crossley",
+                "LLC",
+                "Crossley Innovations LLC",
+                "kate.crossley@gmail.com",
+                "913-219-2792",
+                None,
+                "Crossley2026",
+                "Managing Member. Transactional double close 10 W 96th Terrace. Last4 SSN 0196. DOB 1980-03-18. EIN 81-0816617.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone()
+    if not b:
+        return
+    bid = b[0]
+    cols = [r[1] for r in c.execute("PRAGMA table_info(borrowers)")]
+    extras = {
+        "dob": "1980-03-18",
+        "address": "8433 N Donnelly Court",
+        "city": "Kansas City",
+        "state": "MO",
+        "zip": "64157",
+        "occupation": "Managing Member",
+        "employer": "Crossley Innovations LLC",
+        "entity_name": "Crossley Innovations LLC",
+        "entity_type": "LLC",
+    }
+    for col, val in extras.items():
+        if col in cols:
+            c.execute(f"UPDATE borrowers SET {col}=? WHERE id=?", (val, bid))
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                "John Britton",
+                "Brittco Capital Inc",
+                "john@brittcocapital.com",
+                "(816) 694-1658",
+                "President. 100% funding source on BC-TX-10W96.",
+                "Not connected",
+                "investor",
+            ),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    if c.execute("SELECT 1 FROM deals WHERE address LIKE ?", ("%10 W 96th%",)).fetchone():
+        deal_id = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%10 W 96th%",)).fetchone()[0]
+    else:
+        cur = c.execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "Transactional Loan",
+                "10 W 96th Terrace, Kansas City, MO 64114",
+                180000,
+                180000,
+                197000,
+                0,
+                180000,
+                None,
+                2.78,
+                0,
+                "Closing",
+                "B-C sale to Dos Gringos Construction LLC at $197,000 within 4 business days. Flat fee $5,000.",
+                "Jackson County. A-B Ludwig $180,000. Title Security Land & Title file 612389-SLT-MO. Legal: E 30 FT LOT 42 & W 60 FT LOT 43 BROADVIEW HEIGHTS.",
+                "",
+                "2026-09-08T12:00",
+                1,
+            ),
+        )
+        deal_id = cur.lastrowid
+    cur = c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-10W96",
+            "Transactional Loan",
+            "10 W 96th Terrace, Kansas City, MO 64114",
+            180000,
+            180000,
+            0,
+            2.78,
+            "2026-09-09",
+            "2026-09-15",
+            "Fee at payoff",
+            5000,
+            "At payoff",
+            "2026-09-15",
+            100,
+            "Current",
+            "Transactional double close. Fee $5,000 flat from B-C. 4 business days. Investor John Britton 100%.",
+        ),
+    )
+    lid = cur.lastrowid
+    if inv:
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                lid,
+                inv[0],
+                180000,
+                2.78,
+                0,
+                2.0,
+                0,
+                0,
+                "Funded",
+                "2026-09-09",
+                "100% of BC-TX-10W96. Stated fee 2.78% ($5,000) on $180,000.",
+                25,
+            ),
+        )
+    seed_dir = os.path.join(APP_DIR, "seed_docs")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    if os.path.isdir(seed_dir):
+        for original in sorted(os.listdir(seed_dir)):
+            src = os.path.join(seed_dir, original)
+            if not os.path.isfile(src):
+                continue
+            stored = f"{deal_id}_crossley_{secure_filename(original)}"
+            dst = os.path.join(UPLOAD_DIR, stored)
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
+            c.execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (deal_id, bid, stored, original, "Upload", "2026-09-08T12:00"),
+            )
 
 
 def seed_transactional_sample(c):
@@ -852,6 +1009,13 @@ try:
     _c.commit()
     _c.close()
 except sqlite3.Error:
+    pass
+try:
+    _s = sqlite3.connect(DB_PATH)
+    seed_crossley_tx(_s)
+    _s.commit()
+    _s.close()
+except Exception:
     pass
 
 
@@ -4420,7 +4584,10 @@ def investor_returns():
         kind = "Fix and Flip"
     spec = investor_product_terms(kind)
     capital = request.values.get("capital") or "100000"
-    ext = int(request.values.get("extensions") or 0)
+    try:
+        ext = int(request.values.get("extensions") or 0)
+    except (TypeError, ValueError):
+        ext = 0
     custom = request.values.get("gross_pct") not in (None, "")
     result = investor_return_math(
         kind,
