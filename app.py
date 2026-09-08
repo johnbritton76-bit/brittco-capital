@@ -3416,16 +3416,17 @@ def borrower_named_file_add(bid, fid):
     row = db().execute("SELECT * FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid)).fetchone()
     if not row:
         return ("not found", 404)
-    exists = db().execute(
-        "SELECT 1 FROM doc_file_items WHERE file_id=? AND document_id=?",
+    db().execute("DELETE FROM doc_file_items WHERE document_id=?", (int(doc_id),))
+    db().execute(
+        "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
         (fid, int(doc_id)),
-    ).fetchone()
-    if not exists:
-        db().execute(
-            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
-            (fid, int(doc_id)),
-        )
-        db().commit()
+    )
+    dest = db().execute("SELECT deal_id FROM doc_files WHERE id=?", (fid,)).fetchone()
+    db().execute(
+        "UPDATE documents SET deal_id=? WHERE id=?",
+        (dest["deal_id"] if dest else None, int(doc_id)),
+    )
+    db().commit()
     if request.is_json or request.headers.get("X-Requested-With") == "fetch":
         return ("ok", 200)
     return redirect(url_for("borrower_detail", bid=bid))
