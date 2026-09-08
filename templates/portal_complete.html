@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Complete your Brittco file</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:640px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Borrower file</div>
+      <h2 style="margin:4px 0 0">Information needed</h2>
+    </div>
+  </div>
+  {% if error %}<div class="flash">{{ error }}</div>{% endif %}
+  {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+  {% if b and fields %}
+  <div class="card">
+    <p>Hello {{ b.name }}. Please complete only the items below. Your file updates when you save.</p>
+    <ul>
+      {% for item in missing %}<li>{{ item }}</li>{% endfor %}
+    </ul>
+    <form method="post" class="form-grid">
+      {% for label, name, kind in fields %}
+      <div class="span-2">
+        <label>{{ label }}</label>
+        {% if kind == "ownrent" %}
+        <select name="{{ name }}" required>
+          <option value="">Select</option>
+          <option>Own</option>
+          <option>Rent</option>
+        </select>
+        {% else %}
+        <input name="{{ name }}" type="{{ kind }}" {% if kind == "number" %}step="0.1"{% endif %} required>
+        {% endif %}
+      </div>
+      {% endfor %}
+      <div class="span-2"><button class="btn" type="submit">Save and update my file</button></div>
+    </form>
+  </div>
+  {% endif %}
+</main>
+</body>
+</html>
