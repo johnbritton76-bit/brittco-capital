@@ -465,6 +465,7 @@ def init_db():
     seed_demo_books(c)
     seed_transactional_sample(c)
     seed_crossley_tx(c)
+    seed_dos_gringos_tx(c)
     c.commit()
     c.close()
 
@@ -642,6 +643,161 @@ def seed_crossley_tx(c):
                 """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
                    VALUES (?,?,?,?,?,?)""",
                 (None if profile else deal_id, bid, stored, original, "Profile" if profile else "Property", "2026-09-08T12:00"),
+            )
+
+
+def seed_dos_gringos_tx(c):
+    import shutil
+
+    existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-409SM",)).fetchone()
+    if existing:
+        c.execute(
+            """UPDATE loans SET start_date=?, maturity_date=?, next_payment_due=?, payment_amount=?,
+               payment_type=?, payment_frequency=?, notes=? WHERE loan_number=?""",
+            (
+                "2026-09-09",
+                "2026-09-16",
+                "2026-09-16",
+                183600,
+                "Fee at payoff",
+                "At payoff",
+                "Transactional. Purchase only. No DOT. Close 2026-09-09. 2% flat ($3,600). $183,600 due 2026-09-16. Lafayette County. Guarantors Walker McCallon, Marissa McCallon, and Alejandro Torres Jr.",
+                "BC-TX-409SM",
+            ),
+        )
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Walker Eric Neal McCallon",
+                "LLC",
+                "Dos Gringos Construction LLC",
+                "wmccallon@dosgringosllc.com",
+                "816-385-2732",
+                None,
+                "DosGringos2026",
+                "Co-owner 49%. Co-guarantor Alejandro Torres Jr 51% atorres@dosgringosllc.com 913-549-8212. EIN 33-4776367. Formed 2024-04-24. Office 1828 Walnut St Ste 400 Kansas City MO 64108. Walker last4 4892 DOB 1998-03-02. Alejandro last4 7623 DOB 1999-06-01.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone()
+    if not b:
+        return
+    bid = b[0]
+    cols = [r[1] for r in c.execute("PRAGMA table_info(borrowers)")]
+    extras = {
+        "dob": "1998-03-02",
+        "address": "7401 N Hickory Street",
+        "city": "Kansas City",
+        "state": "MO",
+        "zip": "64118",
+        "occupation": "Co-owner",
+        "employer": "Dos Gringos Construction LLC",
+        "entity_name": "Dos Gringos Construction LLC",
+        "entity_type": "LLC",
+    }
+    for col, val in extras.items():
+        if col in cols:
+            c.execute(f"UPDATE borrowers SET {col}=? WHERE id=?", (val, bid))
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("John Britton", "Brittco Capital Inc", "john@brittcocapital.com", "(816) 694-1658", "President.", "Not connected", "investor"),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    deal = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%409 S Maple%",)).fetchone()
+    if deal:
+        deal_id = deal[0]
+    else:
+        cur = c.execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "Transactional Loan",
+                "409 S Maple Street, Bates City, MO 64011",
+                180000,
+                180000,
+                192000,
+                0,
+                180000,
+                0,
+                2.0,
+                0,
+                "Closing",
+                "B-C to Living Water Technologies LLC at $192,000. Sequential close. No DOT.",
+                "A-B Darryl Fisher $180,000 Accurate Title. B-C Alliance Title 613918-ANTL-BLS-MO. Legal: Lots 7-2, 7-3, 7-4 and 7-5 HOMELAND VIEW SUBDIVISION, Lafayette/Bates County MO. Intake county field said Douglas — confirm.",
+                "",
+                "2026-09-08T16:00",
+                1,
+            ),
+        )
+        deal_id = cur.lastrowid
+    cur = c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-409SM",
+            "Transactional Loan",
+            "409 S Maple Street, Bates City, MO 64011",
+            180000,
+            180000,
+            0,
+            2.0,
+            "2026-09-09",
+            "2026-09-16",
+            "Fee at payoff",
+            183600,
+            "At payoff",
+            "2026-09-16",
+            72,
+            "Current",
+            "No DOT. Close 2026-09-09. 2% flat $3,600. $183,600 due 2026-09-16. Lafayette County. PGs: Walker, Marissa, Alejandro.",
+        ),
+    )
+    lid = cur.lastrowid
+    if inv:
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (lid, inv[0], 180000, 2.0, 0, 0.0, 0, 0, "Funded", "2026-09-09", "100% BC-TX-409SM. Nate fee off.", 0),
+        )
+    seed_dir = os.path.join(APP_DIR, "seed_docs")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    wanted = (
+        "Dos-Gringos-intake-409-S-Maple.pdf",
+        "BC-TX-409SM-Note-and-Guaranty.docx",
+        "BC-TX-409SM-Term-Sheet.docx",
+    )
+    if os.path.isdir(seed_dir):
+        for original in wanted:
+            src = os.path.join(seed_dir, original)
+            if not os.path.isfile(src):
+                continue
+            stored = f"{deal_id}_dosgringos_{secure_filename(original)}"
+            try:
+                shutil.copy2(src, os.path.join(UPLOAD_DIR, stored))
+            except OSError:
+                continue
+            kind = "Profile" if "intake" in original.lower() else "Property"
+            c.execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (None if kind == "Profile" else deal_id, bid, stored, original, kind, "2026-09-08T16:00"),
             )
 
 
@@ -1051,6 +1207,7 @@ except sqlite3.Error:
 try:
     _s = sqlite3.connect(DB_PATH)
     seed_crossley_tx(_s)
+    seed_dos_gringos_tx(_s)
     _s.commit()
     _s.close()
 except Exception:
@@ -2211,7 +2368,11 @@ def form_prefill(borrower, deal=None):
     if deal:
         raw = money(deal["loan_amount"]) if "loan_amount" in deal.keys() else 0
         amt = f"{raw:,.2f}" if raw else ""
-    lender_addr = os.environ.get("LENDER_ADDRESS") or "Brittco Capital Inc"
+    lender_addr = os.environ.get("LENDER_ADDRESS") or "4825 Vasca Drive, Sarasota, FL 34240"
+    lender_name = os.environ.get("LENDER_NAME") or "Brittco Capital, Inc."
+    lender_phone = os.environ.get("LENDER_PHONE") or "(816) 694-1658"
+    lender_email = os.environ.get("LENDER_EMAIL") or "john@brittcocapital.com"
+    lender_officer = os.environ.get("LENDER_OFFICER") or "John Britton, President"
     return {
         "guarantor_name": name,
         "borrower_name": name,
@@ -2238,8 +2399,15 @@ def form_prefill(borrower, deal=None):
         "borrower_entity_type": row_val(borrower, "entity_type") or "Limited Liability Company",
         "borrower_formation_state": state,
         "borrower_notice_address": addr,
+        "lender_name": lender_name,
+        "lender_legal_name": lender_name,
+        "lender_entity": "Florida corporation",
         "lender_notice_address": lender_addr,
-        "lender_phone": os.environ.get("LENDER_PHONE") or "",
+        "lender_address": lender_addr,
+        "lender_phone": lender_phone,
+        "lender_email": lender_email,
+        "lender_officer": lender_officer,
+        "lender_signatory": lender_officer,
         "trustee_name": os.environ.get("TRUSTEE_NAME") or "",
         "trustee_address": os.environ.get("TRUSTEE_ADDRESS") or "",
         "note_principal": amt,
