@@ -18,6 +18,33 @@
   </div>
 </div>
 
+{% if d.status == "Pending Review" %}
+<div class="card" style="border:2px solid #b8860b">
+  <h3>Rate and term — verify before title</h3>
+  <p class="hint">Borrower submitted these figures. Edit if needed, then approve or deny. Closing packet stays Pending until you decide.</p>
+  <form method="post" action="{{ url_for('deal_decision', did=d.id) }}" class="form-grid">
+    <div><label>Rate %</label><input name="rate" type="number" step="0.01" value="{{ d.rate or '' }}" style="background:#fff6d6"></div>
+    <div><label>Points / fee %</label><input name="points" type="number" step="0.01" value="{{ d.points or '' }}" style="background:#fff6d6"></div>
+    <div><label>Term months</label><input name="term_months" type="number" value="{{ d.term_months or '' }}" style="background:#fff6d6"></div>
+    <div class="span-2">
+      <button class="btn" name="action" value="approve" type="submit">Approve — send toward closing</button>
+      <button class="btn ghost" name="action" value="deny" type="submit">Deny application</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+{% if packets %}
+<div class="card" style="margin-top:14px">
+  <h3>Closing packet</h3>
+  {% for p in packets %}
+  <p>
+    {{ p.form_key }} · <strong>{{ p.status }}</strong>
+    · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
+    · <a href="{{ url_for('fill_form', token=p.token) }}">Open</a>
+  </p>
+  {% endfor %}
+</div>
+{% endif %}
 <div class="card">
   <h3>Underwriting result</h3>
   <p>
