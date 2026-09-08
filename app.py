@@ -473,7 +473,17 @@ def seed_crossley_tx(c):
     """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
     import shutil
 
-    if c.execute("SELECT 1 FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone():
+    existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone()
+    if existing:
+        c.execute(
+            """UPDATE loans SET maturity_date=?, next_payment_due=?, notes=? WHERE loan_number=?""",
+            (
+                "2026-09-11",
+                "2026-09-11",
+                "Transactional double close. Purchase only. Fee $5,000 flat from B-C. Due end of business day 2026-09-11. No automatic extensions. Investor John Britton 100%.",
+                "BC-TX-10W96",
+            ),
+        )
         return
     if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone():
         c.execute(
@@ -547,7 +557,7 @@ def seed_crossley_tx(c):
                 2.78,
                 0,
                 "Closing",
-                "B-C sale to Dos Gringos Construction LLC at $197,000 within 4 business days. Flat fee $5,000.",
+                "B-C sale to Dos Gringos Construction LLC at $197,000. Due end of business day 2026-09-11. No automatic extensions. Purchase only. Flat fee $5,000.",
                 "Jackson County. A-B Ludwig $180,000. Title Security Land & Title file 612389-SLT-MO. Legal: E 30 FT LOT 42 & W 60 FT LOT 43 BROADVIEW HEIGHTS.",
                 "",
                 "2026-09-08T12:00",
@@ -573,14 +583,14 @@ def seed_crossley_tx(c):
             0,
             2.78,
             "2026-09-09",
-            "2026-09-15",
+            "2026-09-11",
             "Fee at payoff",
             5000,
             "At payoff",
-            "2026-09-15",
+            "2026-09-11",
             100,
             "Current",
-            "Transactional double close. Fee $5,000 flat from B-C. 4 business days. Investor John Britton 100%.",
+            "Transactional double close. Purchase only. Fee $5,000 flat from B-C. Due end of business day 2026-09-11. No automatic extensions. Investor John Britton 100%.",
         ),
     )
     lid = cur.lastrowid
