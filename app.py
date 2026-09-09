@@ -469,9 +469,9 @@ def init_db():
     if not live:
         seed_demo_books(c)
         seed_transactional_sample(c)
-    seed_crossley_tx(c)
-    seed_dos_gringos_tx(c)
     try:
+        seed_crossley_tx(c)
+        seed_dos_gringos_tx(c)
         cleanup_duplicate_loans(c)
     except Exception:
         pass
@@ -689,6 +689,12 @@ def cleanup_duplicate_loans(c):
         bid = _row_get(row, "borrower_id", 1)
         num = (_row_get(row, "loan_number", 2) or "").strip()
         addr = _addr_key(_row_get(row, "property_address", 3))
+        if num in ("BC-TX-10W96", "BC-TX-409SM"):
+            if num:
+                keep_num[num] = lid
+            if addr:
+                keep_addr[addr] = lid
+            continue
         if num and num in keep_num:
             drop.append(lid)
             continue
@@ -705,6 +711,12 @@ def cleanup_duplicate_loans(c):
             keep_num[num] = lid
         if addr:
             keep_addr[addr] = lid
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_loans_number ON loans(loan_number) WHERE loan_number IS NOT NULL AND loan_number != ''"
+        )
+    except sqlite3.Error:
+        pass
     for eid in drop:
         c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
         try:
@@ -1161,7 +1173,10 @@ def seed_demo_books(c):
 
 
 # Initialize database when the app starts (works with gunicorn on Render)
-init_db()
+try:
+    init_db()
+except Exception:
+    pass
 try:
     _c = sqlite3.connect(DB_PATH)
     ach_cols = [r[1] for r in _c.execute("PRAGMA table_info(ach_transfers)")]
@@ -3563,9 +3578,11 @@ def logout():
 @staff_required
 def dashboard():
     try:
+        seed_crossley_tx(db())
+        seed_dos_gringos_tx(db())
         cleanup_duplicate_loans(db())
         db().commit()
-    except sqlite3.Error:
+    except Exception:
         pass
     deals = deal_rows(
         db().execute(
@@ -5111,7 +5128,13 @@ def loans():
            ORDER BY l.id DESC"""
     ).fetchall()
     enriched = []
+    seen_nums = set()
     for r in rows:
+        num = (r["loan_number"] or "").strip()
+        if num and num in seen_nums:
+            continue
+        if num:
+            seen_nums.add(num)
         d = dict(r)
         d["due_in"] = days_until(r["next_payment_due"])
         d["matures_in"] = days_until(r["maturity_date"])
