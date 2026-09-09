@@ -4020,6 +4020,7 @@ def borrower_detail(bid):
         ),
         property_files=borrower_property_files(bid),
         named_files=borrower_named_files(bid),
+        delete_warn=session.pop("borrower_delete_warn", None),
     )
 
 
@@ -4431,6 +4432,80 @@ def borrower_edit(bid):
     return render_template(
         "borrower_form.html", title="Edit borrower", nav="borrowers", b=b
     )
+
+
+def wipe_borrower(bid):
+    bid = int(bid)
+    loan_ids = [
+        r["id"]
+        for r in db().execute("SELECT id FROM loans WHERE borrower_id=?", (bid,)).fetchall()
+    ]
+    deal_ids = [
+        r["id"]
+        for r in db().execute("SELECT id FROM deals WHERE borrower_id=?", (bid,)).fetchall()
+    ]
+    for lid in loan_ids:
+        wipe_loan(lid)
+    for did in deal_ids:
+        for sql in (
+            "DELETE FROM closing_items WHERE deal_id=?",
+            "DELETE FROM messages WHERE deal_id=?",
+            "DELETE FROM documents WHERE deal_id=?",
+            "DELETE FROM form_packets WHERE deal_id=?",
+            "DELETE FROM deals WHERE id=?",
+        ):
+            try:
+                db().execute(sql, (did,))
+            except sqlite3.Error:
+                pass
+    for sql, args in (
+        ("DELETE FROM documents WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM credit_pulls WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM form_packets WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM messages WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM invites WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM ach_transfers WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM doc_file_items WHERE file_id IN (SELECT id FROM doc_files WHERE borrower_id=?)", (bid,)),
+        ("DELETE FROM doc_files WHERE borrower_id=?", (bid,)),
+        ("DELETE FROM borrowers WHERE id=?", (bid,)),
+    ):
+        try:
+            db().execute(sql, args)
+        except sqlite3.Error:
+            pass
+    return loan_ids
+
+
+@app.route("/borrowers/<int:bid>/delete", methods=["POST"])
+@staff_required
+def borrower_delete(bid):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return redirect(url_for("borrowers"))
+    confirm = (request.form.get("confirm") or "").strip().upper()
+    loans = db().execute(
+        "SELECT id, loan_number, property_address FROM loans WHERE borrower_id=?",
+        (bid,),
+    ).fetchall()
+    if confirm == "PROCEED":
+        n = len(wipe_borrower(bid))
+        db().commit()
+        session["last_invite_note"] = f"Borrower removed. {n} loan(s) removed with them."
+        session.pop("borrower_delete_warn", None)
+        return redirect(url_for("borrowers"))
+    if confirm != "REMOVE":
+        session["last_form_note"] = "Type REMOVE to delete this borrower."
+        return redirect(url_for("borrower_detail", bid=bid))
+    if loans:
+        session["borrower_delete_warn"] = [
+            {"id": r["id"], "loan_number": r["loan_number"], "property": r["property_address"]}
+            for r in loans
+        ]
+        return redirect(url_for("borrower_detail", bid=bid))
+    wipe_borrower(bid)
+    db().commit()
+    session["last_invite_note"] = "Borrower removed."
+    return redirect(url_for("borrowers"))
 
 
 @app.route("/deals")
