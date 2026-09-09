@@ -12,6 +12,7 @@
     <nav class="nav">
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if nav=='dash' else '' }}">Dashboard</a>
       <a href="{{ url_for('borrowers') }}" class="{{ 'active' if nav=='borrowers' else '' }}">Borrowers</a>
+      <a href="{{ url_for('marketing_leads') }}" class="{{ 'active' if nav=='leads' else '' }}">Leads</a>
       <a href="{{ url_for('deals') }}" class="{{ 'active' if nav=='deals' else '' }}">Deals</a>
       <a href="{{ url_for('loans') }}" class="{{ 'active' if nav=='loans' else '' }}">Loans</a>
       <a href="{{ url_for('investors') }}" class="{{ 'active' if nav=='investors' else '' }}">Investors</a>
@@ -30,6 +31,18 @@
         <form method="post" action="{{ url_for('ack_application', did=a.id) }}" style="display:inline">
           <button class="btn ghost" type="submit">Acknowledge</button>
         </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if new_leads %}
+    <div class="alert-bar">
+      {% for a in new_leads %}
+      <div class="alert-row">
+        <strong>New transactional lead</strong>
+        — {{ a.first_name }} {{ a.last_name }}
+        {% if a.immediate_need == 'yes' %}· needs funding now{% endif %}
+        <a href="{{ url_for('marketing_leads') }}">Open</a>
       </div>
       {% endfor %}
     </div>

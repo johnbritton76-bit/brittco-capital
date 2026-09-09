@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Marketing</div>
+    <h2>Transactional leads</h2>
+  </div>
+</div>
+<p class="hint">Public link to publish: <strong>{{ request.url_root.rstrip('/') }}/tx</strong></p>
+<div class="card">
+<table class="table">
+  <tr>
+    <th>When</th><th>Name</th><th>Contact</th><th>Closings / credit</th><th>Need</th><th>Deal</th><th></th>
+  </tr>
+  {% for l in leads %}
+  <tr>
+    <td>{{ l.created_at }}</td>
+    <td>{{ l.first_name }} {{ l.last_name }}</td>
+    <td>{{ l.email }}<br>{{ l.phone }}</td>
+    <td>{{ l.deals_12mo }} closings<br>Score {{ l.credit_score }}</td>
+    <td>{% if l.immediate_need == 'yes' %}<span class="badge warn">This week</span>{% else %}Future{% endif %}</td>
+    <td>
+      {% if l.immediate_need == 'yes' %}
+      {{ l.amount }}<br>Buy {{ l.purchase_close }} · Sell {{ l.resale_close }}
+      {% else %}—{% endif %}
+      {% if l.file_list %}<br>{{ l.file_list|length }} file(s){% endif %}
+    </td>
+    <td>
+      {% if not l.acked %}
+      <form method="post" action="{{ url_for('marketing_lead_ack', lid=l.id) }}">
+        <button class="btn ghost" type="submit">Mark reviewed</button>
+      </form>
+      {% else %}{{ l.status }}{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% if not leads %}<p class="hint">No leads yet. Share /tx on social posts.</p>{% endif %}
+</div>
+{% endblock %}

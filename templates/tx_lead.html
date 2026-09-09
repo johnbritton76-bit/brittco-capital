@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transactional funding | Brittco Capital Inc</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:680px;margin:0 auto;padding:24px 16px">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Transactional funding</div>
+      <h2 style="margin:4px 0 0">Need a same-week double close?</h2>
+    </div>
+  </div>
+
+  {% if done %}
+  <div class="card">
+    <h3>We have your request</h3>
+    <p>Thank you. A Brittco Capital team member will review this and contact you. If the purchase is inside the next few days, call (816) 694-1658.</p>
+  </div>
+  {% else %}
+  <div class="card">
+    <p>Brittco Capital funds business-purpose transactional loans for investors who already have a property under contract. This form is an inquiry, not a loan commitment.</p>
+    {% if error %}<div class="flash">{{ error }}</div>{% endif %}
+    <form method="post" enctype="multipart/form-data" class="form-grid" id="tx-form">
+      <div><label>First name</label><input name="first_name" required value="{{ form.first_name if form else '' }}"></div>
+      <div><label>Last name</label><input name="last_name" required value="{{ form.last_name if form else '' }}"></div>
+      <div><label>Email</label><input name="email" type="email" required value="{{ form.email if form else '' }}"></div>
+      <div><label>Mobile number</label><input name="phone" type="tel" required value="{{ form.phone if form else '' }}"></div>
+      <div class="span-2">
+        <label>How many investment properties have you closed in the last 12 months?</label>
+        <input name="deals_12mo" type="number" min="0" step="1" required value="{{ form.deals_12mo if form else '' }}">
+      </div>
+      <div class="span-2">
+        <label>Approximate credit score (self-reported)</label>
+        <input name="credit_score" type="number" min="300" max="850" required placeholder="Example: 720" value="{{ form.credit_score if form else '' }}">
+      </div>
+      <div class="span-2">
+        <label>Do you need transactional funding in the next 14 days?</label>
+        <select name="immediate_need" id="need" required>
+          <option value="">Select</option>
+          <option value="yes">Yes — I have a live deal</option>
+          <option value="no">No — I want to be ready for a future deal</option>
+        </select>
+      </div>
+      <div class="span-2" id="more" style="display:none">
+        <div class="form-grid">
+          <div class="span-2"><label>How much do you need to borrow?</label><input name="amount" placeholder="$180,000"></div>
+          <div><label>When does the purchase close? (A-B)</label><input name="purchase_close" type="date"></div>
+          <div><label>When does the resale close? (B-C)</label><input name="resale_close" type="date"></div>
+        </div>
+      </div>
+      <div class="span-2">
+        <label>Anything else we should know? (optional)</label>
+        <textarea name="notes" rows="3"></textarea>
+      </div>
+      <div class="span-2">
+        <label>Upload files (optional now — helpful if you need funding this week)</label>
+        <p class="hint">Government ID, A-B contract, B-C contract, entity papers. PDF or photo.</p>
+        <input type="file" name="docs" multiple>
+      </div>
+      <div class="span-2">
+        <button class="btn" type="submit">Submit request</button>
+      </div>
+    </form>
+  </div>
+  <p class="hint">Brittco Capital, Inc. Business-purpose loans only. Not a consumer mortgage.</p>
+  <script>
+    var need = document.getElementById("need");
+    var more = document.getElementById("more");
+    function sync() {
+      more.style.display = need.value === "yes" ? "block" : "none";
+    }
+    need.addEventListener("change", sync);
+    sync();
+  </script>
+  {% endif %}
+</main>
+</body>
+</html>
