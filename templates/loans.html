@@ -2,8 +2,14 @@
 {% block body %}
 <div class="top">
   <h2>Loan management</h2>
+  <form method="post" action="{{ url_for('loans_dedupe') }}" style="display:inline">
+    <button class="btn ghost" type="submit">Remove duplicate loans</button>
+  </form>
   <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
 </div>
+{% if session.get('last_invite_note') %}
+<p class="flash">{{ session.pop('last_invite_note') }}</p>
+{% endif %}
 <p>
   <a class="btn {% if show!='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans') }}">Working loans ({{ active_n }})</a>
   <a class="btn {% if show=='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans', show='archived') }}">Archive ({{ archived_n }})</a>
