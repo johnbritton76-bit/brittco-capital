@@ -677,13 +677,19 @@ def cleanup_duplicate_loans(c):
         if num and num in keep_num:
             drop.append(lid)
             continue
-        if bid and addr and (bid, addr) in keep_addr:
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in keep_addr.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
             drop.append(lid)
             continue
         if num:
             keep_num[num] = lid
-        if bid and addr:
-            keep_addr[(bid, addr)] = lid
+        if addr:
+            keep_addr[addr] = lid
     for eid in drop:
         c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
         try:
@@ -701,11 +707,16 @@ def cleanup_duplicate_loans(c):
         did = _row_get(row, "id", 0)
         bid = _row_get(row, "borrower_id", 1)
         addr = _addr_key(_row_get(row, "address", 2))
-        key = (bid, addr)
-        if addr and key in seen:
-            drop_deals.append((did, seen[key]))
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in seen.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
+            drop_deals.append((did, hit))
         elif addr:
-            seen[key] = did
+            seen[addr] = did
     for eid, keep in drop_deals:
         c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
         try:
@@ -5033,6 +5044,17 @@ def portal_message():
     )
     db().commit()
     return redirect(url_for("portal_home"))
+
+
+@app.route("/loans/dedupe", methods=["POST"])
+@staff_required
+def loans_dedupe():
+    before = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
+    cleanup_duplicate_loans(db())
+    db().commit()
+    after = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
+    session["last_invite_note"] = f"Removed {before - after} extra loan(s). {after} loan(s) remain."
+    return redirect(url_for("loans"))
 
 
 @app.route("/loans")
