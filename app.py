@@ -2358,6 +2358,33 @@ def public_base():
     return (os.environ.get("PUBLIC_BASE_URL") or request.url_root or "").rstrip("/")
 
 
+def investor_portal_url():
+    return public_base() + "/investor/login"
+
+
+def send_investor_login(inv, password, reset=False):
+    email = (inv["email"] if isinstance(inv, sqlite3.Row) or isinstance(inv, dict) else "") or ""
+    email = (email or "").strip()
+    if not email:
+        return False
+    name = inv["name"] if not isinstance(inv, tuple) else "Investor"
+    action = "Your investor portal password was reset." if reset else "Your Brittco Capital investor portal is ready."
+    body = (
+        f"Hello {name},\n\n"
+        f"{action}\n\n"
+        f"Sign in: {investor_portal_url()}\n"
+        f"Email: {email}\n"
+        f"Password: {password}\n\n"
+        "Please change nothing if you did not expect this note — contact Brittco Capital.\n\n"
+        "Brittco Capital Inc\n"
+    )
+    return send_mail(
+        email,
+        "Brittco Capital investor portal login" if not reset else "Brittco Capital password reset",
+        body,
+    )
+
+
 def mail_address():
     return os.environ.get("MAIL_FROM") or os.environ.get("SMTP_USER") or ""
 
@@ -5601,21 +5628,34 @@ def investors():
 def investor_new():
     if request.method == "POST":
         f = request.form
+        email = (f.get("email") or "").strip().lower()
+        pw = (f.get("password") or "").strip() or secrets.token_urlsafe(8)
         db().execute(
             """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password, capital_available)
                VALUES (?,?,?,?,?,?,?,?)""",
             (
                 f.get("name"),
                 f.get("entity_name"),
-                f.get("email"),
+                email,
                 f.get("phone"),
                 f.get("notes"),
                 "Not connected",
-                f.get("password") or "investor",
+                pw,
                 money(f.get("capital_available")),
             ),
         )
         db().commit()
+        sent = False
+        if email and f.get("send_login") == "1":
+            row = db().execute("SELECT * FROM investors WHERE email=?", (email,)).fetchone()
+            try:
+                sent = send_investor_login(row, pw, reset=False)
+            except Exception:
+                sent = False
+        note = f"Investor saved. Portal: {investor_portal_url()}  Email: {email or '(none)'}  Password: {pw}"
+        if email and f.get("send_login") == "1":
+            note += "  Email sent." if sent else "  Email did not send — copy the password and send it yourself."
+        session["last_invite_note"] = note
         return redirect(url_for("investors"))
     return render_template("investor_form.html", title="New investor", nav="investors")
 
@@ -5668,6 +5708,88 @@ def investor_profile(iid):
     return render_template(
         "investor_profile.html", title="Investor profile", nav="investors", inv=inv, staff=True
     )
+
+
+@app.route("/investors/<int:iid>/capital", methods=["POST"])
+@staff_required
+def investor_capital(iid):
+    db().execute(
+        "UPDATE investors SET capital_available=? WHERE id=?",
+        (money(request.form.get("capital_available")), iid),
+    )
+    db().commit()
+    return redirect(url_for("investor_detail", iid=iid))
+
+
+@app.route("/investors/<int:iid>/send-login", methods=["POST"])
+@staff_required
+def investor_send_login(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    if not inv or not (inv["email"] or "").strip():
+        session["last_invite_note"] = "Add an email on the profile first."
+        return redirect(url_for("investor_detail", iid=iid))
+    pw = inv["password"] or secrets.token_urlsafe(8)
+    if not inv["password"]:
+        db().execute("UPDATE investors SET password=? WHERE id=?", (pw, iid))
+        db().commit()
+        inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    sent = False
+    try:
+        sent = send_investor_login(inv, pw, reset=False)
+    except Exception:
+        sent = False
+    session["last_invite_note"] = (
+        f"Login: {investor_portal_url()}  Email: {inv['email']}  Password: {pw}"
+        + ("  Email sent." if sent else "  Email did not send — copy this and send it.")
+    )
+    return redirect(url_for("investor_detail", iid=iid))
+
+
+@app.route("/investors/<int:iid>/reset-password", methods=["POST"])
+@staff_required
+def investor_reset_password(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    pw = secrets.token_urlsafe(8)
+    db().execute("UPDATE investors SET password=? WHERE id=?", (pw, iid))
+    db().commit()
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    sent = False
+    try:
+        sent = send_investor_login(inv, pw, reset=True)
+    except Exception:
+        sent = False
+    session["last_invite_note"] = (
+        f"New password: {pw}"
+        + ("  Email sent to " + (inv["email"] or "") if sent else "  Email did not send — give them this password.")
+    )
+    return redirect(url_for("investor_detail", iid=iid))
+
+
+@app.route("/investors/<int:iid>/delete", methods=["POST"])
+@staff_required
+def investor_delete(iid):
+    if (request.form.get("confirm") or "").strip().upper() != "REMOVE":
+        session["last_invite_note"] = "Type REMOVE to delete this investor."
+        return redirect(url_for("investor_detail", iid=iid))
+    open_n = db().execute(
+        "SELECT COUNT(*) c FROM participations WHERE investor_id=?",
+        (iid,),
+    ).fetchone()["c"]
+    if open_n:
+        session["last_invite_note"] = "This investor is on a loan file. Reset the password instead of deleting."
+        return redirect(url_for("investor_detail", iid=iid))
+    try:
+        db().execute("DELETE FROM investor_accounts WHERE investor_id=?", (iid,))
+    except sqlite3.Error:
+        pass
+    try:
+        db().execute("DELETE FROM ach_transfers WHERE investor_id=?", (iid,))
+    except sqlite3.Error:
+        pass
+    db().execute("DELETE FROM investors WHERE id=?", (iid,))
+    db().commit()
+    session["last_invite_note"] = "Investor removed."
+    return redirect(url_for("investors"))
 
 
 @app.route("/loans/<int:lid>/participate", methods=["POST"])
