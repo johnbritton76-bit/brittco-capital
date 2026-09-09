@@ -127,10 +127,24 @@
 {% endfor %}
 <div class="card" style="margin-top:24px">
   <h3>Remove investor</h3>
-  <p class="hint">Use this for test records. Open deals must be closed first. Type REMOVE then click the button.</p>
+  {% if delete_warn %}
+  <p><strong>This investor is assigned to a loan. Removing the investor will remove the loan.</strong></p>
+  <ul>
+    {% for l in delete_warn %}
+    <li>{{ l.loan_number }} — {{ l.property }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('investor_delete', iid=inv.id) }}">
+    <input type="hidden" name="confirm" value="PROCEED">
+    <button class="btn" type="submit">Proceed</button>
+    <a class="btn ghost" href="{{ url_for('investor_detail', iid=inv.id) }}">Cancel</a>
+  </form>
+  {% else %}
+  <p class="hint">Type REMOVE then click the button. If they are on a loan you will be asked to confirm.</p>
   <form method="post" action="{{ url_for('investor_delete', iid=inv.id) }}">
     <input name="confirm" placeholder="REMOVE" autocomplete="off">
     <button class="btn ghost" type="submit">Remove investor</button>
   </form>
+  {% endif %}
 </div>
 {% endblock %}
