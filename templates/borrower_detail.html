@@ -278,4 +278,26 @@
   });
 })();
 </script>
+<div class="card" style="margin-top:24px">
+  <h3>Remove borrower</h3>
+  {% if delete_warn %}
+  <p><strong>This borrower is assigned to a loan. Removing the borrower will remove the loan.</strong></p>
+  <ul>
+    {% for l in delete_warn %}
+    <li>{{ l.loan_number }} — {{ l.property }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('borrower_delete', bid=b.id) }}">
+    <input type="hidden" name="confirm" value="PROCEED">
+    <button class="btn" type="submit">Proceed</button>
+    <a class="btn ghost" href="{{ url_for('borrower_detail', bid=b.id) }}">Cancel</a>
+  </form>
+  {% else %}
+  <p class="hint">Type REMOVE then click the button. If they have a loan you will be asked to confirm.</p>
+  <form method="post" action="{{ url_for('borrower_delete', bid=b.id) }}">
+    <input name="confirm" placeholder="REMOVE" autocomplete="off">
+    <button class="btn ghost" type="submit">Remove borrower</button>
+  </form>
+  {% endif %}
+</div>
 {% endblock %}
