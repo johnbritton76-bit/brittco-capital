@@ -4,6 +4,9 @@
   <h2>Investors</h2>
   <a class="btn" href="{{ url_for('investor_new') }}">Add investor</a>
 </div>
+{% if session.get('last_invite_note') %}
+<p class="flash">{{ session.pop('last_invite_note') }}</p>
+{% endif %}
 <div class="card">
 <table class="table">
   <tr><th>Name</th><th>Entity</th><th>Deals</th><th>In deals</th><th>Capital available to deploy</th><th>Returns paid</th></tr>
