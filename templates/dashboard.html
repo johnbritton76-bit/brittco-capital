@@ -29,8 +29,8 @@
       · {{ a.count }} reminder{% if a.count != 1 %}s{% endif %}
     </summary>
     <ul>
-      {% for item in a.items %}
-      <li><span class="badge {{ item.level }}">{{ item.kind }}</span> {{ item.text }}</li>
+      {% for item in a['items'] %}
+      <li><span class="badge {{ item['level'] }}">{{ item['kind'] }}</span> {{ item['text'] }}</li>
       {% endfor %}
     </ul>
   </details>
