@@ -2,6 +2,7 @@
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
 import json
 import os
+import re
 import secrets
 import smtplib
 import sqlite3
@@ -462,9 +463,18 @@ def init_db():
                 (loan_row[0], 2, half, 10.0, 3, 2.0, 3, 0, "Funded", date.today().isoformat(), "Sample 50% · 3 mo at 10%"),
             )
         c.commit()
-    seed_demo_books(c)
-    seed_transactional_sample(c)
+    live = c.execute(
+        "SELECT 1 FROM loans WHERE loan_number IN ('BC-TX-10W96','BC-TX-409SM')"
+    ).fetchone()
+    if not live:
+        seed_demo_books(c)
+        seed_transactional_sample(c)
     seed_crossley_tx(c)
+    seed_dos_gringos_tx(c)
+    try:
+        cleanup_duplicate_loans(c)
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -642,6 +652,285 @@ def seed_crossley_tx(c):
                 """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
                    VALUES (?,?,?,?,?,?)""",
                 (None if profile else deal_id, bid, stored, original, "Profile" if profile else "Property", "2026-09-08T12:00"),
+            )
+
+
+def _addr_key(s):
+    raw = (s or "").lower()
+    nums = re.findall(r"\d+", raw)
+    words = re.findall(r"[a-z]+", raw)
+    skip = {
+        "s", "n", "e", "w", "st", "street", "ave", "avenue", "rd", "road",
+        "dr", "drive", "ln", "lane", "ct", "court", "ter", "terrace",
+        "blvd", "mo", "ks", "fl", "city", "the", "and",
+    }
+    words = [w for w in words if w not in skip and len(w) > 1]
+    if nums or words:
+        return (nums[0] if nums else "") + (words[0] if words else "")
+    return re.sub(r"[^a-z0-9]+", "", raw)
+
+
+def _row_get(row, key, idx):
+    if isinstance(row, sqlite3.Row):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return row[idx]
+    return row[idx]
+
+
+def cleanup_duplicate_loans(c):
+    loans = c.execute(
+        "SELECT id, borrower_id, loan_number, property_address FROM loans ORDER BY id"
+    ).fetchall()
+    keep_num, keep_addr, drop = {}, {}, []
+    for row in loans:
+        lid = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        num = (_row_get(row, "loan_number", 2) or "").strip()
+        addr = _addr_key(_row_get(row, "property_address", 3))
+        if num in ("BC-TX-10W96", "BC-TX-409SM"):
+            if num:
+                keep_num[num] = lid
+            if addr:
+                keep_addr[addr] = lid
+            continue
+        if num and num in keep_num:
+            drop.append(lid)
+            continue
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in keep_addr.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
+            drop.append(lid)
+            continue
+        if num:
+            keep_num[num] = lid
+        if addr:
+            keep_addr[addr] = lid
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_loans_number ON loans(loan_number) WHERE loan_number IS NOT NULL AND loan_number != ''"
+        )
+    except sqlite3.Error:
+        pass
+    for eid in drop:
+        c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
+        try:
+            c.execute("DELETE FROM payments WHERE loan_id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        try:
+            c.execute("DELETE FROM distributions WHERE loan_id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM loans WHERE id=?", (eid,))
+    deals = c.execute("SELECT id, borrower_id, address FROM deals ORDER BY id").fetchall()
+    seen, drop_deals = {}, []
+    for row in deals:
+        did = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        addr = _addr_key(_row_get(row, "address", 2))
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in seen.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
+            drop_deals.append((did, hit))
+        elif addr:
+            seen[addr] = did
+    for eid, keep in drop_deals:
+        c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
+        try:
+            c.execute("UPDATE documents SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        try:
+            c.execute("UPDATE form_packets SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM deals WHERE id=?", (eid,))
+    people = c.execute("SELECT id, email FROM borrowers WHERE email IS NOT NULL AND email!='' ORDER BY id").fetchall()
+    seen_e = {}
+    for row in people:
+        bid = _row_get(row, "id", 0)
+        em = (_row_get(row, "email", 1) or "").strip().lower()
+        if em in seen_e:
+            keep = seen_e[em]
+            c.execute("UPDATE deals SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            c.execute("UPDATE loans SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            try:
+                c.execute("UPDATE documents SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            except sqlite3.Error:
+                pass
+            c.execute("DELETE FROM borrowers WHERE id=?", (bid,))
+        else:
+            seen_e[em] = bid
+
+
+def seed_dos_gringos_tx(c):
+    import shutil
+
+    existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-409SM",)).fetchone()
+    if existing:
+        c.execute(
+            """UPDATE loans SET start_date=?, maturity_date=?, next_payment_due=?, payment_amount=?,
+               payment_type=?, payment_frequency=?, notes=? WHERE loan_number=?""",
+            (
+                "2026-09-09",
+                "2026-09-16",
+                "2026-09-16",
+                183600,
+                "Fee at payoff",
+                "At payoff",
+                "Transactional. Purchase only. No DOT. Close 2026-09-09. 2% flat ($3,600). $183,600 due 2026-09-16. Lafayette County. Guarantors Walker McCallon, Marissa McCallon, and Alejandro Torres Jr.",
+                "BC-TX-409SM",
+            ),
+        )
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Walker Eric Neal McCallon",
+                "LLC",
+                "Dos Gringos Construction LLC",
+                "wmccallon@dosgringosllc.com",
+                "816-385-2732",
+                None,
+                "DosGringos2026",
+                "Co-owner 49%. Co-guarantor Alejandro Torres Jr 51% atorres@dosgringosllc.com 913-549-8212. EIN 33-4776367. Formed 2024-04-24. Office 1828 Walnut St Ste 400 Kansas City MO 64108. Walker last4 4892 DOB 1998-03-02. Alejandro last4 7623 DOB 1999-06-01.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone()
+    if not b:
+        return
+    bid = b[0]
+    cols = [r[1] for r in c.execute("PRAGMA table_info(borrowers)")]
+    extras = {
+        "dob": "1998-03-02",
+        "address": "7401 N Hickory Street",
+        "city": "Kansas City",
+        "state": "MO",
+        "zip": "64118",
+        "occupation": "Co-owner",
+        "employer": "Dos Gringos Construction LLC",
+        "entity_name": "Dos Gringos Construction LLC",
+        "entity_type": "LLC",
+    }
+    for col, val in extras.items():
+        if col in cols:
+            c.execute(f"UPDATE borrowers SET {col}=? WHERE id=?", (val, bid))
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("John Britton", "Brittco Capital Inc", "john@brittcocapital.com", "(816) 694-1658", "President.", "Not connected", "investor"),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    already = c.execute(
+        "SELECT id FROM loans WHERE property_address LIKE ? OR loan_number=?",
+        ("%409 S Maple%", "BC-TX-409SM"),
+    ).fetchone()
+    if already:
+        return
+    deal = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%409 S Maple%",)).fetchone()
+    if deal:
+        deal_id = deal[0]
+    else:
+        cur = c.execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "Transactional Loan",
+                "409 S Maple Street, Bates City, MO 64011",
+                180000,
+                180000,
+                192000,
+                0,
+                180000,
+                0,
+                2.0,
+                0,
+                "Closing",
+                "B-C to Living Water Technologies LLC at $192,000. Sequential close. No DOT.",
+                "A-B Darryl Fisher $180,000 Accurate Title. B-C Alliance Title 613918-ANTL-BLS-MO. Legal: Lots 7-2, 7-3, 7-4 and 7-5 HOMELAND VIEW SUBDIVISION, Lafayette/Bates County MO. Intake county field said Douglas — confirm.",
+                "",
+                "2026-09-08T16:00",
+                1,
+            ),
+        )
+        deal_id = cur.lastrowid
+    cur = c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-409SM",
+            "Transactional Loan",
+            "409 S Maple Street, Bates City, MO 64011",
+            180000,
+            180000,
+            0,
+            2.0,
+            "2026-09-09",
+            "2026-09-16",
+            "Fee at payoff",
+            183600,
+            "At payoff",
+            "2026-09-16",
+            72,
+            "Current",
+            "No DOT. Close 2026-09-09. 2% flat $3,600. $183,600 due 2026-09-16. Lafayette County. PGs: Walker, Marissa, Alejandro.",
+        ),
+    )
+    lid = cur.lastrowid
+    if inv:
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (lid, inv[0], 180000, 2.0, 0, 0.0, 0, 0, "Funded", "2026-09-09", "100% BC-TX-409SM. Nate fee off.", 0),
+        )
+    seed_dir = os.path.join(APP_DIR, "seed_docs")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    wanted = (
+        "Dos-Gringos-intake-409-S-Maple.pdf",
+        "BC-TX-409SM-Note-and-Guaranty.docx",
+        "BC-TX-409SM-Term-Sheet.docx",
+    )
+    if os.path.isdir(seed_dir):
+        for original in wanted:
+            src = os.path.join(seed_dir, original)
+            if not os.path.isfile(src):
+                continue
+            stored = f"{deal_id}_dosgringos_{secure_filename(original)}"
+            try:
+                shutil.copy2(src, os.path.join(UPLOAD_DIR, stored))
+            except OSError:
+                continue
+            kind = "Profile" if "intake" in original.lower() else "Property"
+            c.execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (None if kind == "Profile" else deal_id, bid, stored, original, kind, "2026-09-08T16:00"),
             )
 
 
@@ -1050,7 +1339,11 @@ except sqlite3.Error:
     pass
 try:
     _s = sqlite3.connect(DB_PATH)
+    _s.row_factory = sqlite3.Row
+    cleanup_duplicate_loans(_s)
     seed_crossley_tx(_s)
+    seed_dos_gringos_tx(_s)
+    cleanup_duplicate_loans(_s)
     _s.commit()
     _s.close()
 except Exception:
@@ -1075,7 +1368,7 @@ def inject_new_apps():
         rows = db().execute(
             """SELECT d.id, d.address, b.name AS borrower_name
                FROM deals d JOIN borrowers b ON b.id=d.borrower_id
-               WHERE d.status='Application' AND COALESCE(d.acked,0)=0
+               WHERE d.status IN ('Application','Pending Review') AND COALESCE(d.acked,0)=0
                ORDER BY d.id DESC"""
         ).fetchall()
         return {"new_apps": [dict(r) for r in rows]}
@@ -1325,6 +1618,38 @@ LOAN_TYPES = [
     "Gap Loan",
     "Transactional Loan",
 ]
+
+APPLY_TYPES = ["Fix and Flip", "Bridge", "Transactional Loan"]
+
+LOAN_DEFAULTS = {
+    "Fix and Flip": {
+        "rate": 10.0,
+        "points": 0.0,
+        "term_months": 4,
+        "term_days": 0,
+        "ext": 2,
+        "ext_rate": 2.0,
+        "blurb": "Standard: 10% for 4 months. Two 1-month extensions at 2% each, if later agreed in writing.",
+    },
+    "Bridge": {
+        "rate": 10.0,
+        "points": 0.0,
+        "term_months": 4,
+        "term_days": 0,
+        "ext": 2,
+        "ext_rate": 2.0,
+        "blurb": "Standard: 10% for 4 months. Two 1-month extensions at 2% each, if later agreed in writing.",
+    },
+    "Transactional Loan": {
+        "rate": 0.0,
+        "points": 2.75,
+        "term_months": 0,
+        "term_days": 4,
+        "ext": 0,
+        "ext_rate": 0.0,
+        "blurb": "Standard: 2.75% flat for 4 business days. No automatic extensions.",
+    },
+}
 
 
 def investor_product_terms(kind):
@@ -2179,7 +2504,11 @@ def form_prefill(borrower, deal=None):
     if deal:
         raw = money(deal["loan_amount"]) if "loan_amount" in deal.keys() else 0
         amt = f"{raw:,.2f}" if raw else ""
-    lender_addr = os.environ.get("LENDER_ADDRESS") or "Brittco Capital Inc"
+    lender_addr = os.environ.get("LENDER_ADDRESS") or "4825 Vasca Drive, Sarasota, FL 34240"
+    lender_name = os.environ.get("LENDER_NAME") or "Brittco Capital, Inc."
+    lender_phone = os.environ.get("LENDER_PHONE") or "(816) 694-1658"
+    lender_email = os.environ.get("LENDER_EMAIL") or "john@brittcocapital.com"
+    lender_officer = os.environ.get("LENDER_OFFICER") or "John Britton, President"
     return {
         "guarantor_name": name,
         "borrower_name": name,
@@ -2206,8 +2535,15 @@ def form_prefill(borrower, deal=None):
         "borrower_entity_type": row_val(borrower, "entity_type") or "Limited Liability Company",
         "borrower_formation_state": state,
         "borrower_notice_address": addr,
+        "lender_name": lender_name,
+        "lender_legal_name": lender_name,
+        "lender_entity": "Florida corporation",
         "lender_notice_address": lender_addr,
-        "lender_phone": os.environ.get("LENDER_PHONE") or "",
+        "lender_address": lender_addr,
+        "lender_phone": lender_phone,
+        "lender_email": lender_email,
+        "lender_officer": lender_officer,
+        "lender_signatory": lender_officer,
         "trustee_name": os.environ.get("TRUSTEE_NAME") or "",
         "trustee_address": os.environ.get("TRUSTEE_ADDRESS") or "",
         "note_principal": amt,
@@ -2229,6 +2565,132 @@ def form_prefill(borrower, deal=None):
         "late_charge_per_day": "",
         "guarantor_address": addr,
     }
+
+
+def add_business_days(start, n):
+    cur = start
+    added = 0
+    while added < n:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            added += 1
+    return cur
+
+
+def money_words(n):
+    n = int(round(money(n) or 0))
+    ones = [
+        "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+        "Seventeen", "Eighteen", "Nineteen",
+    ]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    if n == 0:
+        return "Zero"
+    def chunk(x):
+        if x < 20:
+            return ones[x]
+        if x < 100:
+            return (tens[x // 10] + (" " + ones[x % 10] if x % 10 else "")).strip()
+        return ones[x // 100] + " Hundred" + ((" " + chunk(x % 100)) if x % 100 else "")
+    parts = []
+    scales = [(1_000_000, "Million"), (1000, "Thousand")]
+    for val, name in scales:
+        if n >= val:
+            parts.append(chunk(n // val) + " " + name)
+            n %= val
+    if n:
+        parts.append(chunk(n))
+    return " ".join(parts)
+
+
+def apply_packet_data(b, deal, extra):
+    data = form_prefill(b, deal)
+    amt = money(extra.get("loan_amount")) or money(deal["loan_amount"] if deal else 0)
+    fee = money(extra.get("points"))
+    fee_amt = amt * fee / 100.0 if fee else money(extra.get("fee_amount"))
+    start = parse_date(extra.get("start_date")) or date.today()
+    days = int(money(extra.get("term_days")) or 0)
+    months = int(money(extra.get("term_months")) or 0)
+    if days:
+        mat = add_business_days(start, days)
+    elif months:
+        mat = start + timedelta(days=months * 30)
+    else:
+        mat = parse_date(extra.get("maturity_date")) or start
+    data.update({
+        "property": extra.get("address") or data.get("property"),
+        "county": extra.get("county") or "",
+        "legal_description": extra.get("legal_description") or "",
+        "loan_amount": f"{amt:,.2f}" if amt else "",
+        "note_principal": f"{amt:,.2f}" if amt else "",
+        "secured_amount": f"{amt:,.2f}" if amt else "",
+        "note_principal_words": money_words(amt),
+        "secured_amount_words": money_words(amt),
+        "profit_fee": f"{fee_amt:,.2f}" if fee_amt else "",
+        "profit_fee_words": money_words(fee_amt) if fee_amt else "",
+        "effective_date": start.isoformat(),
+        "closing_date": start.isoformat(),
+        "maturity_date": mat.isoformat(),
+        "extension_rate": extra.get("ext_rate") or "",
+        "insurance_amount": f"{amt:,.2f}" if amt else "",
+        "notary_county": extra.get("county") or "",
+        "trustee_name": extra.get("title_company") or data.get("trustee_name"),
+        "trustee_address": extra.get("title_address") or data.get("trustee_address"),
+    })
+    return data
+
+
+def staff_notify_list():
+    emails = []
+    try:
+        for r in db().execute("SELECT email FROM staff").fetchall():
+            if r["email"]:
+                emails.append(r["email"])
+    except sqlite3.Error:
+        pass
+    extra = os.environ.get("STAFF_NOTIFY") or "nate@brittcocapital.com,john@brittcocapital.com"
+    emails.extend([p.strip() for p in extra.split(",") if p.strip()])
+    seen = set()
+    out = []
+    for e in emails:
+        if e.lower() not in seen:
+            seen.add(e.lower())
+            out.append(e)
+    return out
+
+
+def issue_pending_closing_packet(b, deal, extra):
+    data = apply_packet_data(b, deal, extra)
+    payload = json.dumps(data)
+    created = []
+    for key in ("deed_of_trust", "promissory_note_guaranty"):
+        spec = get_form_spec(key)
+        if not spec:
+            continue
+        token = secrets.token_urlsafe(16)
+        db().execute(
+            """INSERT INTO form_packets
+               (token, form_key, borrower_id, deal_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, key, b["id"], deal["id"], "Pending", payload, datetime.now().isoformat(timespec="minutes")),
+        )
+        created.append((key, token, spec))
+        try:
+            pdf = form_packet_pdf(spec, data, b["name"])
+            stored = f"{deal['id']}_{key}_pending.pdf"
+            path = os.path.join(UPLOAD_DIR, stored)
+            with open(path, "wb") as fh:
+                fh.write(pdf)
+            db().execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (deal["id"], b["id"], stored, spec["title"] + " (pending).pdf", "Closing packet", datetime.now().isoformat(timespec="minutes")),
+            )
+        except Exception:
+            pass
+    db().commit()
+    return created
 
 
 def merge_form_data(stored, borrower, deal=None):
@@ -3112,6 +3574,13 @@ def logout():
 @app.route("/")
 @staff_required
 def dashboard():
+    try:
+        seed_crossley_tx(db())
+        seed_dos_gringos_tx(db())
+        cleanup_duplicate_loans(db())
+        db().commit()
+    except Exception:
+        pass
     deals = deal_rows(
         db().execute(
             """SELECT d.*, b.name AS borrower_name
@@ -3865,6 +4334,16 @@ def deal_detail(did):
     ).fetchone()
     complete = application_completeness(borrower, d, docs)
     memo = underwriting_memo(d, borrower, uw, complete)
+    proposal = {}
+    try:
+        proposal = json.loads(d["notes"] or "{}")
+        if not isinstance(proposal, dict):
+            proposal = {}
+    except (TypeError, ValueError):
+        proposal = {}
+    packets = db().execute(
+        "SELECT * FROM form_packets WHERE deal_id=? ORDER BY id DESC", (did,)
+    ).fetchall()
     return render_template(
         "deal_detail.html",
         title=d["address"],
@@ -3877,6 +4356,8 @@ def deal_detail(did):
         existing_loan=existing_loan,
         complete=complete,
         memo=memo,
+        proposal=proposal,
+        packets=packets,
     )
 
 
@@ -4378,6 +4859,156 @@ def portal_calculator_pdf():
     return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
 
 
+@app.route("/portal/apply-new", methods=["GET", "POST"])
+@borrower_required
+def portal_apply_new():
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    ready, missing = profile_ready(b)
+    if not ready:
+        request_profile_gaps(b, force=True)
+        return redirect(url_for("portal_home", msg="Finish your profile first. We emailed only the missing items."))
+    kind = request.values.get("loan_type") or ""
+    if kind not in APPLY_TYPES:
+        return render_template("portal_apply.html", b=b, step="type", loan_type="", spec=None, error=None)
+    spec = LOAN_DEFAULTS[kind]
+    if request.method == "GET":
+        return render_template("portal_apply.html", b=b, step="form", loan_type=kind, spec=spec, error=None, form={})
+    f = request.form
+
+    def need(key, label):
+        if f.get("na_" + key) == "yes":
+            return None
+        val = (f.get(key) or "").strip()
+        if not val:
+            return label
+        return None
+
+    errors = []
+    for key, label in [
+        ("address", "Property address"),
+        ("city", "Property city"),
+        ("state", "Property state"),
+        ("zip", "Property ZIP"),
+        ("county", "County"),
+        ("purchase_price", "Purchase price"),
+        ("loan_amount", "Requested loan amount"),
+        ("exit_strategy", "Exit strategy"),
+    ]:
+        miss = need(key, label)
+        if miss:
+            errors.append(miss)
+    if kind == "Fix and Flip":
+        for key, label in [("arv", "ARV"), ("rehab_budget", "Rehab budget")]:
+            miss = need(key, label)
+            if miss:
+                errors.append(miss)
+    if kind == "Transactional Loan":
+        for key, label in [("resale_price", "Resale / B-C price")]:
+            miss = need(key, label)
+            if miss:
+                errors.append(miss)
+    if f.get("credit_consent") != "yes":
+        errors.append("Soft-pull consent")
+    if errors:
+        return render_template(
+            "portal_apply.html",
+            b=b,
+            step="form",
+            loan_type=kind,
+            spec=spec,
+            error="Complete every field or mark N/A: " + ", ".join(errors),
+            form=f,
+        )
+    rate = money(f.get("rate")) if f.get("rate") not in (None, "") else spec["rate"]
+    points = money(f.get("points")) if f.get("points") not in (None, "") else spec["points"]
+    term_months = int(money(f.get("term_months")) or spec["term_months"] or 0)
+    term_days = int(money(f.get("term_days")) or spec["term_days"] or 0)
+    addr = f.get("address") or ""
+    if f.get("city") or f.get("state") or f.get("zip"):
+        addr = ", ".join(p for p in [f.get("address"), f.get("city"), f.get("state"), f.get("zip")] if p)
+    notes = json.dumps({
+        "source": "Apply For a New Loan",
+        "county": f.get("county"),
+        "legal_description": f.get("legal_description"),
+        "title_company": f.get("title_company"),
+        "title_address": f.get("title_address"),
+        "resale_price": f.get("resale_price"),
+        "end_buyer": f.get("end_buyer"),
+        "term_days": term_days,
+        "ext": spec["ext"],
+        "ext_rate": spec["ext_rate"],
+        "borrower_proposed_rate": rate,
+        "borrower_proposed_points": points,
+        "borrower_proposed_term_months": term_months,
+        "borrower_proposed_term_days": term_days,
+    })
+    cur = db().execute(
+        """INSERT INTO deals
+        (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+         loan_amount, rate, points, term_months, status, exit_strategy, notes,
+         ltv_override_reason, created_at, acked)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            b["id"],
+            kind,
+            addr,
+            money(f.get("purchase_price")) or None,
+            money(f.get("as_is_value")) or money(f.get("purchase_price")) or None,
+            money(f.get("arv")) or money(f.get("resale_price")) or None,
+            money(f.get("rehab_budget")) or None,
+            money(f.get("loan_amount")) or None,
+            rate,
+            points,
+            term_months,
+            "Pending Review",
+            f.get("exit_strategy"),
+            notes,
+            "Rate and term submitted by borrower — staff must verify before title.",
+            datetime.now().isoformat(timespec="minutes"),
+            0,
+        ),
+    )
+    db().commit()
+    did = cur.lastrowid
+    deal = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    extra = {
+        "address": addr,
+        "county": f.get("county"),
+        "legal_description": f.get("legal_description"),
+        "loan_amount": f.get("loan_amount"),
+        "points": points,
+        "fee_amount": money(f.get("loan_amount")) * points / 100.0 if points else 0,
+        "term_months": term_months,
+        "term_days": term_days,
+        "start_date": date.today().isoformat(),
+        "ext_rate": spec["ext_rate"],
+        "title_company": f.get("title_company"),
+        "title_address": f.get("title_address"),
+    }
+    issue_pending_closing_packet(b, deal, extra)
+    save_uploads(did, b["id"], request.files.getlist("docs"))
+    request_soft_pull(
+        b["id"],
+        "Automatic soft pull on Apply For a New Loan. Borrower consented that a soft inquiry will not adversely affect their credit report.",
+    )
+    subj = f"Closing packet ready for {addr or 'new property'}"
+    body = (
+        f"A new {kind} application was submitted by {b['name']}.\n\n"
+        f"Property: {addr}\n"
+        f"Requested loan: ${money(f.get('loan_amount')):,.2f}\n"
+        f"Proposed rate: {rate}%   Proposed points/fee: {points}%\n"
+        f"Proposed term: {term_months} months / {term_days} business days\n\n"
+        "Rate and term are highlighted for staff to verify before documents go to title.\n"
+        f"Open the deal: {public_base()}/deals/{did}\n"
+    )
+    for em in staff_notify_list():
+        try:
+            send_mail(em, subj, body)
+        except Exception:
+            pass
+    return redirect(url_for("portal_home", msg="Application submitted. Closing packet is pending staff review."))
+
+
 @app.route("/portal/apply", methods=["POST"])
 @borrower_required
 def portal_apply():
@@ -4444,9 +5075,44 @@ def portal_message():
     return redirect(url_for("portal_home"))
 
 
+@app.route("/loans/dedupe", methods=["POST"])
+@staff_required
+def loans_dedupe():
+    before = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
+    demo = db().execute(
+        """SELECT l.id FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           WHERE b.email LIKE '%@example.com' OR l.loan_number IN ('BC-TX-1001')"""
+    ).fetchall()
+    for row in demo:
+        lid = row["id"]
+        db().execute("DELETE FROM participations WHERE loan_id=?", (lid,))
+        try:
+            db().execute("DELETE FROM payments WHERE loan_id=?", (lid,))
+            db().execute("DELETE FROM distributions WHERE loan_id=?", (lid,))
+        except sqlite3.Error:
+            pass
+        db().execute("DELETE FROM loans WHERE id=?", (lid,))
+    demo_deals = db().execute(
+        """SELECT d.id FROM deals d JOIN borrowers b ON b.id=d.borrower_id
+           WHERE b.email LIKE '%@example.com'"""
+    ).fetchall()
+    for row in demo_deals:
+        db().execute("DELETE FROM deals WHERE id=?", (row["id"],))
+    cleanup_duplicate_loans(db())
+    db().commit()
+    after = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
+    session["last_invite_note"] = f"Removed {before - after} extra loan(s). {after} loan(s) remain."
+    return redirect(url_for("loans"))
+
+
 @app.route("/loans")
 @staff_required
 def loans():
+    try:
+        cleanup_duplicate_loans(db())
+        db().commit()
+    except sqlite3.Error:
+        pass
     show = request.args.get("show") or "active"
     if show == "archived":
         where = "COALESCE(l.archived,0)=1"
@@ -4459,7 +5125,13 @@ def loans():
            ORDER BY l.id DESC"""
     ).fetchall()
     enriched = []
+    seen_nums = set()
     for r in rows:
+        num = (r["loan_number"] or "").strip()
+        if num and num in seen_nums:
+            continue
+        if num:
+            seen_nums.add(num)
         d = dict(r)
         d["due_in"] = days_until(r["next_payment_due"])
         d["matures_in"] = days_until(r["maturity_date"])
@@ -5244,6 +5916,35 @@ def ach():
         loans=loans,
         vendor_ready=bool(os.environ.get("ACH_API_KEY")),
     )
+
+
+@app.route("/deals/<int:did>/decision", methods=["POST"])
+@staff_required
+def deal_decision(did):
+    d = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    if not d:
+        return redirect(url_for("deals"))
+    action = request.form.get("action")
+    rate = request.form.get("rate")
+    points = request.form.get("points")
+    term_months = request.form.get("term_months")
+    db().execute(
+        "UPDATE deals SET rate=?, points=?, term_months=? WHERE id=?",
+        (
+            money(rate) if rate not in (None, "") else d["rate"],
+            money(points) if points not in (None, "") else d["points"],
+            int(term_months) if term_months not in (None, "") else d["term_months"],
+            did,
+        ),
+    )
+    if action == "approve":
+        db().execute("UPDATE deals SET status=?, acked=1 WHERE id=?", ("Closing", did))
+        db().execute("UPDATE form_packets SET status=? WHERE deal_id=? AND status=?", ("Approved", did, "Pending"))
+    elif action == "deny":
+        db().execute("UPDATE deals SET status=?, acked=1 WHERE id=?", ("Denied", did))
+        db().execute("UPDATE form_packets SET status=? WHERE deal_id=? AND status=?", ("Denied", did, "Pending"))
+    db().commit()
+    return redirect(url_for("deal_detail", did=did))
 
 
 @app.route("/alerts/ack/<int:did>", methods=["POST"])
