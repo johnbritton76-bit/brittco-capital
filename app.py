@@ -3580,8 +3580,14 @@ def dashboard():
     book = db().execute(
         "SELECT COUNT(*) c, COALESCE(SUM(current_balance),0) bal FROM loans WHERE status NOT IN ('Paid Off','Written Off') AND COALESCE(archived,0)=0"
     ).fetchone()
-    alerts = loan_alerts()
-    post_reminders(alerts)
+    try:
+        alerts = loan_alerts()
+    except Exception:
+        alerts = []
+    try:
+        post_reminders(alerts)
+    except Exception:
+        pass
     year = str(date.today().year)
     closed_all = db().execute(
         "SELECT COUNT(*) c FROM loans WHERE status IN ('Paid Off','Closed','Termed','Sold','Written Off')"
