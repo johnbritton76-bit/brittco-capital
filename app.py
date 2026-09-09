@@ -463,8 +463,12 @@ def init_db():
                 (loan_row[0], 2, half, 10.0, 3, 2.0, 3, 0, "Funded", date.today().isoformat(), "Sample 50% · 3 mo at 10%"),
             )
         c.commit()
-    seed_demo_books(c)
-    seed_transactional_sample(c)
+    live = c.execute(
+        "SELECT 1 FROM loans WHERE loan_number IN ('BC-TX-10W96','BC-TX-409SM')"
+    ).fetchone()
+    if not live:
+        seed_demo_books(c)
+        seed_transactional_sample(c)
     seed_crossley_tx(c)
     seed_dos_gringos_tx(c)
     try:
@@ -652,7 +656,18 @@ def seed_crossley_tx(c):
 
 
 def _addr_key(s):
-    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+    raw = (s or "").lower()
+    nums = re.findall(r"\d+", raw)
+    words = re.findall(r"[a-z]+", raw)
+    skip = {
+        "s", "n", "e", "w", "st", "street", "ave", "avenue", "rd", "road",
+        "dr", "drive", "ln", "lane", "ct", "court", "ter", "terrace",
+        "blvd", "mo", "ks", "fl", "city", "the", "and",
+    }
+    words = [w for w in words if w not in skip and len(w) > 1]
+    if nums or words:
+        return (nums[0] if nums else "") + (words[0] if words else "")
+    return re.sub(r"[^a-z0-9]+", "", raw)
 
 
 def _row_get(row, key, idx):
@@ -5050,6 +5065,25 @@ def portal_message():
 @staff_required
 def loans_dedupe():
     before = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
+    demo = db().execute(
+        """SELECT l.id FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           WHERE b.email LIKE '%@example.com' OR l.loan_number IN ('BC-TX-1001')"""
+    ).fetchall()
+    for row in demo:
+        lid = row["id"]
+        db().execute("DELETE FROM participations WHERE loan_id=?", (lid,))
+        try:
+            db().execute("DELETE FROM payments WHERE loan_id=?", (lid,))
+            db().execute("DELETE FROM distributions WHERE loan_id=?", (lid,))
+        except sqlite3.Error:
+            pass
+        db().execute("DELETE FROM loans WHERE id=?", (lid,))
+    demo_deals = db().execute(
+        """SELECT d.id FROM deals d JOIN borrowers b ON b.id=d.borrower_id
+           WHERE b.email LIKE '%@example.com'"""
+    ).fetchall()
+    for row in demo_deals:
+        db().execute("DELETE FROM deals WHERE id=?", (row["id"],))
     cleanup_duplicate_loans(db())
     db().commit()
     after = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
