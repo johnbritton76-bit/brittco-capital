@@ -5684,6 +5684,7 @@ def investor_detail(iid):
         "SELECT * FROM ach_transfers WHERE investor_id=? ORDER BY id DESC", (iid,)
     ).fetchall()
     books = investor_books(iid)
+    warn = session.pop("investor_delete_warn", None)
     return render_template(
         "investor_detail.html",
         title=inv["name"],
@@ -5694,6 +5695,7 @@ def investor_detail(iid):
         ach=ach,
         books=books,
         dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
+        delete_warn=warn,
     )
 
 
@@ -5768,28 +5770,36 @@ def investor_reset_password(iid):
 @app.route("/investors/<int:iid>/delete", methods=["POST"])
 @staff_required
 def investor_delete(iid):
-    if (request.form.get("confirm") or "").strip().upper() != "REMOVE":
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    if not inv:
+        return redirect(url_for("investors"))
+    confirm = (request.form.get("confirm") or "").strip().upper()
+    loans = db().execute(
+        """SELECT DISTINCT l.id, l.loan_number, l.property_address
+           FROM participations p JOIN loans l ON l.id=p.loan_id
+           WHERE p.investor_id=?""",
+        (iid,),
+    ).fetchall()
+    if confirm == "PROCEED":
+        n = len(wipe_investor(iid))
+        db().commit()
+        session["last_invite_note"] = f"Investor removed. {n} loan(s) removed with them."
+        session.pop("investor_delete_warn", None)
+        return redirect(url_for("investors"))
+    if confirm != "REMOVE":
         session["last_invite_note"] = "Type REMOVE to delete this investor."
         return redirect(url_for("investor_detail", iid=iid))
-    open_n = db().execute(
-        "SELECT COUNT(*) c FROM participations WHERE investor_id=?",
-        (iid,),
-    ).fetchone()["c"]
-    if open_n:
-        session["last_invite_note"] = "This investor is on a loan file. Reset the password instead of deleting."
+    if loans:
+        session["investor_delete_warn"] = [
+            {"id": r["id"], "loan_number": r["loan_number"], "property": r["property_address"]}
+            for r in loans
+        ]
         return redirect(url_for("investor_detail", iid=iid))
-    try:
-        db().execute("DELETE FROM investor_accounts WHERE investor_id=?", (iid,))
-    except sqlite3.Error:
-        pass
-    try:
-        db().execute("DELETE FROM ach_transfers WHERE investor_id=?", (iid,))
-    except sqlite3.Error:
-        pass
-    db().execute("DELETE FROM investors WHERE id=?", (iid,))
+    wipe_investor(iid)
     db().commit()
     session["last_invite_note"] = "Investor removed."
     return redirect(url_for("investors"))
+
 
 
 @app.route("/loans/<int:lid>/participate", methods=["POST"])
@@ -5933,21 +5943,56 @@ def loan_restore(lid):
     return redirect(url_for("loan_detail", lid=lid))
 
 
+def wipe_loan(lid):
+    lid = int(lid)
+    for sql, args in (
+        ("DELETE FROM distributions WHERE loan_id=?", (lid,)),
+        ("DELETE FROM payments WHERE loan_id=?", (lid,)),
+        ("DELETE FROM extensions WHERE loan_id=?", (lid,)),
+        (
+            "DELETE FROM participation_sources WHERE participation_id IN (SELECT id FROM participations WHERE loan_id=?)",
+            (lid,),
+        ),
+        ("DELETE FROM participations WHERE loan_id=?", (lid,)),
+        ("DELETE FROM reminder_log WHERE loan_id=?", (lid,)),
+        ("DELETE FROM loans WHERE id=?", (lid,)),
+    ):
+        try:
+            db().execute(sql, args)
+        except sqlite3.Error:
+            pass
+
+
+def wipe_investor(iid):
+    iid = int(iid)
+    loan_ids = [
+        r["loan_id"]
+        for r in db().execute(
+            "SELECT DISTINCT loan_id FROM participations WHERE investor_id=?", (iid,)
+        ).fetchall()
+    ]
+    for lid in loan_ids:
+        wipe_loan(lid)
+    for sql, args in (
+        ("DELETE FROM participations WHERE investor_id=?", (iid,)),
+        ("DELETE FROM distributions WHERE investor_id=?", (iid,)),
+        ("DELETE FROM investor_accounts WHERE investor_id=?", (iid,)),
+        ("DELETE FROM ach_transfers WHERE investor_id=?", (iid,)),
+        ("DELETE FROM investors WHERE id=?", (iid,)),
+    ):
+        try:
+            db().execute(sql, args)
+        except sqlite3.Error:
+            pass
+    return loan_ids
+
+
 @app.route("/loans/<int:lid>/delete", methods=["POST"])
 @staff_required
 def loan_delete(lid):
     if (request.form.get("confirm") or "").strip().upper() != "DELETE":
         return redirect(url_for("loan_detail", lid=lid))
-    db().execute("DELETE FROM distributions WHERE loan_id=?", (lid,))
-    db().execute("DELETE FROM payments WHERE loan_id=?", (lid,))
-    db().execute("DELETE FROM extensions WHERE loan_id=?", (lid,))
-    db().execute(
-        "DELETE FROM participation_sources WHERE participation_id IN (SELECT id FROM participations WHERE loan_id=?)",
-        (lid,),
-    )
-    db().execute("DELETE FROM participations WHERE loan_id=?", (lid,))
-    db().execute("DELETE FROM reminder_log WHERE loan_id=?", (lid,))
-    db().execute("DELETE FROM loans WHERE id=?", (lid,))
+    wipe_loan(lid)
     db().commit()
     return redirect(url_for("loans"))
 
