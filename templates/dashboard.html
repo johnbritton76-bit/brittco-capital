@@ -23,8 +23,17 @@
 <div class="card" style="margin-top:16px">
   <h3>Reminders</h3>
   {% for a in alerts %}
-    <p><span class="badge {{ a.level }}">{{ a.kind }}</span> {{ a.text }}
-      <a href="{{ url_for('loan_detail', lid=a.loan.id) }}">open loan</a></p>
+  <details style="margin:8px 0;border:1px solid #d5dee8;border-radius:10px;padding:8px 12px">
+    <summary style="cursor:pointer">
+      <a href="{{ url_for('loan_detail', lid=a.loan.id) }}">{{ a.name }} · {{ a.label }}</a>
+      · {{ a.count }} reminder{% if a.count != 1 %}s{% endif %}
+    </summary>
+    <ul>
+      {% for item in a.items %}
+      <li><span class="badge {{ item.level }}">{{ item.kind }}</span> {{ item.text }}</li>
+      {% endfor %}
+    </ul>
+  </details>
   {% endfor %}
 </div>
 {% endif %}
