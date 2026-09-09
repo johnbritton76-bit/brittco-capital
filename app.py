@@ -254,6 +254,24 @@ def init_db():
             done INTEGER,
             notes TEXT
         );
+        CREATE TABLE IF NOT EXISTS marketing_leads (
+            id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            last_name TEXT,
+            email TEXT,
+            phone TEXT,
+            deals_12mo TEXT,
+            credit_score TEXT,
+            immediate_need TEXT,
+            amount TEXT,
+            purchase_close TEXT,
+            resale_close TEXT,
+            notes TEXT,
+            files TEXT,
+            status TEXT,
+            created_at TEXT,
+            acked INTEGER
+        );
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY,
             deal_id INTEGER,
@@ -1366,7 +1384,7 @@ def staff_required(fn):
 @app.context_processor
 def inject_new_apps():
     if not session.get("staff_id"):
-        return {"new_apps": []}
+        return {"new_apps": [], "new_leads": []}
     try:
         rows = db().execute(
             """SELECT d.id, d.address, b.name AS borrower_name
@@ -1374,9 +1392,18 @@ def inject_new_apps():
                WHERE d.status IN ('Application','Pending Review') AND COALESCE(d.acked,0)=0
                ORDER BY d.id DESC"""
         ).fetchall()
-        return {"new_apps": [dict(r) for r in rows]}
+        leads = []
+        try:
+            leads = db().execute(
+                """SELECT id, first_name, last_name, immediate_need
+                   FROM marketing_leads WHERE COALESCE(acked,0)=0 AND status!='Closed'
+                   ORDER BY id DESC"""
+            ).fetchall()
+        except sqlite3.Error:
+            leads = []
+        return {"new_apps": [dict(r) for r in rows], "new_leads": [dict(r) for r in leads]}
     except sqlite3.Error:
-        return {"new_apps": []}
+        return {"new_apps": [], "new_leads": []}
 
 
 def ensure_closing_list(deal_id):
@@ -3557,6 +3584,161 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+def ensure_leads_table():
+    db().execute(
+        """CREATE TABLE IF NOT EXISTS marketing_leads (
+            id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            last_name TEXT,
+            email TEXT,
+            phone TEXT,
+            deals_12mo TEXT,
+            credit_score TEXT,
+            immediate_need TEXT,
+            amount TEXT,
+            purchase_close TEXT,
+            resale_close TEXT,
+            notes TEXT,
+            files TEXT,
+            status TEXT,
+            created_at TEXT,
+            acked INTEGER
+        )"""
+    )
+    db().commit()
+
+
+@app.route("/tx", methods=["GET", "POST"])
+@app.route("/transactional-funding", methods=["GET", "POST"])
+def transactional_lead():
+    ensure_leads_table()
+    error = None
+    if request.method == "POST":
+        f = request.form
+        first = (f.get("first_name") or "").strip()
+        last = (f.get("last_name") or "").strip()
+        email = (f.get("email") or "").strip().lower()
+        phone = (f.get("phone") or "").strip()
+        deals = (f.get("deals_12mo") or "").strip()
+        credit = (f.get("credit_score") or "").strip()
+        need = (f.get("immediate_need") or "").strip()
+        amount = (f.get("amount") or "").strip()
+        purchase = (f.get("purchase_close") or "").strip()
+        resale = (f.get("resale_close") or "").strip()
+        missing = []
+        if not first:
+            missing.append("first name")
+        if not last:
+            missing.append("last name")
+        if not email or "@" not in email:
+            missing.append("email")
+        if not phone:
+            missing.append("mobile number")
+        if deals == "":
+            missing.append("closings in the last 12 months")
+        if not credit:
+            missing.append("credit score")
+        if need not in ("yes", "no"):
+            missing.append("whether you need funding now")
+        if need == "yes":
+            if not amount:
+                missing.append("amount needed")
+            if not purchase:
+                missing.append("purchase closing date")
+            if not resale:
+                missing.append("resale closing date")
+        if missing:
+            error = "Please complete: " + ", ".join(missing) + "."
+            return render_template("tx_lead.html", error=error, form=f)
+        saved_names = []
+        for up in request.files.getlist("docs"):
+            if not up or not up.filename:
+                continue
+            name = secure_filename(up.filename)
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in ALLOWED_UPLOADS:
+                continue
+            stored = f"lead_{int(datetime.now().timestamp())}_{secrets.token_hex(3)}_{name}"
+            up.save(os.path.join(UPLOAD_DIR, stored))
+            saved_names.append(stored + "|" + name)
+        db().execute(
+            """INSERT INTO marketing_leads
+               (first_name, last_name, email, phone, deals_12mo, credit_score,
+                immediate_need, amount, purchase_close, resale_close, notes, files,
+                status, created_at, acked)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+            (
+                first,
+                last,
+                email,
+                phone,
+                deals,
+                credit,
+                need,
+                amount,
+                purchase,
+                resale,
+                (f.get("notes") or "").strip(),
+                json.dumps(saved_names),
+                "New",
+                datetime.now().isoformat(timespec="minutes"),
+            ),
+        )
+        db().commit()
+        when = datetime.now().strftime("%b %d, %Y %I:%M %p")
+        body = (
+            f"New transactional funding inquiry from the public link.\n\n"
+            f"Name: {first} {last}\n"
+            f"Email: {email}\n"
+            f"Mobile: {phone}\n"
+            f"Closings last 12 months: {deals}\n"
+            f"Self-reported credit: {credit}\n"
+            f"Needs funding in the next 14 days: {need}\n"
+        )
+        if need == "yes":
+            body += (
+                f"Amount requested: {amount}\n"
+                f"Purchase (A-B) close: {purchase}\n"
+                f"Resale (B-C) close: {resale}\n"
+            )
+        if f.get("notes"):
+            body += f"Notes: {f.get('notes')}\n"
+        body += f"Files uploaded: {len(saved_names)}\nSubmitted: {when}\n"
+        link = public_base() + url_for("marketing_leads")
+        body += f"\nOpen in Brittco: {link}\n"
+        for em in ("john@brittcocapital.com", "nate@brittcocapital.com"):
+            try:
+                send_mail(em, f"Transactional funding lead — {first} {last}", body)
+            except Exception:
+                pass
+        return render_template("tx_lead.html", done=True, form=None, error=None)
+    return render_template("tx_lead.html", error=None, form=None, done=False)
+
+
+@app.route("/leads")
+@staff_required
+def marketing_leads():
+    ensure_leads_table()
+    rows = db().execute("SELECT * FROM marketing_leads ORDER BY id DESC").fetchall()
+    leads = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["file_list"] = json.loads(d.get("files") or "[]")
+        except (TypeError, ValueError):
+            d["file_list"] = []
+        leads.append(d)
+    return render_template("tx_leads.html", title="Transactional leads", nav="leads", leads=leads)
+
+
+@app.route("/leads/<int:lid>/ack", methods=["POST"])
+@staff_required
+def marketing_lead_ack(lid):
+    db().execute("UPDATE marketing_leads SET acked=1, status=? WHERE id=?", ("Reviewed", lid))
+    db().commit()
+    return redirect(url_for("marketing_leads"))
 
 
 @app.route("/")
