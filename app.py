@@ -2968,48 +2968,32 @@ def loan_alerts():
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
            WHERE l.status NOT IN ('Paid Off','Sold','Written Off')
            AND COALESCE(l.archived,0)=0
-           ORDER BY l.next_payment_due"""
+           ORDER BY l.id"""
     ).fetchall()
     alerts = []
+    seen = set()
     for r in rows:
+        lid = r["id"]
+        num = (r["loan_number"] or "").strip()
+        mark = num or lid
+        if mark in seen:
+            continue
+        seen.add(mark)
         due = days_until(r["next_payment_due"])
         mat = days_until(r["maturity_date"])
+        name = r["borrower_name"]
+        label = num or f"Loan {lid}"
+        items = []
         if due is not None and due < 0:
-            alerts.append(
-                {
-                    "level": "bad",
-                    "loan": r,
-                    "kind": "payment_late",
-                    "text": f"{r['borrower_name']} payment is {abs(due)} day(s) late on {r['loan_number']}.",
-                }
-            )
+            items.append({"level": "bad", "kind": "payment_late", "text": f"Payoff/payment is {abs(due)} day(s) late ({r['next_payment_due']})."})
         elif due is not None and due <= 7:
-            alerts.append(
-                {
-                    "level": "warn",
-                    "loan": r,
-                    "kind": "payment_due",
-                    "text": f"{r['borrower_name']} payment due in {due} day(s) on {r['loan_number']}.",
-                }
-            )
-        if mat is not None and 0 <= mat <= 45:
-            alerts.append(
-                {
-                    "level": "warn",
-                    "loan": r,
-                    "kind": "maturity",
-                    "text": f"{r['borrower_name']} loan {r['loan_number']} matures in {mat} day(s).",
-                }
-            )
-        elif mat is not None and mat < 0:
-            alerts.append(
-                {
-                    "level": "bad",
-                    "loan": r,
-                    "kind": "matured",
-                    "text": f"{r['borrower_name']} loan {r['loan_number']} is past maturity.",
-                }
-            )
+            items.append({"level": "warn", "kind": "payment_due", "text": f"Payment due in {due} day(s) ({r['next_payment_due']})."})
+        if mat is not None and mat < 0:
+            items.append({"level": "bad", "kind": "matured", "text": f"Loan matured {abs(mat)} day(s) ago ({r['maturity_date']})."})
+        elif mat is not None and mat <= 45:
+            items.append({"level": "warn", "kind": "maturity", "text": f"Matures {r['maturity_date']} ({mat} day(s))."})
+        if items:
+            alerts.append({"loan": r, "name": name, "label": label, "items": items, "count": len(items)})
     return alerts
 
 
@@ -3018,22 +3002,23 @@ def post_reminders(alerts):
     today = date.today().isoformat()
     for a in alerts:
         loan = a["loan"]
-        exists = db().execute(
-            "SELECT 1 FROM reminder_log WHERE loan_id=? AND kind=? AND sent_on=?",
-            (loan["id"], a["kind"], today),
-        ).fetchone()
-        if exists:
-            continue
-        body = a["text"]
-        db().execute(
-            "INSERT INTO messages (deal_id, borrower_id, sender, body, created_at) VALUES (?,?,?,?,?)",
-            (loan["deal_id"], loan["borrower_id"], "Brittco System", body, datetime.now().isoformat(timespec="minutes")),
-        )
-        db().execute(
-            "INSERT INTO reminder_log (loan_id, kind, sent_on, audience, body) VALUES (?,?,?,?,?)",
-            (loan["id"], a["kind"], today, "staff_and_borrower", body),
-        )
-        sent += 1
+        for item in a.get("items") or []:
+            exists = db().execute(
+                "SELECT 1 FROM reminder_log WHERE loan_id=? AND kind=? AND sent_on=?",
+                (loan["id"], item.get("kind") or "due", today),
+            ).fetchone()
+            if exists:
+                continue
+            body = f"{a.get('name')} · {a.get('label')}: {item.get('text')}"
+            db().execute(
+                "INSERT INTO messages (deal_id, borrower_id, sender, body, created_at) VALUES (?,?,?,?,?)",
+                (loan["deal_id"], loan["borrower_id"], "Brittco System", body, datetime.now().isoformat(timespec="minutes")),
+            )
+            db().execute(
+                "INSERT INTO reminder_log (loan_id, kind, sent_on, audience, body) VALUES (?,?,?,?,?)",
+                (loan["id"], item.get("kind") or "due", today, "staff_and_borrower", body),
+            )
+            sent += 1
     if sent:
         db().commit()
     return sent
