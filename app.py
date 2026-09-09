@@ -3817,6 +3817,7 @@ def dashboard():
         deals=deals[:5],
         stats=stats,
         alerts=alerts,
+        public_url=public_base() or request.url_root.rstrip("/"),
     )
 
 
