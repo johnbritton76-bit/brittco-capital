@@ -10,10 +10,13 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, date, timedelta
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from email.utils import formataddr
 from functools import wraps
 
 from io import BytesIO
+from xml.sax.saxutils import escape as xml_esc
 
 from flask import (
     Flask, g, redirect, render_template, request, session, url_for, flash,
@@ -1295,6 +1298,37 @@ try:
             document_id INTEGER
         )"""
     )
+    try:
+        df_cols = [r[1] for r in _c.execute("PRAGMA table_info(doc_files)")]
+        if df_cols and "loan_id" not in df_cols:
+            _c.execute("ALTER TABLE doc_files ADD COLUMN loan_id INTEGER")
+    except sqlite3.Error:
+        pass
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS payoff_letters (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            status TEXT,
+            letter_date TEXT,
+            good_through TEXT,
+            principal REAL,
+            interest_fee REAL,
+            other_fees REAL,
+            per_diem REAL,
+            total REAL,
+            wire_bank TEXT,
+            wire_name TEXT,
+            wire_routing TEXT,
+            wire_account TEXT,
+            wire_further TEXT,
+            notes TEXT,
+            filename TEXT,
+            created_at TEXT,
+            approved_at TEXT,
+            approved_by TEXT,
+            sent_at TEXT
+        )"""
+    )
     _c.commit()
     deal_cols = [r[1] for r in _c.execute("PRAGMA table_info(deals)")]
     if deal_cols and "acked" not in deal_cols:
@@ -1418,8 +1452,9 @@ def ensure_closing_list(deal_id):
     db().commit()
 
 
-def save_uploads(deal_id, borrower_id, files):
+def save_uploads(deal_id, borrower_id, files, file_id=None, kind="Upload"):
     saved = 0
+    ids = []
     for f in files:
         if not f or not f.filename:
             continue
@@ -1427,13 +1462,21 @@ def save_uploads(deal_id, borrower_id, files):
         ext = os.path.splitext(name)[1].lower()
         if ext not in ALLOWED_UPLOADS:
             continue
-        stored = f"{deal_id}_{int(datetime.now().timestamp())}_{saved}_{name}"
+        stored = f"{deal_id or 'doc'}_{int(datetime.now().timestamp())}_{saved}_{name}"
         f.save(os.path.join(UPLOAD_DIR, stored))
-        db().execute(
+        cur = db().execute(
             """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
                VALUES (?,?,?,?,?,?)""",
-            (deal_id, borrower_id, stored, name, "Upload", datetime.now().isoformat(timespec="minutes")),
+            (deal_id, borrower_id, stored, name, kind, datetime.now().isoformat(timespec="minutes")),
         )
+        doc_id = cur.lastrowid
+        ids.append(doc_id)
+        if file_id:
+            db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc_id,))
+            db().execute(
+                "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+                (file_id, doc_id),
+            )
         saved += 1
     if saved:
         db().commit()
@@ -1844,6 +1887,38 @@ def money_txt(n):
     return f"${money(n):,.2f}"
 
 
+def money_letter(n):
+    n = money(n)
+    if abs(n - round(n)) < 0.005:
+        return f"${n:,.0f}"
+    return f"${n:,.2f}"
+
+
+def pretty_date(s):
+    d = parse_date(s)
+    if not d:
+        return s or ""
+    try:
+        return d.strftime("%B %-d, %Y")
+    except ValueError:
+        return d.strftime("%B %d, %Y").replace(" 0", " ")
+
+
+def property_lines(addr):
+    raw = (addr or "").strip()
+    if not raw:
+        return [], ""
+    parts = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+    if len(parts) >= 3 and re.match(r"^[A-Z]{2}\s+\d{5}", parts[-1]):
+        return parts[:-2], f"{parts[-2]}, {parts[-1]}"
+    if len(parts) >= 2:
+        return parts[:-1], parts[-1]
+    m = re.search(r"\s+([A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)\s*$", raw)
+    if m:
+        return [raw[: m.start()].strip()], m.group(1).strip()
+    return [raw], ""
+
+
 def investor_statement_pdf(inv, books, include_carry=False):
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
@@ -2115,6 +2190,283 @@ def payoff_amount(loan):
     if pts and "Transactional" in kind:
         return prin + prin * pts / 100.0
     return extra or prin
+
+
+def company_wire():
+    return {
+        "wire_bank": os.environ.get("WIRE_BANK") or "Please confirm with Brittco",
+        "wire_name": os.environ.get("WIRE_NAME") or "Brittco Capital Inc",
+        "wire_routing": os.environ.get("WIRE_ROUTING") or "",
+        "wire_account": os.environ.get("WIRE_ACCOUNT") or "",
+        "wire_further": os.environ.get("WIRE_FURTHER") or "",
+    }
+
+
+def payoff_defaults(loan):
+    prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    total = payoff_amount(loan)
+    fee = max(0.0, round(total - prin, 2))
+    days = loan_term_days(loan) or 0
+    kind = (row_val(loan, "loan_type") or "") + " " + (row_val(loan, "payment_type") or "")
+    if days and fee and ("Transactional" in kind or "Fee at payoff" in kind or "At payoff" in kind):
+        per = round(fee / days, 2)
+    else:
+        rate = money(row_val(loan, "rate"))
+        per = round(prin * rate / 100.0 / 365.0, 2) if rate else 0.0
+    wire = company_wire()
+    return {
+        "letter_date": date.today().isoformat(),
+        "good_through": row_val(loan, "maturity_date") or date.today().isoformat(),
+        "principal": prin,
+        "interest_fee": fee,
+        "other_fees": 0.0,
+        "per_diem": per,
+        "total": total,
+        "rate": money(row_val(loan, "rate")) or money(row_val(loan, "points")),
+        "term_days": days,
+        "start_date": row_val(loan, "start_date") or "",
+        "maturity_date": row_val(loan, "maturity_date") or "",
+        "loan_type": row_val(loan, "loan_type") or "",
+        **wire,
+        "notes": "",
+    }
+
+
+def ensure_loan_file_folder(loan):
+    bid = loan["borrower_id"]
+    did = loan["deal_id"]
+    lid = loan["id"]
+    addr = (loan["property_address"] or "").strip() or (loan["loan_number"] or f"Loan {lid}")
+    now = datetime.now().isoformat(timespec="minutes")
+    try:
+        db().execute("ALTER TABLE doc_files ADD COLUMN loan_id INTEGER")
+        db().commit()
+    except sqlite3.Error:
+        pass
+    row = db().execute(
+        "SELECT * FROM doc_files WHERE loan_id=?", (lid,)
+    ).fetchone()
+    if not row and did:
+        row = db().execute(
+            "SELECT * FROM doc_files WHERE borrower_id=? AND deal_id=?",
+            (bid, did),
+        ).fetchone()
+        if row:
+            db().execute("UPDATE doc_files SET loan_id=?, name=? WHERE id=?", (lid, addr, row["id"]))
+            db().commit()
+            row = db().execute("SELECT * FROM doc_files WHERE id=?", (row["id"],)).fetchone()
+    if not row:
+        db().execute(
+            "INSERT INTO doc_files (borrower_id, deal_id, name, loan_id, created_at) VALUES (?,?,?,?,?)",
+            (bid, did, addr, lid, now),
+        )
+        db().commit()
+        row = db().execute("SELECT * FROM doc_files WHERE loan_id=?", (lid,)).fetchone()
+    elif (row["name"] or "") != addr:
+        db().execute("UPDATE doc_files SET name=? WHERE id=?", (addr, row["id"]))
+        db().commit()
+        row = db().execute("SELECT * FROM doc_files WHERE id=?", (row["id"],)).fetchone()
+    docs = db().execute(
+        """SELECT * FROM documents WHERE borrower_id=? AND (
+               deal_id=? OR id IN (SELECT document_id FROM doc_file_items WHERE file_id=?)
+           )""",
+        (bid, did or -1, row["id"]),
+    ).fetchall()
+    for doc in docs:
+        already = db().execute(
+            "SELECT 1 FROM doc_file_items WHERE document_id=?", (doc["id"],)
+        ).fetchone()
+        if already:
+            continue
+        if is_profile_document(doc["original_name"] or doc["filename"] or ""):
+            continue
+        db().execute(
+            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+            (row["id"], doc["id"]),
+        )
+    db().commit()
+    items = db().execute(
+        """SELECT d.* FROM doc_file_items i
+           JOIN documents d ON d.id=i.document_id
+           WHERE i.file_id=? ORDER BY i.id DESC""",
+        (row["id"],),
+    ).fetchall()
+    return row, items
+
+
+def loan_folder_docs(loan):
+    folder, items = ensure_loan_file_folder(loan)
+    return folder, items
+
+
+def payoff_letter_pdf(loan, borrower, data):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
+    )
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.85 * inch,
+        rightMargin=0.85 * inch,
+        topMargin=0.55 * inch,
+        bottomMargin=0.6 * inch,
+        title=f"Payoff letter — {loan['loan_number']}",
+        author="Brittco Capital Inc",
+    )
+    styles = getSampleStyleSheet()
+    company = ParagraphStyle(
+        "Co", parent=styles["Normal"], fontName="Times-Bold", fontSize=13,
+        textColor=colors.HexColor("#1a1a1a"), leading=16,
+    )
+    tagline = ParagraphStyle(
+        "Tag", parent=styles["Normal"], fontName="Times-Italic", fontSize=10,
+        textColor=colors.HexColor("#333"), leading=13,
+    )
+    addr_s = ParagraphStyle(
+        "Ad", parent=styles["Normal"], fontName="Times-Roman", fontSize=10,
+        textColor=colors.HexColor("#222"), leading=13,
+    )
+    body = ParagraphStyle(
+        "Bd", parent=styles["Normal"], fontName="Times-Roman", fontSize=11,
+        leading=16, textColor=colors.HexColor("#111"),
+    )
+    small = ParagraphStyle(
+        "Sm", parent=styles["Normal"], fontName="Times-Roman", fontSize=10,
+        leading=13, textColor=colors.HexColor("#222"),
+    )
+    label = ParagraphStyle(
+        "Lb", parent=styles["Normal"], fontName="Times-Italic", fontSize=8,
+        textColor=colors.HexColor("#555"),
+    )
+    story = []
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    letterhead_text = [
+        Paragraph("BRITTCO CAPITAL", company),
+        Paragraph("Your Bridge to Building Wealth", tagline),
+        Paragraph("4825 Vasca Drive", addr_s),
+        Paragraph("Sarasota, FL 34240", addr_s),
+        Paragraph("(816) 694-1658", addr_s),
+    ]
+    if os.path.exists(logo):
+        story.append(Table(
+            [[Image(logo, width=1.7 * inch, height=0.68 * inch), letterhead_text]],
+            colWidths=[2.0 * inch, 5.0 * inch],
+        ))
+    else:
+        for p in letterhead_text:
+            story.append(p)
+    story.append(Spacer(1, 10))
+    story.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#888"), spaceAfter=14, spaceBefore=2))
+
+    who = (borrower["name"] or "").strip()
+    streets, city_line = property_lines(loan["property_address"])
+    story.append(Paragraph(xml_esc(pretty_date(data.get("letter_date"))), body))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(xml_esc(who), body))
+    for line in streets:
+        story.append(Paragraph(xml_esc(line), body))
+    if city_line:
+        story.append(Paragraph(xml_esc(city_line), body))
+    story.append(Spacer(1, 14))
+    story.append(Paragraph("Re: Payoff Quote", body))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(f"Dear {xml_esc(who)}:", body))
+    story.append(Spacer(1, 10))
+    total_txt = money_letter(data["total"])
+    story.append(Paragraph(
+        "This letter confirms the amount required to pay in full your outstanding loan with "
+        f"Brittco Capital, Inc. The current payoff amount is <b>{total_txt}</b>. "
+        "If you have any questions regarding this payoff amount, please contact me "
+        "directly at 816-694-1658.",
+        body,
+    ))
+    good = pretty_date(data.get("good_through"))
+    if good:
+        extra = f"This amount is good through <b>{xml_esc(good)}</b>."
+        if money(data.get("per_diem")):
+            extra += (
+                f" After that date, a per diem of <b>{money_letter(data.get('per_diem'))}</b> "
+                "applies until a new letter is issued."
+            )
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(extra, body))
+    story.append(Spacer(1, 12))
+
+    rate = data.get("rate") or loan["rate"] or loan["points"] or 0
+    term_days = int(data.get("term_days") or 0)
+    rows = [
+        ["Loan number", xml_esc(loan["loan_number"] or str(loan["id"]))],
+        ["Loan type", xml_esc(data.get("loan_type") or loan["loan_type"] or "")],
+        ["Property", xml_esc(loan["property_address"] or "")],
+        ["Origination", xml_esc(pretty_date(data.get("start_date") or loan["start_date"]))],
+        ["Maturity", xml_esc(pretty_date(data.get("maturity_date") or loan["maturity_date"]))],
+        ["Rate / fee", f"{rate}%"],
+        ["Term", f"{term_days} days" if term_days else ""],
+        ["Unpaid principal", money_letter(data["principal"])],
+        ["Interest / flat fee", money_letter(data["interest_fee"])],
+        ["Other fees", money_letter(data["other_fees"])],
+        ["Total payoff", money_letter(data["total"])],
+        ["Per diem after good-through", money_letter(data["per_diem"]) + " / day"],
+    ]
+    t = Table(rows, colWidths=[2.6 * inch, 4.2 * inch])
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Times-Roman"),
+        ("FONTNAME", (1, 0), (1, -1), "Times-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111")),
+        ("BACKGROUND", (0, 10), (-1, 10), colors.HexColor("#f3f3f3")),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.25, colors.HexColor("#d0d0d0")),
+        ("LINEABOVE", (0, 10), (-1, 10), 0.6, colors.HexColor("#333")),
+        ("LINEBELOW", (0, 10), (-1, 10), 0.6, colors.HexColor("#333")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(t)
+
+    wire_bank = (data.get("wire_bank") or "").strip()
+    real_wire = wire_bank and "please confirm" not in wire_bank.lower()
+    if real_wire:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("<b>Wire instructions</b>", body))
+        story.append(Paragraph(f"Bank: {xml_esc(wire_bank)}", small))
+        story.append(Paragraph(f"Name on account: {xml_esc(data.get('wire_name') or '')}", small))
+        if data.get("wire_routing"):
+            story.append(Paragraph(f"Routing: {xml_esc(data.get('wire_routing'))}", small))
+        if data.get("wire_account"):
+            story.append(Paragraph(f"Account: {xml_esc(data.get('wire_account'))}", small))
+        if data.get("wire_further"):
+            story.append(Paragraph(f"Reference: {xml_esc(data.get('wire_further'))}", small))
+
+    if data.get("notes"):
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(xml_esc(data["notes"]).replace("\n", "<br/>"), small))
+
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("Thank you,", body))
+    sig = os.path.join(APP_DIR, "static", "signature.png")
+    if os.path.exists(sig):
+        story.append(Spacer(1, 4))
+        story.append(Image(sig, width=2.35 * inch, height=0.62 * inch))
+    else:
+        story.append(Spacer(1, 28))
+    story.append(Paragraph("<b>John Britton</b>", body))
+    story.append(Paragraph("President", small))
+    story.append(Paragraph("Brittco Capital, Inc.", small))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Electronically signed", label))
+    doc.build(story)
+    return buf.getvalue()
+
 
 
 def participation_returns(loan, p, dists_for_investor=None):
@@ -2395,14 +2747,21 @@ def mail_from_header():
     return formataddr((name, addr)) if addr else ""
 
 
-def send_mail(to_email, subject, body):
+def send_mail(to_email, subject, body, attachment=None, attachment_name=None):
     host = os.environ.get("SMTP_HOST")
     user = os.environ.get("SMTP_USER")
     password = os.environ.get("SMTP_PASS")
     mail_from = mail_address()
     if not (host and user and password and mail_from and to_email):
         return False
-    msg = MIMEText(body, "plain", "utf-8")
+    if attachment:
+        msg = MIMEMultipart()
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        part = MIMEApplication(attachment, Name=attachment_name or "attachment.pdf")
+        part["Content-Disposition"] = f'attachment; filename="{attachment_name or "attachment.pdf"}"'
+        msg.attach(part)
+    else:
+        msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = mail_from_header()
     msg["To"] = to_email
@@ -4191,6 +4550,24 @@ def borrower_named_file_add(bid, fid):
     return redirect(url_for("borrower_detail", bid=bid))
 
 
+@app.route("/borrowers/<int:bid>/files/<int:fid>/upload", methods=["POST"])
+def borrower_named_file_upload(bid, fid):
+    allowed = session.get("staff_id") or session.get("borrower_id") == bid
+    if not allowed:
+        if request.headers.get("X-Requested-With") == "fetch":
+            return ("no", 403)
+        return redirect(url_for("login"))
+    row = db().execute("SELECT * FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid)).fetchone()
+    if not row:
+        return ("not found", 404)
+    n = save_uploads(row["deal_id"], bid, request.files.getlist("docs"), file_id=fid, kind="Loan file")
+    if request.headers.get("X-Requested-With") == "fetch":
+        return ("ok", 200)
+    if session.get("staff_id"):
+        return redirect(url_for("borrower_detail", bid=bid))
+    return redirect(url_for("portal_home", msg=f"{n} file(s) uploaded."))
+
+
 @app.route("/borrowers/<int:bid>/files/<int:fid>.zip")
 @staff_required
 def borrower_named_file_zip(bid, fid):
@@ -4800,11 +5177,20 @@ def portal_home():
     ).fetchall()
     help_q = request.args.get("q") or ""
     help_a = answer_borrower_help(help_q, b, deals, loans, missing) if help_q else None
+    loan_packs = []
+    for loan in loans:
+        folder, folder_docs = loan_folder_docs(loan)
+        sent = db().execute(
+            "SELECT * FROM payoff_letters WHERE loan_id=? AND status='sent' ORDER BY id DESC",
+            (loan["id"],),
+        ).fetchall()
+        loan_packs.append({"loan": loan, "folder": folder, "docs": folder_docs, "letters": sent})
     return render_template(
         "portal.html",
         b=b,
         deals=deals,
         loans=loans,
+        loan_packs=loan_packs,
         messages=messages,
         docs=docs,
         flash=request.args.get("msg"),
@@ -5531,6 +5917,20 @@ def loan_detail(lid):
         "nate_on": any((p.get("fee") or 0) > 0.001 for p in parts),
     }
     staff_assist = loan_staff_assist(loan, perf)
+    folder, folder_docs = loan_folder_docs(loan)
+    in_ids = {d["id"] for d in folder_docs}
+    source_docs = [
+        r
+        for r in db().execute(
+            "SELECT * FROM documents WHERE borrower_id=? ORDER BY id DESC",
+            (loan["borrower_id"],),
+        ).fetchall()
+        if r["id"] not in in_ids
+    ]
+    letters = db().execute(
+        "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
+    ).fetchall()
+    latest = letters[0] if letters else None
     return render_template(
         "loan_detail.html",
         title=loan["loan_number"],
@@ -5543,7 +5943,251 @@ def loan_detail(lid):
         investors=investors,
         staff_assist=staff_assist,
         reminder_draft=reminder_draft(loan, perf),
+        folder=folder,
+        folder_docs=folder_docs,
+        source_docs=source_docs,
+        payoff_defaults=payoff_defaults(loan),
+        letters=letters,
+        latest_letter=latest,
+        flash=session.pop("last_invite_note", None),
     )
+
+
+def _loan_or_404(lid):
+    return db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+
+
+def can_touch_loan_files(loan):
+    if session.get("staff_id"):
+        return True
+    return session.get("borrower_id") and session["borrower_id"] == loan["borrower_id"]
+
+
+def _files_denied():
+    if session.get("borrower_id"):
+        return redirect(url_for("portal_home"))
+    return redirect(url_for("login"))
+
+
+def _wants_fetch():
+    return request.headers.get("X-Requested-With") == "fetch"
+
+
+@app.route("/loans/<int:lid>/files", methods=["POST"])
+def loan_files_upload(lid):
+    loan = _loan_or_404(lid)
+    if not loan or not can_touch_loan_files(loan):
+        if _wants_fetch():
+            return ("no", 403)
+        return _files_denied()
+    folder, _ = loan_folder_docs(loan)
+    n = save_uploads(loan["deal_id"], loan["borrower_id"], request.files.getlist("docs"), file_id=folder["id"], kind="Loan file")
+    if _wants_fetch():
+        return ("ok", 200)
+    if session.get("staff_id"):
+        session["last_invite_note"] = f"{n} file(s) added to {folder['name']}."
+        return redirect(url_for("loan_detail", lid=lid))
+    return redirect(url_for("portal_home", msg=f"{n} file(s) uploaded to {folder['name']}."))
+
+
+@app.route("/loans/<int:lid>/files.zip")
+def loan_files_zip(lid):
+    import zipfile
+
+    loan = _loan_or_404(lid)
+    if not loan or not can_touch_loan_files(loan):
+        return _files_denied()
+    folder, docs = loan_folder_docs(loan)
+    buf = BytesIO()
+    used = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for doc in docs:
+            path = os.path.join(UPLOAD_DIR, doc["filename"] or "")
+            if not os.path.isfile(path):
+                continue
+            name = secure_filename(doc["original_name"] or doc["filename"] or "file")
+            if name in used:
+                used[name] += 1
+                base, ext = os.path.splitext(name)
+                name = f"{base}-{used[name]}{ext}"
+            else:
+                used[name] = 1
+            z.write(path, name)
+    buf.seek(0)
+    slug = secure_filename(folder["name"] or f"loan-{lid}") or f"loan-{lid}"
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=f"{slug}.zip")
+
+
+@app.route("/loans/<int:lid>/files/<int:fid>/add", methods=["POST"])
+def loan_files_move(lid, fid):
+    loan = _loan_or_404(lid)
+    if not loan or not can_touch_loan_files(loan):
+        return ("no", 403)
+    folder = db().execute("SELECT * FROM doc_files WHERE id=?", (fid,)).fetchone()
+    if not folder or folder["borrower_id"] != loan["borrower_id"]:
+        return ("not found", 404)
+    doc_id = request.form.get("document_id")
+    if not doc_id:
+        return ("missing document", 400)
+    db().execute("DELETE FROM doc_file_items WHERE document_id=?", (int(doc_id),))
+    db().execute(
+        "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+        (fid, int(doc_id)),
+    )
+    db().execute(
+        "UPDATE documents SET deal_id=? WHERE id=?",
+        (loan["deal_id"], int(doc_id)),
+    )
+    db().commit()
+    if _wants_fetch():
+        return ("ok", 200)
+    if session.get("staff_id"):
+        return redirect(url_for("loan_detail", lid=lid))
+    return redirect(url_for("portal_home"))
+
+
+def _letter_from_form(loan, f=None):
+    d = payoff_defaults(loan)
+    if f:
+        for k in ("letter_date", "good_through", "wire_bank", "wire_name", "wire_routing", "wire_account", "wire_further", "notes"):
+            if f.get(k) is not None:
+                d[k] = f.get(k)
+        for k in ("principal", "interest_fee", "other_fees", "per_diem"):
+            if f.get(k) not in (None, ""):
+                d[k] = money(f.get(k))
+        d["total"] = round(d["principal"] + d["interest_fee"] + d["other_fees"], 2)
+    return d
+
+
+def _save_letter_pdf(loan, data, status="draft"):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    pdf = payoff_letter_pdf(loan, b, data)
+    stored = f"payoff_{loan['id']}_{int(datetime.now().timestamp())}.pdf"
+    path = os.path.join(UPLOAD_DIR, stored)
+    with open(path, "wb") as fh:
+        fh.write(pdf)
+    folder, _ = loan_folder_docs(loan)
+    db().execute(
+        """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (loan["deal_id"], loan["borrower_id"], stored, f"Payoff-{loan['loan_number']}.pdf", "Payoff letter", datetime.now().isoformat(timespec="minutes")),
+    )
+    doc_id = db().execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    db().execute("INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)", (folder["id"], doc_id))
+    cur = db().execute(
+        """INSERT INTO payoff_letters
+           (loan_id, status, letter_date, good_through, principal, interest_fee, other_fees,
+            per_diem, total, wire_bank, wire_name, wire_routing, wire_account, wire_further,
+            notes, filename, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            loan["id"],
+            status,
+            data["letter_date"],
+            data["good_through"],
+            data["principal"],
+            data["interest_fee"],
+            data["other_fees"],
+            data["per_diem"],
+            data["total"],
+            data.get("wire_bank"),
+            data.get("wire_name"),
+            data.get("wire_routing"),
+            data.get("wire_account"),
+            data.get("wire_further"),
+            data.get("notes"),
+            stored,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().commit()
+    return cur.lastrowid, stored, pdf
+
+
+@app.route("/loans/<int:lid>/payoff", methods=["POST"])
+@staff_required
+def loan_payoff_create(lid):
+    loan = _loan_or_404(lid)
+    data = _letter_from_form(loan, request.form)
+    _save_letter_pdf(loan, data, status="pending")
+    session["last_invite_note"] = "Payoff letter is ready for approval. Review the PDF, then click Approve."
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/payoff/<int:pid>/approve", methods=["POST"])
+@staff_required
+def loan_payoff_approve(lid, pid):
+    staff = db().execute("SELECT name, email FROM staff WHERE id=?", (session.get("staff_id"),)).fetchone()
+    who = (staff["name"] if staff else "") or (staff["email"] if staff else "staff")
+    db().execute(
+        "UPDATE payoff_letters SET status='approved', approved_at=?, approved_by=? WHERE id=? AND loan_id=?",
+        (datetime.now().isoformat(timespec="minutes"), who, pid, lid),
+    )
+    db().commit()
+    session["last_invite_note"] = "Payoff letter approved. You can send it to the borrower."
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/payoff/<int:pid>/send", methods=["POST"])
+@staff_required
+def loan_payoff_send(lid, pid):
+    row = db().execute(
+        "SELECT * FROM payoff_letters WHERE id=? AND loan_id=?", (pid, lid)
+    ).fetchone()
+    if not row or row["status"] != "approved":
+        session["last_invite_note"] = "Approve the payoff letter before sending."
+        return redirect(url_for("loan_detail", lid=lid))
+    loan = _loan_or_404(lid)
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    path = os.path.join(UPLOAD_DIR, row["filename"] or "")
+    pdf = open(path, "rb").read() if os.path.isfile(path) else b""
+    body = (
+        f"Hello {b['name']},\n\n"
+        f"Attached is the payoff letter for loan {loan['loan_number']} "
+        f"({loan['property_address']}).\n\n"
+        f"Total due if received by {row['good_through']}: ${money(row['total']):,.2f}.\n\n"
+        "Brittco Capital Inc\n"
+    )
+    sent = False
+    if b["email"] and pdf:
+        try:
+            sent = send_mail(
+                b["email"],
+                f"Payoff letter — {loan['loan_number']}",
+                body,
+                attachment=pdf,
+                attachment_name=f"Payoff-{loan['loan_number']}.pdf",
+            )
+        except Exception:
+            sent = False
+    db().execute(
+        "UPDATE payoff_letters SET status='sent', sent_at=? WHERE id=?",
+        (datetime.now().isoformat(timespec="minutes"), pid),
+    )
+    db().execute(
+        "INSERT INTO messages (deal_id, borrower_id, sender, body, created_at) VALUES (?,?,?,?,?)",
+        (loan["deal_id"], b["id"], "Brittco Staff", f"Payoff letter sent for {loan['loan_number']}. Total {money_txt(row['total'])} good through {row['good_through']}.", datetime.now().isoformat(timespec="minutes")),
+    )
+    db().commit()
+    session["last_invite_note"] = "Payoff letter sent to the borrower." if sent else "Saved as sent. Email did not go out — download the PDF and send it."
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/payoff/<int:pid>.pdf")
+def loan_payoff_pdf(lid, pid):
+    row = db().execute(
+        "SELECT * FROM payoff_letters WHERE id=? AND loan_id=?", (pid, lid)
+    ).fetchone()
+    loan = _loan_or_404(lid)
+    if not row or not loan or not can_touch_loan_files(loan):
+        return redirect(url_for("login"))
+    if not session.get("staff_id") and row["status"] not in ("sent", "approved"):
+        return redirect(url_for("portal_home"))
+    path = os.path.join(UPLOAD_DIR, row["filename"] or "")
+    if not os.path.isfile(path):
+        return redirect(url_for("loan_detail", lid=lid) if session.get("staff_id") else url_for("portal_home"))
+    return send_file(path, mimetype="application/pdf", download_name=f"Payoff-{loan['loan_number']}.pdf")
+
 
 
 @app.route("/loans/<int:lid>/payment", methods=["POST"])

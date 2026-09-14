@@ -24,14 +24,14 @@
 <div class="card">
 <table class="table">
   <tr>
-    <th>Loan #</th><th>Borrower</th><th>Property</th><th>Balance</th>
+    <th>Loan #</th><th>Borrower</th><th>Property / file</th><th>Balance</th>
     <th>Next payment</th><th>Matures</th><th>Status</th><th></th>
   </tr>
   {% for l in loans %}
   <tr>
     <td><a href="{{ url_for('loan_detail', lid=l.id) }}">{{ l.loan_number or l.id }}</a></td>
     <td>{{ l.borrower_name }}</td>
-    <td>{{ l.property_address }}</td>
+    <td><a href="{{ url_for('loan_detail', lid=l.id) }}#loan-file">{{ l.property_address or "File" }}</a></td>
     <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
     <td>
       {{ l.next_payment_due or "—" }}

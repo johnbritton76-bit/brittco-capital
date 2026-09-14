@@ -110,7 +110,41 @@
     </form>
   </div>
 
-  {% if loans %}
+  {% if loan_packs %}
+  <div class="card" style="margin-top:14px">
+    <h3>Your loans and files</h3>
+    <p class="hint">Each folder is named for the property. Drag files from your computer onto a folder, or use Upload. Payoff letters appear here after Brittco sends them.</p>
+    {% for pack in loan_packs %}
+    <div class="drop-file" data-add="{{ url_for('loan_files_move', lid=pack.loan.id, fid=pack.folder.id) }}" data-upload="{{ url_for('loan_files_upload', lid=pack.loan.id) }}" style="margin:10px 0;border:1px dashed #9bb4c9;border-radius:10px;padding:12px;background:#fff">
+      <p><strong>{{ pack.folder.name }}</strong>
+        <span class="hint">{{ pack.loan.loan_number }} · {{ pack.loan.status }} · ${{ "{:,.0f}".format(pack.loan.current_balance or 0) }}</span>
+        <a class="btn ghost" href="{{ url_for('loan_files_zip', lid=pack.loan.id) }}">Download</a>
+      </p>
+      <ul>
+        {% for doc in pack.docs %}
+        <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+          <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        </li>
+        {% else %}
+        <li class="hint">Empty — drop files here</li>
+        {% endfor %}
+      </ul>
+      {% if pack.letters %}
+      <p class="hint">Payoff letters</p>
+      {% for letter in pack.letters %}
+      <p><a href="{{ url_for('loan_payoff_pdf', lid=pack.loan.id, pid=letter.id) }}" target="_blank">Payoff {{ letter.letter_date }} — ${{ "{:,.2f}".format(letter.total or 0) }} good through {{ letter.good_through }}</a></p>
+      {% endfor %}
+      {% endif %}
+      <form method="post" action="{{ url_for('loan_files_upload', lid=pack.loan.id) }}" enctype="multipart/form-data" style="margin-top:8px">
+        <input type="file" name="docs" multiple>
+        <button class="btn ghost" type="submit">Upload</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if loans and not loan_packs %}
   <div class="card" style="margin-top:14px">
     <h3>Your loans</h3>
     <table class="table">
@@ -181,5 +215,6 @@
     </form>
   </div>
 </main>
+<script src="/static/drop-files.js"></script>
 </body>
 </html>

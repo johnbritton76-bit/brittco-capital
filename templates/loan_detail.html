@@ -23,6 +23,7 @@
     </form>
   </div>
 </div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
   <div class="card"><h3>Original principal</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
@@ -43,6 +44,100 @@
   <div class="card"><h3>Still to raise</h3><div>${{ "{:,.0f}".format(perf.gap) }}</div></div>
   <div class="card"><h3>Investor returns paid</h3><div>${{ "{:,.2f}".format(perf.investor_paid) }}</div></div>
   <div class="card"><h3>Brittco share paid</h3><div>${{ "{:,.2f}".format(perf.brittco_paid) }}</div></div>
+</div>
+
+<div class="card" id="loan-file" style="margin-top:14px">
+  <h3>Loan file — {{ folder.name if folder else loan.property_address }}</h3>
+  <p class="hint">Named for the property. Papers are pulled from this borrower’s file. Drag a computer file onto the folder, or drag a document from the list below into the folder.</p>
+  <div class="drop-file drop-upload" data-add="{{ url_for('loan_files_move', lid=loan.id, fid=folder.id) }}" data-upload="{{ url_for('loan_files_upload', lid=loan.id) }}" style="margin:8px 0;border:1px dashed #9bb4c9;border-radius:10px;padding:12px;background:#fff">
+    <p style="margin:0 0 8px">
+      <strong>{{ folder.name }}</strong>
+      <span class="hint">({{ folder_docs|length }})</span>
+      <a class="btn ghost" href="{{ url_for('loan_files_zip', lid=loan.id) }}">Download folder</a>
+    </p>
+    <ul>
+      {% for doc in folder_docs %}
+      <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+        <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        <span class="hint">{{ doc.kind }} · {{ doc.created_at }}</span>
+      </li>
+      {% else %}
+      <li class="hint">Empty — drop files here</li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="{{ url_for('loan_files_upload', lid=loan.id) }}" enctype="multipart/form-data" style="margin-top:8px">
+      <input type="file" name="docs" multiple>
+      <button class="btn ghost" type="submit">Upload</button>
+    </form>
+  </div>
+  {% if source_docs %}
+  <p class="hint">Other papers in this borrower’s file (drag into the folder above):</p>
+  <ul>
+    {% for doc in source_docs %}
+    <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+      {{ doc.original_name or doc.filename }}
+      <span class="hint">{{ doc.kind }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Payoff letter</h3>
+  <p class="hint">Figures fill from this loan’s rate, term, balance, and maturity. Staff must approve before it can be emailed to the borrower. Signature on the PDF is John Britton, electronically signed.</p>
+  {% if latest_letter %}
+  <p>
+    Latest: <span class="badge">{{ latest_letter.status }}</span>
+    · {{ latest_letter.letter_date }}
+    · {{ money_txt(latest_letter.total) if false else "" }}
+    ${{ "{:,.2f}".format(latest_letter.total or 0) }}
+    good through {{ latest_letter.good_through }}
+    · <a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=latest_letter.id) }}" target="_blank">View PDF</a>
+  </p>
+  {% if latest_letter.status == 'pending' %}
+  <form method="post" action="{{ url_for('loan_payoff_approve', lid=loan.id, pid=latest_letter.id) }}" style="display:inline">
+    <button class="btn" type="submit">Approve</button>
+  </form>
+  {% elif latest_letter.status == 'approved' %}
+  <form method="post" action="{{ url_for('loan_payoff_send', lid=loan.id, pid=latest_letter.id) }}" style="display:inline">
+    <button class="btn" type="submit">Send to borrower</button>
+  </form>
+  {% elif latest_letter.status == 'sent' %}
+  <p class="hint">Sent {{ latest_letter.sent_at }}. Approved by {{ latest_letter.approved_by }}.</p>
+  {% endif %}
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_payoff_create', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div><label>Letter date</label><input name="letter_date" type="date" value="{{ payoff_defaults.letter_date }}"></div>
+    <div><label>Good through</label><input name="good_through" type="date" value="{{ payoff_defaults.good_through }}"></div>
+    <div><label>Unpaid principal</label><input name="principal" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.principal) }}"></div>
+    <div><label>Interest / flat fee</label><input name="interest_fee" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.interest_fee) }}"></div>
+    <div><label>Other fees</label><input name="other_fees" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.other_fees) }}"></div>
+    <div><label>Per diem after good-through</label><input name="per_diem" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.per_diem) }}"></div>
+    <div class="span-2"><p class="hint">Total payoff will be principal + interest/fee + other fees ({{ "%.2f"|format(payoff_defaults.total) }} from current loan terms).</p></div>
+    <div><label>Wire bank</label><input name="wire_bank" value="{{ payoff_defaults.wire_bank }}"></div>
+    <div><label>Name on account</label><input name="wire_name" value="{{ payoff_defaults.wire_name }}"></div>
+    <div><label>Routing</label><input name="wire_routing" value="{{ payoff_defaults.wire_routing }}"></div>
+    <div><label>Account</label><input name="wire_account" value="{{ payoff_defaults.wire_account }}"></div>
+    <div class="span-2"><label>Further credit / loan reference</label><input name="wire_further" value="{{ loan.loan_number }}"></div>
+    <div class="span-2"><label>Notes on the letter</label><textarea name="notes" rows="3">{{ payoff_defaults.notes }}</textarea></div>
+    <div class="span-2"><button class="btn" type="submit">Create payoff letter (sends to approval)</button></div>
+  </form>
+  {% if letters|length > 1 %}
+  <p class="hint" style="margin-top:10px">History</p>
+  <table class="table">
+    <tr><th>Date</th><th>Status</th><th>Total</th><th>Good through</th><th></th></tr>
+    {% for p in letters %}
+    <tr>
+      <td>{{ p.letter_date }}</td>
+      <td>{{ p.status }}</td>
+      <td>${{ "{:,.2f}".format(p.total or 0) }}</td>
+      <td>{{ p.good_through }}</td>
+      <td><a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=p.id) }}" target="_blank">PDF</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
 </div>
 
 <div class="card" style="margin-top:14px">
@@ -248,5 +343,6 @@
     {% endfor %}
   </table>
 </div>
+<script src="{{ url_for('static', filename='drop-files.js') }}"></script>
 {% endblock %}
 
