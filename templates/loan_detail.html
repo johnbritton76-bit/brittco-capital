@@ -115,11 +115,12 @@
     <div><label>Other fees</label><input name="other_fees" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.other_fees) }}"></div>
     <div><label>Per diem after good-through</label><input name="per_diem" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.per_diem) }}"></div>
     <div class="span-2"><p class="hint">Total payoff will be principal + interest/fee + other fees ({{ "%.2f"|format(payoff_defaults.total) }} from current loan terms).</p></div>
-    <div><label>Wire bank</label><input name="wire_bank" value="{{ payoff_defaults.wire_bank }}"></div>
+    <div><label>Receiving bank</label><input name="wire_bank" value="{{ payoff_defaults.wire_bank }}"></div>
+    <div><label>Bank address</label><input name="wire_bank_address" value="{{ payoff_defaults.wire_bank_address }}"></div>
     <div><label>Name on account</label><input name="wire_name" value="{{ payoff_defaults.wire_name }}"></div>
-    <div><label>Routing</label><input name="wire_routing" value="{{ payoff_defaults.wire_routing }}"></div>
+    <div><label>Routing (ABA)</label><input name="wire_routing" value="{{ payoff_defaults.wire_routing }}"></div>
     <div><label>Account</label><input name="wire_account" value="{{ payoff_defaults.wire_account }}"></div>
-    <div class="span-2"><label>Further credit / loan reference</label><input name="wire_further" value="{{ loan.loan_number }}"></div>
+    <div class="span-2"><label>Wire reference</label><input name="wire_further" value="{{ payoff_defaults.wire_further or loan.property_address }}"></div>
     <div class="span-2"><label>Notes on the letter</label><textarea name="notes" rows="3">{{ payoff_defaults.notes }}</textarea></div>
     <div class="span-2"><button class="btn" type="submit">Create payoff letter (sends to approval)</button></div>
   </form>

@@ -2194,12 +2194,14 @@ def payoff_amount(loan):
 
 def company_wire():
     return {
-        "wire_bank": os.environ.get("WIRE_BANK") or "Please confirm with Brittco",
-        "wire_name": os.environ.get("WIRE_NAME") or "Brittco Capital Inc",
-        "wire_routing": os.environ.get("WIRE_ROUTING") or "",
-        "wire_account": os.environ.get("WIRE_ACCOUNT") or "",
+        "wire_bank": os.environ.get("WIRE_BANK") or "Prism Bank",
+        "wire_bank_address": os.environ.get("WIRE_BANK_ADDRESS") or "2610 S Division Street, Guthrie, OK 73044",
+        "wire_name": os.environ.get("WIRE_NAME") or "Brittco Capital, Inc.",
+        "wire_routing": os.environ.get("WIRE_ROUTING") or "103012908",
+        "wire_account": os.environ.get("WIRE_ACCOUNT") or "2018397807",
         "wire_further": os.environ.get("WIRE_FURTHER") or "",
     }
+
 
 
 def payoff_defaults(loan):
@@ -2214,6 +2216,8 @@ def payoff_defaults(loan):
         rate = money(row_val(loan, "rate"))
         per = round(prin * rate / 100.0 / 365.0, 2) if rate else 0.0
     wire = company_wire()
+    if not wire.get("wire_further"):
+        wire["wire_further"] = row_val(loan, "property_address") or ""
     return {
         "letter_date": date.today().isoformat(),
         "good_through": row_val(loan, "maturity_date") or date.today().isoformat(),
@@ -2299,172 +2303,290 @@ def loan_folder_docs(loan):
     return folder, items
 
 
+def _pdf_wrap(c, text, font, size, max_w):
+    words = (text or "").split()
+    lines, cur = [], ""
+    for w in words:
+        t = (cur + " " + w).strip()
+        if c.stringWidth(t, font, size) <= max_w:
+            cur = t
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
 def payoff_letter_pdf(loan, borrower, data):
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.colors import HexColor, white, Color
     from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
-    )
+    from reportlab.pdfgen import canvas as pdfcanvas
 
+    NAVY = HexColor("#0c2c4a")
+    GOLD = HexColor("#c9a24a")
+    GREEN = HexColor("#2d6a4f")
+    GREEN_BG = HexColor("#eef6f1")
+    INK = HexColor("#1c2430")
+    MUTED = HexColor("#5a6570")
+    LINE = HexColor("#d8dee6")
+    BOX = HexColor("#f4f6f8")
+    LABEL = HexColor("#3d6a8a")
+
+    W, H = letter
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        leftMargin=0.85 * inch,
-        rightMargin=0.85 * inch,
-        topMargin=0.55 * inch,
-        bottomMargin=0.6 * inch,
-        title=f"Payoff letter — {loan['loan_number']}",
-        author="Brittco Capital Inc",
-    )
-    styles = getSampleStyleSheet()
-    company = ParagraphStyle(
-        "Co", parent=styles["Normal"], fontName="Times-Bold", fontSize=13,
-        textColor=colors.HexColor("#1a1a1a"), leading=16,
-    )
-    tagline = ParagraphStyle(
-        "Tag", parent=styles["Normal"], fontName="Times-Italic", fontSize=10,
-        textColor=colors.HexColor("#333"), leading=13,
-    )
-    addr_s = ParagraphStyle(
-        "Ad", parent=styles["Normal"], fontName="Times-Roman", fontSize=10,
-        textColor=colors.HexColor("#222"), leading=13,
-    )
-    body = ParagraphStyle(
-        "Bd", parent=styles["Normal"], fontName="Times-Roman", fontSize=11,
-        leading=16, textColor=colors.HexColor("#111"),
-    )
-    small = ParagraphStyle(
-        "Sm", parent=styles["Normal"], fontName="Times-Roman", fontSize=10,
-        leading=13, textColor=colors.HexColor("#222"),
-    )
-    label = ParagraphStyle(
-        "Lb", parent=styles["Normal"], fontName="Times-Italic", fontSize=8,
-        textColor=colors.HexColor("#555"),
-    )
-    story = []
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    c.setTitle(f"Payoff Statement — {loan['loan_number'] or ''}")
+    c.setAuthor("Brittco Capital, Inc.")
+
+    # Header bar
+    c.setFillColor(NAVY)
+    c.rect(0, H - 78, W, 78, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, H - 83, W, 5, fill=1, stroke=0)
+
     logo = os.path.join(APP_DIR, "static", "logo.jpg")
-    letterhead_text = [
-        Paragraph("BRITTCO CAPITAL", company),
-        Paragraph("Your Bridge to Building Wealth", tagline),
-        Paragraph("4825 Vasca Drive", addr_s),
-        Paragraph("Sarasota, FL 34240", addr_s),
-        Paragraph("(816) 694-1658", addr_s),
-    ]
     if os.path.exists(logo):
-        story.append(Table(
-            [[Image(logo, width=1.7 * inch, height=0.68 * inch), letterhead_text]],
-            colWidths=[2.0 * inch, 5.0 * inch],
-        ))
-    else:
-        for p in letterhead_text:
-            story.append(p)
-    story.append(Spacer(1, 10))
-    story.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#888"), spaceAfter=14, spaceBefore=2))
+        c.setFillColor(white)
+        c.roundRect(28, H - 68, 46, 46, 6, fill=1, stroke=0)
+        c.drawImage(logo, 31, H - 65, width=40, height=40, mask="auto", preserveAspectRatio=True, anchor="c")
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(84, H - 38, "BRITTCO CAPITAL, INC.")
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica", 7.5)
+    c.drawString(84, H - 52, "YOUR BRIDGE TO BUILDING WEALTH")
+    c.setFillColor(white)
+    c.setFont("Helvetica", 8)
+    c.drawRightString(W - 32, H - 30, "4825 Vasca Drive")
+    c.drawRightString(W - 32, H - 42, "Sarasota, Florida 34240")
+    c.drawRightString(W - 32, H - 54, "816-694-1658")
 
-    who = (borrower["name"] or "").strip()
-    streets, city_line = property_lines(loan["property_address"])
-    story.append(Paragraph(xml_esc(pretty_date(data.get("letter_date"))), body))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(xml_esc(who), body))
-    for line in streets:
-        story.append(Paragraph(xml_esc(line), body))
-    if city_line:
-        story.append(Paragraph(xml_esc(city_line), body))
-    story.append(Spacer(1, 14))
-    story.append(Paragraph("Re: Payoff Quote", body))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(f"Dear {xml_esc(who)}:", body))
-    story.append(Spacer(1, 10))
-    total_txt = money_letter(data["total"])
-    story.append(Paragraph(
-        "This letter confirms the amount required to pay in full your outstanding loan with "
-        f"Brittco Capital, Inc. The current payoff amount is <b>{total_txt}</b>. "
-        "If you have any questions regarding this payoff amount, please contact me "
-        "directly at 816-694-1658.",
-        body,
-    ))
-    good = pretty_date(data.get("good_through"))
-    if good:
-        extra = f"This amount is good through <b>{xml_esc(good)}</b>."
-        if money(data.get("per_diem")):
-            extra += (
-                f" After that date, a per diem of <b>{money_letter(data.get('per_diem'))}</b> "
-                "applies until a new letter is issued."
-            )
-        story.append(Spacer(1, 8))
-        story.append(Paragraph(extra, body))
-    story.append(Spacer(1, 12))
+    y = H - 108
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y + 10, "DATE")
+    c.drawRightString(W - 36, y + 10, "DOCUMENT")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(36, y - 4, pretty_date(data.get("letter_date")))
+    c.setFont("Helvetica-Bold", 10)
+    c.drawRightString(W - 36, y - 4, "Official Payoff Statement")
 
-    rate = data.get("rate") or loan["rate"] or loan["points"] or 0
-    term_days = int(data.get("term_days") or 0)
-    rows = [
-        ["Loan number", xml_esc(loan["loan_number"] or str(loan["id"]))],
-        ["Loan type", xml_esc(data.get("loan_type") or loan["loan_type"] or "")],
-        ["Property", xml_esc(loan["property_address"] or "")],
-        ["Origination", xml_esc(pretty_date(data.get("start_date") or loan["start_date"]))],
-        ["Maturity", xml_esc(pretty_date(data.get("maturity_date") or loan["maturity_date"]))],
-        ["Rate / fee", f"{rate}%"],
-        ["Term", f"{term_days} days" if term_days else ""],
-        ["Unpaid principal", money_letter(data["principal"])],
-        ["Interest / flat fee", money_letter(data["interest_fee"])],
-        ["Other fees", money_letter(data["other_fees"])],
-        ["Total payoff", money_letter(data["total"])],
-        ["Per diem after good-through", money_letter(data["per_diem"]) + " / day"],
-    ]
-    t = Table(rows, colWidths=[2.6 * inch, 4.2 * inch])
-    t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (0, -1), "Times-Roman"),
-        ("FONTNAME", (1, 0), (1, -1), "Times-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111")),
-        ("BACKGROUND", (0, 10), (-1, 10), colors.HexColor("#f3f3f3")),
-        ("LINEBELOW", (0, 0), (-1, -2), 0.25, colors.HexColor("#d0d0d0")),
-        ("LINEABOVE", (0, 10), (-1, 10), 0.6, colors.HexColor("#333")),
-        ("LINEBELOW", (0, 10), (-1, 10), 0.6, colors.HexColor("#333")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    story.append(t)
+    y -= 36
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(W / 2, y, "PAYOFF STATEMENT")
+    y -= 14
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawCentredString(W / 2, y, "Issued to the closing / title company handling this transaction")
 
-    wire_bank = (data.get("wire_bank") or "").strip()
-    real_wire = wire_bank and "please confirm" not in wire_bank.lower()
-    if real_wire:
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("<b>Wire instructions</b>", body))
-        story.append(Paragraph(f"Bank: {xml_esc(wire_bank)}", small))
-        story.append(Paragraph(f"Name on account: {xml_esc(data.get('wire_name') or '')}", small))
-        if data.get("wire_routing"):
-            story.append(Paragraph(f"Routing: {xml_esc(data.get('wire_routing'))}", small))
-        if data.get("wire_account"):
-            story.append(Paragraph(f"Account: {xml_esc(data.get('wire_account'))}", small))
-        if data.get("wire_further"):
-            story.append(Paragraph(f"Reference: {xml_esc(data.get('wire_further'))}", small))
+    entity = ""
+    try:
+        entity = ((borrower["entity_name"] if borrower["entity_name"] else "") or "").strip()
+    except (KeyError, IndexError, TypeError):
+        entity = ""
+    who = entity or ((borrower["name"] or "").strip())
+    prop = (loan["property_address"] or "").strip()
 
-    if data.get("notes"):
-        story.append(Spacer(1, 8))
-        story.append(Paragraph(xml_esc(data["notes"]).replace("\n", "<br/>"), small))
+    y -= 22
+    box_h = 78
+    c.setFillColor(BOX)
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.8)
+    c.roundRect(36, y - box_h, W - 72, box_h, 8, fill=1, stroke=1)
+    mid = W / 2
+    c.setStrokeColor(LINE)
+    c.line(mid, y - 10, mid, y - box_h + 10)
 
-    story.append(Spacer(1, 16))
-    story.append(Paragraph("Thank you,", body))
+    def block(x, top, label, lines):
+        c.setFillColor(LABEL)
+        c.setFont("Helvetica", 7)
+        c.drawString(x, top - 14, label)
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 10)
+        yy = top - 28
+        for i, line in enumerate(lines):
+            c.setFont("Helvetica-Bold" if i == 0 else "Helvetica", 10 if i == 0 else 8.5)
+            c.setFillColor(INK if i == 0 else MUTED)
+            for wrapped in _pdf_wrap(c, line, "Helvetica-Bold" if i == 0 else "Helvetica", 10 if i == 0 else 8.5, 230):
+                c.drawString(x, yy, wrapped)
+                yy -= 12
+
+    block(48, y, "LENDER", ["Brittco Capital, Inc.", "4825 Vasca Drive, Sarasota, Florida 34240"])
+    block(mid + 14, y, "BORROWER", [who])
+    c.setFillColor(LABEL)
+    c.setFont("Helvetica", 7)
+    c.drawString(48, y - 56, "COLLATERAL / PROPERTY ADDRESS")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(48, y - 70, prop or "—")
+
+    y = y - box_h - 16
+    legal = (
+        "Payment of the following amount in immediately available funds, received by Brittco Capital, Inc. "
+        "no later than the close of business on the good-through date stated below, will satisfy in full all "
+        "obligations of the Borrower under this loan. Upon confirmation of good funds, Lender will execute "
+        "and deliver a release of its security interest and/or deed of trust, as applicable."
+    )
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 9)
+    for line in _pdf_wrap(c, legal, "Helvetica", 9, W - 80):
+        c.drawString(40, y, line)
+        y -= 12
+
+    y -= 14
+    amt_h = 58
+    half = (W - 80) / 2
+    c.setStrokeColor(GREEN)
+    c.setFillColor(GREEN_BG)
+    c.setLineWidth(1.6)
+    c.roundRect(36, y - amt_h, half - 6, amt_h, 8, fill=1, stroke=1)
+    c.roundRect(36 + half + 6, y - amt_h, half - 6, amt_h, 8, fill=1, stroke=1)
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(36 + (half - 6) / 2, y - 16, "TOTAL PAYOFF AMOUNT")
+    c.drawCentredString(36 + half + 6 + (half - 6) / 2, y - 16, "GOOD THROUGH")
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(36 + (half - 6) / 2, y - 40, f"${money(data['total']):,.2f}")
+    good = pretty_date(data.get("good_through")).upper()
+    c.setFont("Helvetica-Bold", 13)
+    c.drawCentredString(36 + half + 6 + (half - 6) / 2, y - 40, good)
+
+    y -= amt_h + 18
+    note = (
+        f"If funds will not be received on or before {pretty_date(data.get('good_through'))}, "
+        "request an updated payoff statement before remitting funds. Do not apply a per diem "
+        "or adjusted figure without written confirmation from Lender."
+    )
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 8)
+    for line in _pdf_wrap(c, note, "Helvetica-Oblique", 8, W - 80):
+        c.drawString(40, y, line)
+        y -= 11
+
+    y -= 16
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(36, y, "WIRE INSTRUCTIONS")
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(1.2)
+    c.line(36, y - 4, 168, y - 4)
+
+    y -= 14
+    wire_h = 112
+    c.setFillColor(BOX)
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.8)
+    c.roundRect(36, y - wire_h, W - 72, wire_h, 8, fill=1, stroke=1)
+    c.setStrokeColor(LINE)
+    c.line(mid, y - 10, mid, y - wire_h + 26)
+
+    bank_addr = (data.get("wire_bank_address") or "2610 S Division Street, Guthrie, OK 73044").strip()
+
+    def wire_col(x, top, title, pairs):
+        c.setFillColor(LABEL)
+        c.setFont("Helvetica", 7)
+        c.drawString(x, top - 14, title)
+        yy = top - 28
+        for lab, val in pairs:
+            c.setFillColor(LABEL)
+            c.setFont("Helvetica", 6.5)
+            c.drawString(x, yy, lab)
+            yy -= 11
+            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 9.5)
+            for wrapped in _pdf_wrap(c, val or "—", "Helvetica-Bold", 9.5, 220):
+                c.drawString(x, yy, wrapped)
+                yy -= 12
+            yy -= 3
+
+    wire_col(
+        48,
+        y,
+        "BENEFICIARY — LENDER",
+        [
+            ("NAME ON ACCOUNT", data.get("wire_name") or "Brittco Capital, Inc."),
+            ("BENEFICIARY ADDRESS", "4825 Vasca Drive, Sarasota, Florida 34240"),
+            ("ACCOUNT NUMBER", data.get("wire_account") or ""),
+        ],
+    )
+    wire_col(
+        mid + 14,
+        y,
+        "RECEIVING BANK",
+        [
+            ("BANK NAME", data.get("wire_bank") or "Prism Bank"),
+            ("BANK ADDRESS", bank_addr),
+            ("ROUTING NUMBER (ABA)", data.get("wire_routing") or ""),
+        ],
+    )
+    c.setFillColor(HexColor("#e8eef3"))
+    c.rect(37, y - wire_h + 2, W - 74, 22, fill=1, stroke=0)
+    c.setFillColor(LABEL)
+    c.setFont("Helvetica", 7)
+    c.drawString(48, y - wire_h + 9, "WIRE REFERENCE")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(140, y - wire_h + 9, (data.get("wire_further") or prop or "")[:72])
+
+    y = y - wire_h - 28
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(36, y, "LENDER CONTACT")
+    c.drawString(mid + 8, y, "LENDER AUTHORIZATION")
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(1)
+    c.line(36, y - 4, 148, y - 4)
+    c.line(mid + 8, y - 4, mid + 168, y - 4)
+
+    y -= 18
+    c.setFillColor(LABEL)
+    c.setFont("Helvetica", 7)
+    c.drawString(36, y, "AUTHORIZED CONTACT")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(36, y - 14, "John Britton, President")
+    c.setFont("Helvetica", 9)
+    c.setFillColor(MUTED)
+    c.drawString(36, y - 28, "Phone: 816-694-1658")
+    c.drawString(36, y - 42, "Questions may be directed to this number.")
+
     sig = os.path.join(APP_DIR, "static", "signature.png")
     if os.path.exists(sig):
-        story.append(Spacer(1, 4))
-        story.append(Image(sig, width=2.35 * inch, height=0.62 * inch))
-    else:
-        story.append(Spacer(1, 28))
-    story.append(Paragraph("<b>John Britton</b>", body))
-    story.append(Paragraph("President", small))
-    story.append(Paragraph("Brittco Capital, Inc.", small))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph("Electronically signed", label))
-    doc.build(story)
+        c.drawImage(sig, mid + 8, y - 44, width=128, height=32, mask="auto", preserveAspectRatio=True, anchor="sw")
+    c.setStrokeColor(INK)
+    c.setLineWidth(0.6)
+    c.line(mid + 8, y - 46, mid + 168, y - 46)
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(mid + 8, y - 58, "John Britton")
+    c.setFont("Helvetica", 8)
+    c.setFillColor(MUTED)
+    c.drawString(mid + 8, y - 70, "President  ·  Brittco Capital, Inc.")
+    signed = pretty_date(data.get("letter_date"))
+    c.setFont("Helvetica-Oblique", 7.5)
+    c.drawString(mid + 8, y - 82, f"Electronically signed  ·  {signed}")
+
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 7)
+    c.drawCentredString(
+        W / 2,
+        28,
+        "Brittco Capital, Inc.  ·  4825 Vasca Drive, Sarasota, FL 34240  ·  816-694-1658  ·  brittcocapital.com",
+    )
+    c.setFont("Helvetica-Oblique", 6.5)
+    c.drawCentredString(
+        W / 2,
+        16,
+        "Confidential. Intended solely for the closing agent and parties to this transaction. Payoff figures expire on the good-through date.",
+    )
+    c.showPage()
+    c.save()
     return buf.getvalue()
 
 
@@ -6049,7 +6171,7 @@ def loan_files_move(lid, fid):
 def _letter_from_form(loan, f=None):
     d = payoff_defaults(loan)
     if f:
-        for k in ("letter_date", "good_through", "wire_bank", "wire_name", "wire_routing", "wire_account", "wire_further", "notes"):
+        for k in ("letter_date", "good_through", "wire_bank", "wire_bank_address", "wire_name", "wire_routing", "wire_account", "wire_further", "notes"):
             if f.get(k) is not None:
                 d[k] = f.get(k)
         for k in ("principal", "interest_fee", "other_fees", "per_diem"):
