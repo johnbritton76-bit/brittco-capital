@@ -124,6 +124,10 @@
         {% for doc in pack.docs %}
         <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
           <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+          <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+            <input type="hidden" name="next" value="{{ url_for('portal_home') }}">
+            <button class="btn ghost" type="submit">Delete</button>
+          </form>
         </li>
         {% else %}
         <li class="hint">Empty — drop files here</li>

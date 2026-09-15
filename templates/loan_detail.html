@@ -60,6 +60,10 @@
       <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
         <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
         <span class="hint">{{ doc.kind }} · {{ doc.created_at }}</span>
+        <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+          <input type="hidden" name="next" value="{{ url_for('loan_detail', lid=loan.id) }}#loan-file">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
       </li>
       {% else %}
       <li class="hint">Empty — drop files here</li>
@@ -77,6 +81,10 @@
     <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
       {{ doc.original_name or doc.filename }}
       <span class="hint">{{ doc.kind }}</span>
+      <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+        <input type="hidden" name="next" value="{{ url_for('loan_detail', lid=loan.id) }}#loan-file">
+        <button class="btn ghost" type="submit">Delete</button>
+      </form>
     </li>
     {% endfor %}
   </ul>

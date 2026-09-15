@@ -173,6 +173,10 @@
       {% for doc in pack.docs %}
       <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
         <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+          <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
         <form method="post" style="display:inline;margin-left:8px">
           <input type="hidden" name="document_id" value="{{ doc.id }}">
           <select onchange="if(this.value){ this.form.action=this.value; this.form.submit(); }">
@@ -209,12 +213,18 @@
     {% for group in property_files %}
     <h4 style="margin:14px 0 6px">{{ group.label }}</h4>
     <table class="table">
-      <tr><th>File</th><th>Kind</th><th>Added</th></tr>
+      <tr><th>File</th><th>Kind</th><th>Added</th><th></th></tr>
       {% for doc in group.docs %}
       <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
         <td><a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a></td>
         <td>{{ doc.kind }}</td>
         <td>{{ doc.created_at }}</td>
+        <td>
+          <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" onsubmit="return confirm('Delete this document?');">
+            <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
+            <button class="btn ghost" type="submit">Delete</button>
+          </form>
+        </td>
       </tr>
       {% else %}
       <tr><td colspan="3">No files here yet.</td></tr>

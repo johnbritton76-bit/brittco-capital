@@ -7165,6 +7165,47 @@ def serve_upload(name):
     return send_from_directory(UPLOAD_DIR, name)
 
 
+def can_delete_document(doc):
+    if not doc:
+        return False
+    if session.get("staff_id"):
+        return True
+    return session.get("borrower_id") and doc["borrower_id"] == session.get("borrower_id")
+
+
+def remove_document(doc_id):
+    doc = db().execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+    if not doc or not can_delete_document(doc):
+        return None
+    try:
+        db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc_id,))
+    except sqlite3.Error:
+        pass
+    path = os.path.join(UPLOAD_DIR, doc["filename"] or "")
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+    db().execute("DELETE FROM documents WHERE id=?", (doc_id,))
+    db().commit()
+    return doc
+
+
+@app.route("/documents/<int:did>/delete", methods=["POST"])
+def document_delete(did):
+    doc = db().execute("SELECT * FROM documents WHERE id=?", (did,)).fetchone()
+    nxt = request.form.get("next") or request.referrer or url_for("login")
+    if not doc or not can_delete_document(doc):
+        if request.headers.get("X-Requested-With") == "fetch":
+            return ("no", 403)
+        return redirect(nxt)
+    remove_document(did)
+    if request.headers.get("X-Requested-With") == "fetch":
+        return ("ok", 200)
+    return redirect(nxt)
+
+
 @app.route("/capital")
 @staff_required
 def capital_available():
