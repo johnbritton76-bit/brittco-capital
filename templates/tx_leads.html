@@ -15,7 +15,7 @@
   {% for l in leads %}
   <tr>
     <td>{{ l.created_at }}</td>
-    <td>{{ l.first_name }} {{ l.last_name }}</td>
+    <td><a href="{{ url_for('marketing_lead_detail', lid=l.id) }}">{{ l.first_name }} {{ l.last_name }}</a></td>
     <td>{{ l.email }}<br>{{ l.phone }}</td>
     <td>{{ l.deals_12mo }} closings<br>Score {{ l.credit_score }}</td>
     <td>{% if l.immediate_need == 'yes' %}<span class="badge warn">This week</span>{% else %}Future{% endif %}</td>
@@ -26,11 +26,12 @@
       {% if l.file_list %}<br>{{ l.file_list|length }} file(s){% endif %}
     </td>
     <td>
+      <a class="btn" href="{{ url_for('marketing_lead_detail', lid=l.id) }}">Open</a>
       {% if not l.acked %}
-      <form method="post" action="{{ url_for('marketing_lead_ack', lid=l.id) }}">
+      <form method="post" action="{{ url_for('marketing_lead_ack', lid=l.id) }}" style="margin-top:6px">
         <button class="btn ghost" type="submit">Mark reviewed</button>
       </form>
-      {% else %}{{ l.status }}{% endif %}
+      {% else %}<div class="hint">{{ l.status }}</div>{% endif %}
     </td>
   </tr>
   {% endfor %}

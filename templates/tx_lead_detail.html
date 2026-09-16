@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Transactional lead · {{ lead.status or "New" }}</div>
+    <h2>{{ lead.first_name }} {{ lead.last_name }}</h2>
+    <p class="hint">Submitted {{ lead.created_at }} · from /tx</p>
+  </div>
+  <div>
+    <a class="btn ghost" href="{{ url_for('marketing_leads') }}">All leads</a>
+    <a class="btn" href="{{ url_for('marketing_lead_rate_sheet', lid=lead.id) }}" target="_blank">Open rate sheet</a>
+  </div>
+</div>
+{% if note %}<p class="flash">{{ note }}</p>{% endif %}
+
+<div class="grid cards">
+  <div class="card"><h3>Email</h3><div>{{ lead.email }}</div></div>
+  <div class="card"><h3>Mobile</h3><div>{{ lead.phone }}</div></div>
+  <div class="card"><h3>Credit (self-reported)</h3><div>{{ lead.credit_score or "—" }}</div></div>
+  <div class="card"><h3>Closings last 12 months</h3><div>{{ lead.deals_12mo or "—" }}</div></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Deal</h3>
+  <p>Needs funding in the next 14 days: <strong>{{ "Yes" if lead.immediate_need == "yes" else "No" }}</strong></p>
+  {% if lead.immediate_need == "yes" %}
+  <p>Amount requested: <strong>{{ lead.amount or "—" }}</strong></p>
+  <p>Purchase close (A-B): <strong>{{ lead.purchase_close or "—" }}</strong></p>
+  <p>Resale close (B-C): <strong>{{ lead.resale_close or "—" }}</strong></p>
+  {% endif %}
+  {% if lead.notes %}<p>Notes: {{ lead.notes }}</p>{% endif %}
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Rate sheet sent to this lead</h3>
+  <p>Same-day double close <strong>1.00%</strong> · 2–7 day hold <strong>2.00%</strong>. Existing-customer rates may be negotiable.</p>
+  <form method="post" action="{{ url_for('marketing_lead_rate_sheet_send', lid=lead.id) }}" style="display:inline">
+    <button class="btn" type="submit">Email rate sheet again</button>
+  </form>
+  {% if not lead.acked %}
+  <form method="post" action="{{ url_for('marketing_lead_ack', lid=lead.id) }}" style="display:inline;margin-left:8px">
+    <button class="btn ghost" type="submit">Mark reviewed</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Files</h3>
+  {% if files %}
+  <ul>
+    {% for f in files %}
+    <li><a href="{{ url_for('serve_upload', name=f.stored) }}" target="_blank">{{ f.original }}</a></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="hint">No files uploaded with this inquiry.</p>
+  {% endif %}
+</div>
+{% endblock %}
