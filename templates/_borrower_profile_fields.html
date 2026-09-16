@@ -10,9 +10,10 @@
   </select>
 </div>
 <div><label>Entity / LLC name</label><input name="entity_name" id="entity_name" value="{{ b.entity_name if b else '' }}"></div>
+<div><label>EIN (entity)</label><input name="ein" value="{% if b and b['ein'] is defined %}{{ b['ein'] or '' }}{% endif %}" placeholder="XX-XXXXXXX"></div>
 <div><label>Email</label><input name="email" type="email" value="{{ b.email if b else '' }}" required></div>
 <div><label>Mobile / cell phone</label><input name="phone" id="phone" value="{{ b.phone if b else '' }}"></div>
-<div><label>Social Security number</label><input name="ssn" value="{{ b.ssn if b else '' }}" autocomplete="off"></div>
+<div><label>Social Security/TIN#</label><input name="ssn" value="{{ b.ssn if b else '' }}" autocomplete="off"></div>
 <div class="span-2"><label>Current address</label><input name="address" id="address" value="{{ b.address if b else '' }}"></div>
 <div><label>City</label><input name="city" id="city" value="{{ b.city if b else '' }}"></div>
 <div><label>State</label><input name="state" id="state" value="{{ b.state if b else '' }}"></div>
@@ -109,11 +110,11 @@
     var city = document.getElementById("employer_city");
     var st = document.getElementById("employer_state");
     var entity = document.getElementById("entity_name");
-    if (emp && !emp.value) emp.value = (entity && entity.value) ? entity.value : "Self-employed";
-    if (phone && !phone.value) phone.value = (document.getElementById("phone")||{}).value || "";
-    if (street && !street.value) street.value = (document.getElementById("address")||{}).value || "";
-    if (city && !city.value) city.value = (document.getElementById("city")||{}).value || "";
-    if (st && !st.value) st.value = (document.getElementById("state")||{}).value || "";
+    if (emp) emp.value = (entity && entity.value) ? entity.value : "Self-employed";
+    if (phone) phone.value = (document.getElementById("phone")||{}).value || "";
+    if (street) street.value = (document.getElementById("address")||{}).value || "";
+    if (city) city.value = (document.getElementById("city")||{}).value || "";
+    if (st) st.value = (document.getElementById("state")||{}).value || "";
   }
   function syncEmp(){
     var choice = chosen("emp_choice");

@@ -55,7 +55,7 @@
   </table>
 </div>
 <div class="grid cards">
-  <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}</div></div>
+  <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}{% if b.ein %}<br>EIN {{ b.ein }}{% endif %}</div></div>
   <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>Mobile {{ b.phone or "—" }}<br>Work {{ b.work_phone or "—" }}</div></div>
   <div class="card"><h3>Credit</h3><div class="n">{{ b.credit_score or "—" }}</div></div>
   <div class="card"><h3>SSN</h3><div>{{ ssn_mask }}</div><div class="hint">Full number only on Profile</div></div>
