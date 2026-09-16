@@ -47,6 +47,9 @@ NOTE_FIELDS = [
     ("signatory_title", "Borrower signatory title"),
     ("guarantor_name", "Guarantor name"),
     ("guarantor_address", "Guarantor address"),
+    ("spouse_name", "Spouse name (if married)"),
+    ("spouse_dob", "Spouse date of birth"),
+    ("spouse_ssn", "Spouse Social Security/TIN#"),
     ("notary_state", "Notary state"),
     ("notary_county", "Notary county"),
 ]
@@ -114,7 +117,9 @@ As an inducement to Lender to make the loan, {{guarantor_name}}, whose address i
 
 Guarantor represents that Guarantor has full power to enter into this Guaranty and that it is a valid and binding obligation. This Guaranty continues despite bankruptcy, reorganization, insolvency, disaffirmance, or abandonment. Lender shall first attempt to enforce Borrower’s obligations before enforcing this Guaranty against Guarantor. Guarantor shall pay Lender’s reasonable attorney’s fees and collection costs.
 
-If more than one Guarantor signs, liability is joint and several. Release of one Guarantor does not release the others. This Guaranty binds Guarantor’s heirs, successors, and assigns and inures to Lender and its successors and assigns."""
+If more than one Guarantor signs, liability is joint and several. Release of one Guarantor does not release the others. This Guaranty binds Guarantor’s heirs, successors, and assigns and inures to Lender and its successors and assigns.
+
+If Guarantor is married, Guarantor’s spouse, {{spouse_name}}, joins this Guaranty and signs below as an additional Guarantor. Spouse’s date of birth is {{spouse_dob}}. Spouse signs solely as guarantor and not as borrower unless separately named as Borrower."""
 
 DEFAULTS = {
     "deed_of_trust": {
