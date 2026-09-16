@@ -210,6 +210,13 @@
     <button class="btn ghost" type="submit">Remove Nate fee from this loan</button>
   </form>
   {% endif %}
+  <form method="post" action="{{ url_for('loan_brittco_pct', lid=loan.id) }}" style="margin:8px 0">
+    <label>Brittco capital fee %
+      <input name="brittco_pct" type="number" step="0.01" value="{{ loan.brittco_pct or 0 }}" style="width:80px">
+    </label>
+    <button class="btn ghost" type="submit">Save</button>
+    <span class="hint">0 = Brittco is not taking a capital fee on this loan. Use 1 for a 1% fee.</span>
+  </form>
   <table class="table">
     <tr><th>Investor</th><th>Amount</th><th>% of loan</th><th>Rate %</th><th>Term</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
     {% for p in parts %}
@@ -312,7 +319,7 @@
     <div><label>Date</label><input name="paid_on" type="date"></div>
     <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
     <div><label>Applied to</label>
-      <select name="applied_to"><option>Interest</option><option>Principal</option><option>Fees</option></select>
+      <select name="applied_to"><option>Interest</option><option>Principal</option><option>Fees</option><option>Brittco fee</option></select>
     </div>
     <div><label>Next payment due after this</label><input name="next_payment_due" type="date"></div>
     <div class="span-2"><label>Note</label><input name="note"></div>
@@ -354,4 +361,3 @@
 </div>
 <script src="{{ url_for('static', filename='drop-files.js') }}"></script>
 {% endblock %}
-
