@@ -2301,10 +2301,7 @@ ACCOUNT_KINDS = [
 ]
 
 LOAN_TYPES = [
-    "Hard Money",
-    "Bridge",
     "Fix and Flip",
-    "Gap Loan",
     "Transactional Loan",
 ]
 
@@ -5038,6 +5035,10 @@ def ensure_leads_table():
             acked INTEGER
         )"""
     )
+    try:
+        db().execute("ALTER TABLE marketing_leads ADD COLUMN product TEXT")
+    except sqlite3.Error:
+        pass
     db().commit()
 
 
@@ -5652,6 +5653,9 @@ def transactional_lead():
         deals = (f.get("deals_12mo") or "").strip()
         credit = (f.get("credit_score") or "").strip()
         need = (f.get("immediate_need") or "").strip()
+        product = (f.get("product") or "").strip()
+        if product not in LOAN_TYPES:
+            product = "Transactional Loan"
         amount = (f.get("amount") or "").strip()
         purchase = (f.get("purchase_close") or "").strip()
         resale = (f.get("resale_close") or "").strip()
@@ -5695,8 +5699,8 @@ def transactional_lead():
             """INSERT INTO marketing_leads
                (first_name, last_name, email, phone, deals_12mo, credit_score,
                 immediate_need, amount, purchase_close, resale_close, notes, files,
-                status, created_at, acked)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                status, created_at, acked, product)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
             (
                 first,
                 last,
@@ -5712,6 +5716,7 @@ def transactional_lead():
                 json.dumps(saved_names),
                 "New",
                 datetime.now().isoformat(timespec="minutes"),
+                product,
             ),
         )
         lead_id = cur.lastrowid
@@ -5806,7 +5811,19 @@ def marketing_leads():
         except (TypeError, ValueError):
             d["file_list"] = []
         leads.append(d)
-    return render_template("tx_leads.html", title="Transactional leads", nav="leads", leads=leads)
+    return render_template("tx_leads.html", title="Lead", nav="leads", leads=leads, products=LOAN_TYPES)
+
+
+@app.route("/leads/<int:lid>/product", methods=["POST"])
+@staff_required
+def marketing_lead_product(lid):
+    product = (request.form.get("product") or "").strip()
+    if product not in LOAN_TYPES:
+        product = "Transactional Loan"
+    db().execute("UPDATE marketing_leads SET product=? WHERE id=?", (product, lid))
+    db().commit()
+    nxt = request.form.get("next") or url_for("marketing_leads")
+    return redirect(nxt)
 
 
 @app.route("/leads/<int:lid>/ack", methods=["POST"])
