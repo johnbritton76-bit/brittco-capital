@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import csv
 import secrets
 import smtplib
 import sqlite3
@@ -20,7 +21,7 @@ from xml.sax.saxutils import escape as xml_esc
 
 from flask import (
     Flask, g, redirect, render_template, request, session, url_for, flash,
-    send_from_directory, send_file,
+    send_from_directory, send_file, make_response,
 )
 from werkzeug.utils import secure_filename
 
@@ -498,8 +499,7 @@ def init_db():
         pass
     c.commit()
     c.close()
-
-
+    
 def seed_crossley_tx(c):
     """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
     import shutil
@@ -953,8 +953,461 @@ def seed_dos_gringos_tx(c):
                    VALUES (?,?,?,?,?,?)""",
                 (None if kind == "Profile" else deal_id, bid, stored, original, kind, "2026-09-08T16:00"),
             )
+            
+def seed_crossley_tx(c):
+    """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
+    import shutil
+
+    existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone()
+    if existing:
+        c.execute(
+            """UPDATE loans SET maturity_date=?, next_payment_due=?, payment_amount=?,
+               payment_type=?, payment_frequency=?, notes=? WHERE loan_number=?""",
+            (
+                "2026-09-11",
+                "2026-09-11",
+                185000,
+                "Fee at payoff",
+                "At payoff",
+                "Transactional double close. Purchase only. $185,000 due end of business day 2026-09-11 (basis $180,000 + $5,000 fee). No automatic extensions. Investor John Britton 100%. Nate fee off.",
+                "BC-TX-10W96",
+            ),
+        )
+        c.execute(
+            """UPDATE participations SET term_months=0, max_extensions=0, mgmt_fee_pct=0, investor_rate=2.78
+               WHERE loan_id=?""",
+            (existing[0],),
+        )
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Katherine Marie Crossley",
+                "LLC",
+                "Crossley Innovations LLC",
+                "kate.crossley@gmail.com",
+                "913-219-2792",
+                None,
+                "Crossley2026",
+                "Managing Member. Transactional double close 10 W 96th Terrace. Last4 SSN 0196. DOB 1980-03-18. EIN 81-0816617.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("kate.crossley@gmail.com",)).fetchone()
+    if not b:
+        return
+    bid = b[0]
+    cols = [r[1] for r in c.execute("PRAGMA table_info(borrowers)")]
+    extras = {
+        "dob": "1980-03-18",
+        "address": "8433 N Donnelly Court",
+        "city": "Kansas City",
+        "state": "MO",
+        "zip": "64157",
+        "occupation": "Managing Member",
+        "employer": "Crossley Innovations LLC",
+        "entity_name": "Crossley Innovations LLC",
+        "entity_type": "LLC",
+    }
+    for col, val in extras.items():
+        if col in cols:
+            c.execute(f"UPDATE borrowers SET {col}=? WHERE id=?", (val, bid))
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                "John Britton",
+                "Brittco Capital Inc",
+                "john@brittcocapital.com",
+                "(816) 694-1658",
+                "President. 100% funding source on BC-TX-10W96.",
+                "Not connected",
+                "investor",
+            ),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    if c.execute("SELECT 1 FROM deals WHERE address LIKE ?", ("%10 W 96th%",)).fetchone():
+        deal_id = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%10 W 96th%",)).fetchone()[0]
+    else:
+        cur = c.execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "Transactional Loan",
+                "10 W 96th Terrace, Kansas City, MO 64114",
+                180000,
+                180000,
+                197000,
+                0,
+                180000,
+                None,
+                2.78,
+                0,
+                "Closing",
+                "B-C sale to Dos Gringos Construction LLC at $197,000. Due end of business day 2026-09-11. No automatic extensions. Purchase only. Flat fee $5,000.",
+                "Jackson County. A-B Ludwig $180,000. Title Security Land & Title file 612389-SLT-MO. Legal: E 30 FT LOT 42 & W 60 FT LOT 43 BROADVIEW HEIGHTS.",
+                "",
+                "2026-09-08T12:00",
+                1,
+            ),
+        )
+        deal_id = cur.lastrowid
+    cur = c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-10W96",
+            "Transactional Loan",
+            "10 W 96th Terrace, Kansas City, MO 64114",
+            180000,
+            180000,
+            0,
+            2.78,
+            "2026-09-09",
+            "2026-09-11",
+            "Fee at payoff",
+            185000,
+            "At payoff",
+            "2026-09-11",
+            100,
+            "Current",
+            "Transactional double close. Purchase only. Fee $5,000 flat from B-C. Due end of business day 2026-09-11. No automatic extensions. Investor John Britton 100%.",
+        ),
+    )
+    lid = cur.lastrowid
+    if inv:
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                lid,
+                inv[0],
+                180000,
+                2.78,
+                0,
+                2.0,
+                0,
+                0,
+                "Funded",
+                "2026-09-09",
+                "100% of BC-TX-10W96. Flat fee $5,000. Nate fee off — John Britton self-funded.",
+                0,
+            ),
+        )
+    seed_dir = os.path.join(APP_DIR, "seed_docs")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    if os.path.isdir(seed_dir):
+        for original in sorted(os.listdir(seed_dir)):
+            src = os.path.join(seed_dir, original)
+            if not os.path.isfile(src):
+                continue
+            stored = f"{deal_id}_crossley_{secure_filename(original)}"
+            dst = os.path.join(UPLOAD_DIR, stored)
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
+            profile = is_profile_document(original)
+            c.execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (None if profile else deal_id, bid, stored, original, "Profile" if profile else "Property", "2026-09-08T12:00"),
+            )
 
 
+def _addr_key(s):
+    raw = (s or "").lower()
+    nums = re.findall(r"\d+", raw)
+    words = re.findall(r"[a-z]+", raw)
+    skip = {
+        "s", "n", "e", "w", "st", "street", "ave", "avenue", "rd", "road",
+        "dr", "drive", "ln", "lane", "ct", "court", "ter", "terrace",
+        "blvd", "mo", "ks", "fl", "city", "the", "and",
+    }
+    words = [w for w in words if w not in skip and len(w) > 1]
+    if nums or words:
+        return (nums[0] if nums else "") + (words[0] if words else "")
+    return re.sub(r"[^a-z0-9]+", "", raw)
+
+
+def _row_get(row, key, idx):
+    if isinstance(row, sqlite3.Row):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return row[idx]
+    return row[idx]
+
+
+def cleanup_duplicate_loans(c):
+    loans = c.execute(
+        "SELECT id, borrower_id, loan_number, property_address FROM loans ORDER BY id"
+    ).fetchall()
+    keep_num, keep_addr, drop = {}, {}, []
+    for row in loans:
+        lid = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        num = (_row_get(row, "loan_number", 2) or "").strip()
+        addr = _addr_key(_row_get(row, "property_address", 3))
+        if num in ("BC-TX-10W96", "BC-TX-409SM"):
+            if num:
+                keep_num[num] = lid
+            if addr:
+                keep_addr[addr] = lid
+            continue
+        if num and num in keep_num:
+            drop.append(lid)
+            continue
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in keep_addr.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
+            drop.append(lid)
+            continue
+        if num:
+            keep_num[num] = lid
+        if addr:
+            keep_addr[addr] = lid
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_loans_number ON loans(loan_number) WHERE loan_number IS NOT NULL AND loan_number != ''"
+        )
+    except sqlite3.Error:
+        pass
+    for eid in drop:
+        c.execute("DELETE FROM participations WHERE loan_id=?", (eid,))
+        try:
+            c.execute("DELETE FROM payments WHERE loan_id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        try:
+            c.execute("DELETE FROM distributions WHERE loan_id=?", (eid,))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM loans WHERE id=?", (eid,))
+    deals = c.execute("SELECT id, borrower_id, address FROM deals ORDER BY id").fetchall()
+    seen, drop_deals = {}, []
+    for row in deals:
+        did = _row_get(row, "id", 0)
+        bid = _row_get(row, "borrower_id", 1)
+        addr = _addr_key(_row_get(row, "address", 2))
+        hit = None
+        if addr and len(addr) >= 8:
+            for prev, kid in seen.items():
+                if addr == prev or addr.startswith(prev) or prev.startswith(addr):
+                    hit = kid
+                    break
+        if hit:
+            drop_deals.append((did, hit))
+        elif addr:
+            seen[addr] = did
+    for eid, keep in drop_deals:
+        c.execute("UPDATE loans SET deal_id=? WHERE deal_id=?", (keep, eid))
+        try:
+            c.execute("UPDATE documents SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        try:
+            c.execute("UPDATE form_packets SET deal_id=? WHERE deal_id=?", (keep, eid))
+        except sqlite3.Error:
+            pass
+        c.execute("DELETE FROM deals WHERE id=?", (eid,))
+    people = c.execute("SELECT id, email FROM borrowers WHERE email IS NOT NULL AND email!='' ORDER BY id").fetchall()
+    seen_e = {}
+    for row in people:
+        bid = _row_get(row, "id", 0)
+        em = (_row_get(row, "email", 1) or "").strip().lower()
+        if em in seen_e:
+            keep = seen_e[em]
+            c.execute("UPDATE deals SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            c.execute("UPDATE loans SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            try:
+                c.execute("UPDATE documents SET borrower_id=? WHERE borrower_id=?", (keep, bid))
+            except sqlite3.Error:
+                pass
+            c.execute("DELETE FROM borrowers WHERE id=?", (bid,))
+        else:
+            seen_e[em] = bid
+
+
+def seed_dos_gringos_tx(c):
+    import shutil
+
+    existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-409SM",)).fetchone()
+    if existing:
+        c.execute(
+            """UPDATE loans SET start_date=?, maturity_date=?, next_payment_due=?, payment_amount=?,
+               payment_type=?, payment_frequency=?, notes=? WHERE loan_number=?""",
+            (
+                "2026-09-09",
+                "2026-09-16",
+                "2026-09-16",
+                183600,
+                "Fee at payoff",
+                "At payoff",
+                "Transactional. Purchase only. No DOT. Close 2026-09-09. 2% flat ($3,600). $183,600 due 2026-09-16. Lafayette County. Guarantors Walker McCallon, Marissa McCallon, and Alejandro Torres Jr.",
+                "BC-TX-409SM",
+            ),
+        )
+        return
+    if not c.execute("SELECT 1 FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone():
+        c.execute(
+            """INSERT INTO borrowers
+            (name, entity_type, entity_name, email, phone, credit_score, password, notes)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "Walker Eric Neal McCallon",
+                "LLC",
+                "Dos Gringos Construction LLC",
+                "wmccallon@dosgringosllc.com",
+                "816-385-2732",
+                None,
+                "DosGringos2026",
+                "Co-owner 49%. Co-guarantor Alejandro Torres Jr 51% atorres@dosgringosllc.com 913-549-8212. EIN 33-4776367. Formed 2024-04-24. Office 1828 Walnut St Ste 400 Kansas City MO 64108. Walker last4 4892 DOB 1998-03-02. Alejandro last4 7623 DOB 1999-06-01.",
+            ),
+        )
+    b = c.execute("SELECT id FROM borrowers WHERE email=?", ("wmccallon@dosgringosllc.com",)).fetchone()
+    if not b:
+        return
+    bid = b[0]
+    cols = [r[1] for r in c.execute("PRAGMA table_info(borrowers)")]
+    extras = {
+        "dob": "1998-03-02",
+        "address": "7401 N Hickory Street",
+        "city": "Kansas City",
+        "state": "MO",
+        "zip": "64118",
+        "occupation": "Co-owner",
+        "employer": "Dos Gringos Construction LLC",
+        "entity_name": "Dos Gringos Construction LLC",
+        "entity_type": "LLC",
+    }
+    for col, val in extras.items():
+        if col in cols:
+            c.execute(f"UPDATE borrowers SET {col}=? WHERE id=?", (val, bid))
+    if not c.execute("SELECT 1 FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone():
+        c.execute(
+            """INSERT INTO investors (name, entity_name, email, phone, notes, ach_status, password)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("John Britton", "Brittco Capital Inc", "john@brittcocapital.com", "(816) 694-1658", "President.", "Not connected", "investor"),
+        )
+    inv = c.execute("SELECT id FROM investors WHERE email=?", ("john@brittcocapital.com",)).fetchone()
+    already = c.execute(
+        "SELECT id FROM loans WHERE property_address LIKE ? OR loan_number=?",
+        ("%409 S Maple%", "BC-TX-409SM"),
+    ).fetchone()
+    if already:
+        return
+    deal = c.execute("SELECT id FROM deals WHERE address LIKE ?", ("%409 S Maple%",)).fetchone()
+    if deal:
+        deal_id = deal[0]
+    else:
+        cur = c.execute(
+            """INSERT INTO deals
+            (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+             loan_amount, rate, points, term_months, status, exit_strategy, notes,
+             ltv_override_reason, created_at, acked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "Transactional Loan",
+                "409 S Maple Street, Bates City, MO 64011",
+                180000,
+                180000,
+                192000,
+                0,
+                180000,
+                0,
+                2.0,
+                0,
+                "Closing",
+                "B-C to Living Water Technologies LLC at $192,000. Sequential close. No DOT.",
+                "A-B Darryl Fisher $180,000 Accurate Title. B-C Alliance Title 613918-ANTL-BLS-MO. Legal: Lots 7-2, 7-3, 7-4 and 7-5 HOMELAND VIEW SUBDIVISION, Lafayette/Bates County MO. Intake county field said Douglas — confirm.",
+                "",
+                "2026-09-08T16:00",
+                1,
+            ),
+        )
+        deal_id = cur.lastrowid
+    cur = c.execute(
+        """INSERT INTO loans
+        (borrower_id, deal_id, loan_number, loan_type, property_address,
+         original_principal, current_balance, rate, points, start_date, maturity_date,
+         payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
+         status, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bid,
+            deal_id,
+            "BC-TX-409SM",
+            "Transactional Loan",
+            "409 S Maple Street, Bates City, MO 64011",
+            180000,
+            180000,
+            0,
+            2.0,
+            "2026-09-09",
+            "2026-09-16",
+            "Fee at payoff",
+            183600,
+            "At payoff",
+            "2026-09-16",
+            72,
+            "Current",
+            "No DOT. Close 2026-09-09. 2% flat $3,600. $183,600 due 2026-09-16. Lafayette County. PGs: Walker, Marissa, Alejandro.",
+        ),
+    )
+    lid = cur.lastrowid
+    if inv:
+        c.execute(
+            """INSERT INTO participations
+            (loan_id, investor_id, amount, investor_rate, term_months, extension_rate,
+             max_extensions, extensions_used, status, funded_on, notes, mgmt_fee_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (lid, inv[0], 180000, 2.0, 0, 0.0, 0, 0, "Funded", "2026-09-09", "100% BC-TX-409SM. Nate fee off.", 0),
+        )
+    seed_dir = os.path.join(APP_DIR, "seed_docs")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    wanted = (
+        "Dos-Gringos-intake-409-S-Maple.pdf",
+        "BC-TX-409SM-Note-and-Guaranty.docx",
+        "BC-TX-409SM-Term-Sheet.docx",
+    )
+    if os.path.isdir(seed_dir):
+        for original in wanted:
+            src = os.path.join(seed_dir, original)
+            if not os.path.isfile(src):
+                continue
+            stored = f"{deal_id}_dosgringos_{secure_filename(original)}"
+            try:
+                shutil.copy2(src, os.path.join(UPLOAD_DIR, stored))
+            except OSError:
+                continue
+            kind = "Profile" if "intake" in original.lower() else "Property"
+            c.execute(
+                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (None if kind == "Profile" else deal_id, bid, stored, original, kind, "2026-09-08T16:00"),
+            )
+            
 def seed_transactional_sample(c):
     if c.execute("SELECT 1 FROM loans WHERE loan_number=?", ("BC-TX-1001",)).fetchone():
         return
@@ -1136,7 +1589,6 @@ def seed_demo_books(c):
             (loan_id, investor_id, amount, rate, term, 2.0, 3, 0, status, today.isoformat(), "Demo book"),
         )
 
-    # Split first loan if present
     lid1 = loans[0][0]
     amt1 = (loans[0][2] or 210000) / 2
     part(lid1, e_id, amt1)
@@ -1165,7 +1617,6 @@ def seed_demo_books(c):
             (pay_id, loan_id, investor_id, inv_amt, brit_amt, kind, when),
         )
 
-    # Last-year activity on loan 2 (or loan 1)
     ly_loan = loans[1][0] if len(loans) > 1 else lid1
     for i, day in enumerate([40, 70, 100]):
         when = (last_year - timedelta(days=day)).isoformat()
@@ -1177,7 +1628,6 @@ def seed_demo_books(c):
     dist(pid, ly_loan, e_id, 120000, 0, "Principal", payoff)
     dist(pid, ly_loan, d_id, 60000, 0, "Principal", payoff)
 
-    # This-year activity on loan 1
     for i, day in enumerate([75, 45, 15]):
         when = (today - timedelta(days=day)).isoformat()
         pid = pay(lid1, when, 2012.50, "Interest")
@@ -1193,7 +1643,6 @@ def seed_demo_books(c):
             dist(pid, lid3, d_id, 833, 208, "Interest", when)
 
 
-# Initialize database when the app starts (works with gunicorn on Render)
 try:
     init_db()
 except Exception:
@@ -1379,9 +1828,43 @@ try:
         ("wire_name", "TEXT"),
         ("wire_further", "TEXT"),
         ("wire_notes", "TEXT"),
+        ("tin", "TEXT"),
+        ("tin_type", "TEXT"),
+        ("mailing_address", "TEXT"),
     ]:
         if inv_cols and col not in inv_cols:
             _c.execute(f"ALTER TABLE investors ADD COLUMN {col} {spec}")
+    loan_cols2 = [r[1] for r in _c.execute("PRAGMA table_info(loans)")]
+    if loan_cols2 and "brittco_pct" not in loan_cols2:
+        _c.execute("ALTER TABLE loans ADD COLUMN brittco_pct REAL")
+        _c.execute("UPDATE loans SET brittco_pct=0 WHERE brittco_pct IS NULL")
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS books_entries (
+            id INTEGER PRIMARY KEY,
+            year TEXT,
+            kind TEXT,
+            category TEXT,
+            memo TEXT,
+            amount REAL,
+            created_at TEXT
+        )"""
+    )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS books_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )"""
+    )
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS nate_payments (
+            id INTEGER PRIMARY KEY,
+            paid_on TEXT,
+            amount REAL,
+            loan_id INTEGER,
+            notes TEXT,
+            created_at TEXT
+        )"""
+    )
     _c.execute(
         "UPDATE investors SET capital_available=250000 WHERE email='elena@example.com' AND (capital_available IS NULL OR capital_available=0)"
     )
@@ -1403,8 +1886,7 @@ try:
     _s.close()
 except Exception:
     pass
-
-
+    
 def staff_required(fn):
     @wraps(fn)
     def wrap(*a, **k):
@@ -1545,7 +2027,6 @@ def investor_books(iid):
         except (KeyError, IndexError):
             stored_nate = 0.0
         line = dict(d)
-        # Monthly lines are investor cash. Any old Nate split is added back into profit.
         if (d["kind"] or "") == "Principal":
             slot["principal"] += amt
             line["nate_amount"] = 0
@@ -1585,7 +2066,6 @@ def investor_books(iid):
         ror = (net / cap * 100) if cap else 0
         ytd_ror = (ytd_net / cap * 100) if cap else 0
         gross_ror = (gross / cap * 100) if cap else 0
-        ann_rate = m.get("annualized_net") if basis_back else (m.get("annualized_actual") or m.get("annualized_initial") or 0)
         if basis_back:
             ann_rate = m.get("annualized_net") or 0
         else:
@@ -1692,6 +2172,306 @@ LOAN_TYPES = [
     "Transactional Loan",
 ]
 
+BOOK_EXPENSE = [
+    "Legal",
+    "Credit reports",
+    "Software",
+    "Insurance",
+    "Bank / wire fees",
+    "Marketing",
+    "Accounting / CPA",
+    "Other expense",
+]
+BOOK_INCOME = ["Other income", "Brittco fee collected"]
+
+
+def _in_year(when, year):
+    if not year:
+        return True
+    return str(when or "").startswith(str(year))
+
+
+def book_setting(key, default=""):
+    try:
+        row = db().execute("SELECT value FROM books_settings WHERE key=?", (key,)).fetchone()
+        return (row["value"] if row and row["value"] is not None else default) or default
+    except sqlite3.Error:
+        return default
+
+
+def set_book_setting(key, value):
+    db().execute("DELETE FROM books_settings WHERE key=?", (key,))
+    db().execute("INSERT INTO books_settings(key, value) VALUES(?,?)", (key, value))
+    
+def corporate_books(year=None):
+    year = str(year) if year else ""
+    loans = db().execute(
+        """SELECT l.*, b.name AS borrower_name, b.entity_name
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           ORDER BY l.id"""
+    ).fetchall()
+    deals = []
+    gross_int = 0.0
+    inv_int = 0.0
+    prin_in = 0.0
+    inv_prin = 0.0
+    brit_spread = 0.0
+    brit_fee_cash = 0.0
+    brit_fee_accrual = 0.0
+    nate_realized = 0.0
+    nate_accrued_open = 0.0
+    notes_receivable = 0.0
+    due_investors = 0.0
+
+    nate_paid_rows = []
+    try:
+        nate_paid_rows = db().execute("SELECT * FROM nate_payments ORDER BY paid_on, id").fetchall()
+    except sqlite3.Error:
+        nate_paid_rows = []
+    nate_paid_year = sum(money(p["amount"]) for p in nate_paid_rows if _in_year(p["paid_on"], year))
+    nate_paid_all = sum(money(p["amount"]) for p in nate_paid_rows)
+    nate_paid_by_loan = {}
+    for p in nate_paid_rows:
+        if p["loan_id"]:
+            nate_paid_by_loan[p["loan_id"]] = nate_paid_by_loan.get(p["loan_id"], 0) + money(p["amount"])
+
+    for loan in loans:
+        lid = loan["id"]
+        pays = db().execute("SELECT * FROM payments WHERE loan_id=?", (lid,)).fetchall()
+        dists = db().execute("SELECT * FROM distributions WHERE loan_id=?", (lid,)).fetchall()
+        parts = db().execute("SELECT * FROM participations WHERE loan_id=?", (lid,)).fetchall()
+        capital = sum(money(p["amount"]) for p in parts)
+        try:
+            pct = money(loan["brittco_pct"])
+        except (KeyError, IndexError, TypeError):
+            pct = 0.0
+        closed = (loan["status"] or "") in ("Paid Off", "Termed", "Closed", "Sold")
+        fee_pay = 0.0
+        int_pay = 0.0
+        prin_pay = 0.0
+        last_prin = ""
+        for p in pays:
+            if not _in_year(p["paid_on"], year):
+                continue
+            amt = money(p["amount"])
+            kind = (p["applied_to"] or "")
+            if kind == "Principal":
+                prin_pay += amt
+                last_prin = p["paid_on"] or last_prin
+            elif kind in ("Brittco fee", "Points"):
+                fee_pay += amt
+            else:
+                int_pay += amt
+        d_int = 0.0
+        d_prin = 0.0
+        d_brit = 0.0
+        all_prin_back = 0.0
+        all_gross = 0.0
+        for d in dists:
+            amt = money(d["investor_amount"])
+            kind = d["kind"] or ""
+            if kind == "Principal":
+                all_prin_back += amt
+                if _in_year(d["created_at"], year):
+                    d_prin += amt
+            else:
+                all_gross += amt
+                try:
+                    all_gross += money(d["nate_amount"])
+                except (KeyError, IndexError, TypeError):
+                    pass
+                if _in_year(d["created_at"], year):
+                    d_int += amt
+                    try:
+                        d_brit += money(d["brittco_amount"])
+                    except (KeyError, IndexError, TypeError):
+                        pass
+        fees = []
+        for p in parts:
+            try:
+                f = p["mgmt_fee_pct"]
+                f = 25.0 if f is None else money(f)
+            except (KeyError, IndexError, TypeError):
+                f = 25.0
+            fees.append(f)
+        fee = fees[0] if fees else 0.0
+        if any(f > 0.001 for f in fees) and fee == 0:
+            fee = max(fees)
+        basis_back = all_prin_back >= capital - 0.5 or closed
+        nate_est = round(all_gross * fee / 100.0, 2) if fee else 0.0
+        nate_due = nate_est if basis_back else 0.0
+        attr = (loan["maturity_date"] or last_prin or loan["start_date"] or "")
+        nate_this_year = nate_due if (basis_back and _in_year(attr, year)) else 0.0
+        orig = round(capital * pct / 100.0, 2) if pct else 0.0
+        orig_accrual = orig if (pct and _in_year(loan["start_date"] or loan["maturity_date"], year)) else 0.0
+        status = loan["status"] or ""
+        if status not in ("Written Off",):
+            if not closed:
+                notes_receivable += money(loan["current_balance"])
+                due_investors += max(0.0, capital - all_prin_back)
+        row = {
+            "id": lid,
+            "loan_number": loan["loan_number"],
+            "property": loan["property_address"],
+            "borrower": loan["entity_name"] or loan["borrower_name"],
+            "type": loan["loan_type"],
+            "status": status,
+            "closed": closed,
+            "start": loan["start_date"],
+            "maturity": loan["maturity_date"],
+            "principal": money(loan["original_principal"]),
+            "balance": money(loan["current_balance"]),
+            "capital": capital,
+            "gross_collected": int_pay + fee_pay,
+            "principal_collected": prin_pay,
+            "paid_investors": d_int,
+            "principal_to_investors": d_prin,
+            "brittco_spread": d_brit,
+            "brittco_pct": pct,
+            "brittco_fee": orig,
+            "brittco_fee_cash": fee_pay,
+            "brittco_fee_accrual": orig_accrual,
+            "nate_est": nate_est,
+            "nate_due": nate_due,
+            "nate_this_year": nate_this_year,
+            "nate_paid": nate_paid_by_loan.get(lid, 0.0),
+            "brittco_net_cash": round(int_pay + fee_pay - d_int, 2),
+        }
+        deals.append(row)
+        gross_int += int_pay
+        inv_int += d_int
+        prin_in += prin_pay
+        inv_prin += d_prin
+        brit_spread += d_brit
+        brit_fee_cash += fee_pay
+        brit_fee_accrual += orig_accrual
+        nate_realized += nate_this_year
+        if not basis_back:
+            nate_accrued_open += nate_est
+
+    entries = []
+    try:
+        if year:
+            entries = db().execute(
+                "SELECT * FROM books_entries WHERE year=? OR year='' OR year IS NULL ORDER BY id",
+                (year,),
+            ).fetchall()
+            entries = [e for e in entries if (e["year"] or year) == year or not e["year"]]
+        else:
+            entries = db().execute("SELECT * FROM books_entries ORDER BY id").fetchall()
+    except sqlite3.Error:
+        entries = []
+    other_in = sum(money(e["amount"]) for e in entries if (e["kind"] or "") == "income")
+    opex = sum(money(e["amount"]) for e in entries if (e["kind"] or "") == "expense")
+
+    cash_income = gross_int + brit_fee_cash + other_in
+    cash_nate = nate_paid_year
+    cash_net = cash_income - inv_int - cash_nate - opex
+    accrual_income = cash_income + brit_fee_accrual
+    accrual_nate = nate_realized
+    accrual_net = accrual_income - inv_int - accrual_nate - opex
+
+    investors = db().execute("SELECT * FROM investors ORDER BY name").fetchall()
+    form1099 = []
+    for inv in investors:
+        dists = db().execute(
+            "SELECT * FROM distributions WHERE investor_id=?", (inv["id"],)
+        ).fetchall()
+        interest = sum(
+            money(d["investor_amount"])
+            for d in dists
+            if (d["kind"] or "") != "Principal" and _in_year(d["created_at"], year)
+        )
+        principal = sum(
+            money(d["investor_amount"])
+            for d in dists
+            if (d["kind"] or "") == "Principal" and _in_year(d["created_at"], year)
+        )
+        if interest or principal:
+            tin = ""
+            try:
+                tin = inv["tin"] or ""
+            except (KeyError, IndexError, TypeError):
+                tin = ""
+            addr = ""
+            try:
+                addr = inv["mailing_address"] or ""
+            except (KeyError, IndexError, TypeError):
+                addr = ""
+            tin_type = "SSN"
+            try:
+                tin_type = inv["tin_type"] or "SSN"
+            except (KeyError, IndexError, TypeError):
+                tin_type = "SSN"
+            form1099.append(
+                {
+                    "id": inv["id"],
+                    "name": inv["name"],
+                    "entity": inv["entity_name"] or "",
+                    "email": inv["email"] or "",
+                    "tin": tin,
+                    "tin_type": tin_type,
+                    "address": addr,
+                    "interest": interest,
+                    "principal": principal,
+                    "missing": not tin,
+                }
+            )
+
+    pl = {
+        "borrower_interest": gross_int,
+        "brittco_fee_cash": brit_fee_cash,
+        "other_income": other_in,
+        "total_income": cash_income,
+        "paid_investors": inv_int,
+        "nate_paid": cash_nate,
+        "opex": opex,
+        "net_cash": cash_net,
+        "brittco_fee_accrual": brit_fee_accrual,
+        "nate_accrual": accrual_nate,
+        "net_accrual": accrual_net,
+        "principal_in": prin_in,
+        "principal_out": inv_prin,
+        "spread": brit_spread,
+    }
+    bs = {
+        "notes_receivable": notes_receivable,
+        "due_investors": due_investors,
+        "nate_payable": max(0.0, sum(r["nate_due"] for r in deals) - nate_paid_all),
+        "nate_accrued_open": nate_accrued_open,
+    }
+    nate_pay_rows = []
+    for p in nate_paid_rows:
+        if year and not _in_year(p["paid_on"], year):
+            continue
+        row = dict(p)
+        row["loan_number"] = ""
+        if p["loan_id"]:
+            ln = db().execute("SELECT loan_number FROM loans WHERE id=?", (p["loan_id"],)).fetchone()
+            row["loan_number"] = ln["loan_number"] if ln else ""
+        nate_pay_rows.append(row)
+    nate = {
+        "name": book_setting("nate_name", "Nate Holland"),
+        "tin": book_setting("nate_tin", ""),
+        "address": book_setting("nate_address", ""),
+        "email": book_setting("nate_email", ""),
+        "paid_year": nate_paid_year,
+        "paid_all": nate_paid_all,
+        "payable": bs["nate_payable"],
+        "realized_year": nate_realized,
+        "payments": nate_pay_rows,
+    }
+    return {
+        "year": year or "all",
+        "deals": deals,
+        "pl": pl,
+        "bs": bs,
+        "entries": entries,
+        "form1099": form1099,
+        "nate": nate,
+    }
+
+
 APPLY_TYPES = ["Fix and Flip", "Bridge", "Transactional Loan"]
 
 LOAN_DEFAULTS = {
@@ -1724,7 +2504,6 @@ LOAN_DEFAULTS = {
     },
 }
 
-
 def investor_product_terms(kind):
     if kind == "Transactional Loan":
         return {
@@ -1744,7 +2523,6 @@ def investor_product_terms(kind):
             "ext_rate": 2.0,
             "label": "15% for 3 months, two 1-month extensions at 2% each",
         }
-    # Fix and Flip and Bridge
     return {
         "base": 10.0,
         "days": 120,
@@ -2115,8 +2893,7 @@ def investor_statement_pdf(inv, books, include_carry=False):
         story.append(ct)
     doc.build(story)
     return buf.getvalue()
-
-
+    
 def borrower_required(fn):
     @wraps(fn)
     def wrap(*a, **k):
@@ -2201,7 +2978,6 @@ def company_wire():
         "wire_account": os.environ.get("WIRE_ACCOUNT") or "2018397807",
         "wire_further": os.environ.get("WIRE_FURTHER") or "",
     }
-
 
 
 def payoff_defaults(loan):
@@ -2341,7 +3117,6 @@ def payoff_letter_pdf(loan, borrower, data):
     c.setTitle(f"Payoff Statement — {loan['loan_number'] or ''}")
     c.setAuthor("Brittco Capital, Inc.")
 
-    # Header bar
     c.setFillColor(NAVY)
     c.rect(0, H - 78, W, 78, fill=1, stroke=0)
     c.setFillColor(GOLD)
@@ -2588,9 +3363,7 @@ def payoff_letter_pdf(loan, borrower, data):
     c.showPage()
     c.save()
     return buf.getvalue()
-
-
-
+    
 def participation_returns(loan, p, dists_for_investor=None):
     math = participation_math(p)
     cap = money(p["amount"])
@@ -2952,8 +3725,7 @@ def send_invite(email, phone, channel, link, name):
         else:
             errors.append("text not sent — add TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM in Render")
     return sent, errors
-
-
+    
 def seed_form_templates(conn=None):
     c = conn or db()
     c.execute(
@@ -3331,8 +4103,7 @@ def form_packet_pdf(spec, data, borrower_name):
     story.append(Paragraph("Prepared for wet-ink notarization. Retain the signed original with the loan file.", center))
     doc.build(story)
     return buf.getvalue()
-
-
+    
 def mask_ssn(ssn):
     digits = "".join(ch for ch in (ssn or "") if ch.isdigit())
     if len(digits) >= 4:
@@ -3402,7 +4173,7 @@ def save_investor_profile(f, iid, existing=None):
     db().execute(
         """UPDATE investors SET name=?, entity_name=?, email=?, phone=?, notes=?,
            password=?, capital_available=?, wire_bank=?, wire_routing=?, wire_account=?,
-           wire_name=?, wire_further=?, wire_notes=? WHERE id=?""",
+           wire_name=?, wire_further=?, wire_notes=?, tin=?, tin_type=?, mailing_address=? WHERE id=?""",
         (
             f.get("name") or (existing["name"] if existing else ""),
             f.get("entity_name"),
@@ -3417,6 +4188,9 @@ def save_investor_profile(f, iid, existing=None):
             f.get("wire_name"),
             f.get("wire_further"),
             f.get("wire_notes"),
+            f.get("tin"),
+            f.get("tin_type") or "SSN",
+            f.get("mailing_address"),
             iid,
         ),
     )
@@ -3635,8 +4409,7 @@ def underwrite(deal, credit_score):
         "decision": decision,
         "flags": flags,
     }
-
-
+    
 def _blank(row, key):
     if row is None:
         return True
@@ -4070,8 +4843,7 @@ def deal_rows(rows):
             d["net_profit_pct"] = None
         out.append(d)
     return out
-
-
+    
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -4457,8 +5229,7 @@ def borrower_new():
     return render_template(
         "borrower_form.html", title="New borrower", nav="newborrower", b=None
     )
-
-
+    
 @app.route("/borrowers/<int:bid>")
 @staff_required
 def borrower_detail(bid):
@@ -4747,7 +5518,6 @@ def borrower_property_packet(bid, did):
         "SELECT * FROM documents WHERE deal_id=? OR (borrower_id=? AND deal_id IS NULL) ORDER BY id",
         (did, bid),
     ).fetchall()
-    # property packet = files tied to this deal
     docs = db().execute("SELECT * FROM documents WHERE deal_id=? ORDER BY id", (did,)).fetchall()
     buf = BytesIO()
     used = {}
@@ -4838,8 +5608,7 @@ def send_borrower_form(bid):
         + " | ".join(lines)
     )
     return redirect(url_for("borrower_detail", bid=bid))
-
-
+    
 @app.route("/forms/<token>", methods=["GET", "POST"])
 def fill_form(token):
     row = db().execute("SELECT * FROM form_packets WHERE token=?", (token,)).fetchone()
@@ -5224,8 +5993,7 @@ def staff_message(did):
     )
     db().commit()
     return redirect(url_for("deal_detail", did=did))
-
-
+    
 @app.route("/invite/<token>", methods=["GET", "POST"])
 def accept_invite(token):
     inv = db().execute("SELECT * FROM invites WHERE token=?", (token,)).fetchone()
@@ -5644,8 +6412,7 @@ def portal_calculator_pdf():
     data = calculator_result_pdf(mode, result, who=(b["name"] if b else ""))
     name = f"Brittco-{'BRRRR' if mode=='brrr' else 'Flip'}-calculator.pdf"
     return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
-
-
+    
 @app.route("/portal/apply-new", methods=["GET", "POST"])
 @borrower_required
 def portal_apply_new():
@@ -5981,8 +6748,7 @@ def loan_new():
     return render_template(
         "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None
     )
-
-
+    
 @app.route("/loans/<int:lid>")
 @staff_required
 def loan_detail(lid):
@@ -6311,7 +7077,6 @@ def loan_payoff_pdf(lid, pid):
     return send_file(path, mimetype="application/pdf", download_name=f"Payoff-{loan['loan_number']}.pdf")
 
 
-
 @app.route("/loans/<int:lid>/payment", methods=["POST"])
 @staff_required
 def loan_payment(lid):
@@ -6402,8 +7167,7 @@ def credit_pull():
     db().commit()
     nxt = request.form.get("next") or url_for("credit")
     return redirect(nxt)
-
-
+    
 @app.route("/borrowers/<int:bid>/soft-pull", methods=["GET", "POST"])
 @staff_required
 def borrower_soft_pull(bid):
@@ -6642,7 +7406,6 @@ def investor_delete(iid):
     return redirect(url_for("investors"))
 
 
-
 @app.route("/loans/<int:lid>/participate", methods=["POST"])
 @staff_required
 def add_participation(lid):
@@ -6826,8 +7589,7 @@ def wipe_investor(iid):
         except sqlite3.Error:
             pass
     return loan_ids
-
-
+    
 @app.route("/loans/<int:lid>/delete", methods=["POST"])
 @staff_required
 def loan_delete(lid):
@@ -7221,6 +7983,298 @@ def capital_available():
         investors=rows,
         total=total,
     )
+    
+@app.route("/accounting", methods=["GET", "POST"])
+@staff_required
+def accounting():
+    try:
+        db().execute(
+            """CREATE TABLE IF NOT EXISTS nate_payments (
+                id INTEGER PRIMARY KEY, paid_on TEXT, amount REAL, loan_id INTEGER, notes TEXT, created_at TEXT)"""
+        )
+        db().execute(
+            """CREATE TABLE IF NOT EXISTS books_entries (
+                id INTEGER PRIMARY KEY, year TEXT, kind TEXT, category TEXT, memo TEXT, amount REAL, created_at TEXT)"""
+        )
+        db().execute("CREATE TABLE IF NOT EXISTS books_settings (key TEXT PRIMARY KEY, value TEXT)")
+        db().commit()
+    except sqlite3.Error:
+        pass
+    year = (request.values.get("year") or str(date.today().year)).strip()
+    if year in ("all", "All"):
+        year = ""
+    if request.method == "POST" and request.form.get("save_nate") == "1":
+        set_book_setting("nate_name", request.form.get("nate_name") or "Nate Holland")
+        set_book_setting("nate_tin", request.form.get("nate_tin") or "")
+        set_book_setting("nate_address", request.form.get("nate_address") or "")
+        set_book_setting("nate_email", request.form.get("nate_email") or "")
+        db().commit()
+        session["last_invite_note"] = "Nate 1099 details saved."
+        return redirect(url_for("accounting", year=year or "all"))
+    books = corporate_books(year)
+    years = sorted(
+        {
+            str(r["start_date"])[:4]
+            for r in db().execute("SELECT start_date FROM loans WHERE start_date IS NOT NULL").fetchall()
+            if r["start_date"]
+        }
+        | {str(date.today().year), str(date.today().year - 1)}
+    )
+    return render_template(
+        "accounting.html",
+        title="Accounting",
+        nav="accounting",
+        books=books,
+        year=year or "all",
+        years=years,
+        expense_cats=BOOK_EXPENSE,
+        income_cats=BOOK_INCOME,
+        loans=db().execute("SELECT id, loan_number, property_address FROM loans ORDER BY id DESC").fetchall(),
+        flash=session.pop("last_invite_note", None),
+    )
+
+
+@app.route("/accounting/entry", methods=["POST"])
+@staff_required
+def accounting_entry():
+    year = request.form.get("year") or str(date.today().year)
+    if year == "all":
+        year = str(date.today().year)
+    kind = request.form.get("kind") or "expense"
+    db().execute(
+        """INSERT INTO books_entries (year, kind, category, memo, amount, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            year,
+            kind,
+            request.form.get("category") or "Other expense",
+            request.form.get("memo") or "",
+            money(request.form.get("amount")),
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().commit()
+    session["last_invite_note"] = "Line item saved."
+    return redirect(url_for("accounting", year=year))
+
+
+@app.route("/accounting/entry/<int:eid>/delete", methods=["POST"])
+@staff_required
+def accounting_entry_delete(eid):
+    year = request.form.get("year") or str(date.today().year)
+    db().execute("DELETE FROM books_entries WHERE id=?", (eid,))
+    db().commit()
+    return redirect(url_for("accounting", year=year))
+
+
+@app.route("/accounting/nate-pay", methods=["POST"])
+@staff_required
+def accounting_nate_pay():
+    year = request.form.get("year") or str(date.today().year)
+    lid = request.form.get("loan_id")
+    db().execute(
+        """INSERT INTO nate_payments (paid_on, amount, loan_id, notes, created_at)
+           VALUES (?,?,?,?,?)""",
+        (
+            request.form.get("paid_on") or date.today().isoformat(),
+            money(request.form.get("amount")),
+            int(lid) if lid else None,
+            request.form.get("notes") or "",
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().commit()
+    session["last_invite_note"] = "Nate payment recorded for 1099-NEC."
+    return redirect(url_for("accounting", year=year if year != "all" else "all"))
+
+
+@app.route("/accounting/nate-pay/<int:pid>/delete", methods=["POST"])
+@staff_required
+def accounting_nate_pay_delete(pid):
+    year = request.form.get("year") or str(date.today().year)
+    db().execute("DELETE FROM nate_payments WHERE id=?", (pid,))
+    db().commit()
+    return redirect(url_for("accounting", year=year))
+
+
+@app.route("/loans/<int:lid>/brittco-pct", methods=["POST"])
+@staff_required
+def loan_brittco_pct(lid):
+    db().execute(
+        "UPDATE loans SET brittco_pct=? WHERE id=?",
+        (money(request.form.get("brittco_pct")), lid),
+    )
+    db().commit()
+    session["last_invite_note"] = "Brittco capital fee updated."
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+def _csv_response(name, header, rows):
+    buf = BytesIO()
+    text = csv.writer(buf if False else __import__("io").StringIO())
+    out = __import__("io").StringIO()
+    w = csv.writer(out)
+    w.writerow(header)
+    for r in rows:
+        w.writerow(r)
+    data = out.getvalue().encode("utf-8-sig")
+    resp = make_response(data)
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return resp
+
+
+@app.route("/accounting.csv")
+@staff_required
+def accounting_csv():
+    year = request.args.get("year") or str(date.today().year)
+    if year == "all":
+        year = ""
+    kind = request.args.get("kind") or "pl"
+    b = corporate_books(year)
+    tag = year or "all"
+    if kind == "deals":
+        header = [
+            "Loan", "Property", "Borrower", "Type", "Status", "Start", "Maturity",
+            "Principal", "Investor capital", "Interest collected", "Paid to investors",
+            "Brittco spread", "Brittco %", "Brittco fee (if on)", "Brittco fee collected",
+            "Nate estimated", "Nate payable", "Nate paid", "Brittco net (cash)",
+        ]
+        rows = [
+            [
+                r["loan_number"], r["property"], r["borrower"], r["type"], r["status"],
+                r["start"], r["maturity"], f'{r["principal"]:.2f}', f'{r["capital"]:.2f}',
+                f'{r["gross_collected"]:.2f}', f'{r["paid_investors"]:.2f}',
+                f'{r["brittco_spread"]:.2f}', f'{r["brittco_pct"]:.2f}',
+                f'{r["brittco_fee"]:.2f}', f'{r["brittco_fee_cash"]:.2f}',
+                f'{r["nate_est"]:.2f}', f'{r["nate_due"]:.2f}', f'{r["nate_paid"]:.2f}',
+                f'{r["brittco_net_cash"]:.2f}',
+            ]
+            for r in b["deals"]
+        ]
+        return _csv_response(f"brittco-deals-{tag}.csv", header, rows)
+    if kind == "1099":
+        header = ["Name", "Entity", "TIN type", "TIN", "Address", "Email", "Interest (1099-INT)", "Principal returned"]
+        rows = [
+            [r["name"], r["entity"], r["tin_type"], r["tin"], r["address"], r["email"],
+             f'{r["interest"]:.2f}', f'{r["principal"]:.2f}']
+            for r in b["form1099"]
+        ]
+        rows.append(
+            [
+                b["nate"]["name"], "1099-NEC contractor", "SSN", b["nate"]["tin"],
+                b["nate"]["address"], b["nate"]["email"], "", f'{b["nate"]["paid_year"]:.2f} paid',
+            ]
+        )
+        return _csv_response(f"brittco-1099-{tag}.csv", header, rows)
+    if kind == "bs":
+        bs = b["bs"]
+        header = ["Item", "Amount"]
+        rows = [
+            ["Notes receivable (borrowers still owe)", f'{bs["notes_receivable"]:.2f}'],
+            ["Due to investors (capital still in deals)", f'{bs["due_investors"]:.2f}'],
+            ["Nate payable (realized, unpaid)", f'{bs["nate_payable"]:.2f}'],
+            ["Nate estimated on open loans (not payable)", f'{bs["nate_accrued_open"]:.2f}'],
+        ]
+        return _csv_response(f"brittco-balance-{tag}.csv", header, rows)
+    if kind == "all":
+        import zipfile
+
+        def sheet(name, header, rows):
+            out = __import__("io").StringIO()
+            w = csv.writer(out)
+            w.writerow(header)
+            for r in rows:
+                w.writerow(r)
+            return name, out.getvalue().encode("utf-8-sig")
+
+        pl = b["pl"]
+        files = []
+        files.append(sheet(
+            f"brittco-pnl-{tag}.csv",
+            ["Line", "Cash", "Accrual"],
+            [
+                ["Interest / fees collected from borrowers", f'{pl["borrower_interest"]:.2f}', f'{pl["borrower_interest"]:.2f}'],
+                ["Brittco capital fee collected", f'{pl["brittco_fee_cash"]:.2f}', f'{pl["brittco_fee_cash"] + pl["brittco_fee_accrual"]:.2f}'],
+                ["Other income", f'{pl["other_income"]:.2f}', f'{pl["other_income"]:.2f}'],
+                ["Total income", f'{pl["total_income"]:.2f}', f'{pl["total_income"] + pl["brittco_fee_accrual"]:.2f}'],
+                ["Less: paid to investors (interest)", f'{pl["paid_investors"]:.2f}', f'{pl["paid_investors"]:.2f}'],
+                ["Less: Nate Holland 1099-NEC", f'{pl["nate_paid"]:.2f}', f'{pl["nate_accrual"]:.2f}'],
+                ["Less: operating expenses", f'{pl["opex"]:.2f}', f'{pl["opex"]:.2f}'],
+                ["Net income — Brittco Capital, Inc.", f'{pl["net_cash"]:.2f}', f'{pl["net_accrual"]:.2f}'],
+                ["Principal collected (not income)", f'{pl["principal_in"]:.2f}', f'{pl["principal_in"]:.2f}'],
+                ["Principal returned to investors (not expense)", f'{pl["principal_out"]:.2f}', f'{pl["principal_out"]:.2f}'],
+            ],
+        ))
+        files.append(sheet(
+            f"brittco-deals-{tag}.csv",
+            [
+                "Loan", "Property", "Borrower", "Type", "Status", "Start", "Maturity",
+                "Principal", "Investor capital", "Interest collected", "Paid to investors",
+                "Brittco spread", "Brittco %", "Brittco fee (if on)", "Brittco fee collected",
+                "Nate estimated", "Nate payable", "Nate paid", "Brittco net (cash)",
+            ],
+            [
+                [
+                    r["loan_number"], r["property"], r["borrower"], r["type"], r["status"],
+                    r["start"], r["maturity"], f'{r["principal"]:.2f}', f'{r["capital"]:.2f}',
+                    f'{r["gross_collected"]:.2f}', f'{r["paid_investors"]:.2f}',
+                    f'{r["brittco_spread"]:.2f}', f'{r["brittco_pct"]:.2f}',
+                    f'{r["brittco_fee"]:.2f}', f'{r["brittco_fee_cash"]:.2f}',
+                    f'{r["nate_est"]:.2f}', f'{r["nate_due"]:.2f}', f'{r["nate_paid"]:.2f}',
+                    f'{r["brittco_net_cash"]:.2f}',
+                ]
+                for r in b["deals"]
+            ],
+        ))
+        rows1099 = [
+            [r["name"], r["entity"], r["tin_type"], r["tin"], r["address"], r["email"],
+             f'{r["interest"]:.2f}', f'{r["principal"]:.2f}']
+            for r in b["form1099"]
+        ]
+        rows1099.append(
+            [
+                b["nate"]["name"], "1099-NEC contractor", "SSN", b["nate"]["tin"],
+                b["nate"]["address"], b["nate"]["email"], "", f'{b["nate"]["paid_year"]:.2f} paid',
+            ]
+        )
+        files.append(sheet(
+            f"brittco-1099-{tag}.csv",
+            ["Name", "Entity", "TIN type", "TIN", "Address", "Email", "Interest (1099-INT)", "Principal returned"],
+            rows1099,
+        ))
+        bs = b["bs"]
+        files.append(sheet(
+            f"brittco-balance-{tag}.csv",
+            ["Item", "Amount"],
+            [
+                ["Notes receivable (borrowers still owe)", f'{bs["notes_receivable"]:.2f}'],
+                ["Due to investors (capital still in deals)", f'{bs["due_investors"]:.2f}'],
+                ["Nate payable (realized, unpaid)", f'{bs["nate_payable"]:.2f}'],
+                ["Nate estimated on open loans (not payable)", f'{bs["nate_accrued_open"]:.2f}'],
+            ],
+        ))
+        zbuf = BytesIO()
+        with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, data in files:
+                z.writestr(name, data)
+        zbuf.seek(0)
+        return send_file(zbuf, mimetype="application/zip", as_attachment=True, download_name=f"brittco-accounting-{tag}.zip")
+    pl = b["pl"]
+    header = ["Line", "Cash", "Accrual"]
+    rows = [
+        ["Interest / fees collected from borrowers", f'{pl["borrower_interest"]:.2f}', f'{pl["borrower_interest"]:.2f}'],
+        ["Brittco capital fee collected", f'{pl["brittco_fee_cash"]:.2f}', f'{pl["brittco_fee_cash"] + pl["brittco_fee_accrual"]:.2f}'],
+        ["Other income", f'{pl["other_income"]:.2f}', f'{pl["other_income"]:.2f}'],
+        ["Total income", f'{pl["total_income"]:.2f}', f'{pl["total_income"] + pl["brittco_fee_accrual"]:.2f}'],
+        ["Less: paid to investors (interest)", f'{pl["paid_investors"]:.2f}', f'{pl["paid_investors"]:.2f}'],
+        ["Less: Nate Holland 1099-NEC", f'{pl["nate_paid"]:.2f}', f'{pl["nate_accrual"]:.2f}'],
+        ["Less: operating expenses", f'{pl["opex"]:.2f}', f'{pl["opex"]:.2f}'],
+        ["Net income — Brittco Capital, Inc.", f'{pl["net_cash"]:.2f}', f'{pl["net_accrual"]:.2f}'],
+        ["Principal collected (not income)", f'{pl["principal_in"]:.2f}', f'{pl["principal_in"]:.2f}'],
+        ["Principal returned to investors (not expense)", f'{pl["principal_out"]:.2f}', f'{pl["principal_out"]:.2f}'],
+    ]
+    return _csv_response(f"brittco-pnl-{tag}.csv", header, rows)
 
 
 @app.route("/nate")
