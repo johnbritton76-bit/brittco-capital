@@ -1934,6 +1934,10 @@ try:
         ("work_phone", "TEXT"),
         ("ssn", "TEXT"),
         ("ein", "TEXT"),
+        ("marital_status", "TEXT"),
+        ("spouse_name", "TEXT"),
+        ("spouse_dob", "TEXT"),
+        ("spouse_ssn", "TEXT"),
         ("dob", "TEXT"),
         ("employer", "TEXT"),
         ("occupation", "TEXT"),
@@ -3996,6 +4000,10 @@ def form_prefill(borrower, deal=None):
         "late_charge_rate": "10",
         "late_charge_per_day": "",
         "guarantor_address": addr,
+        "marital_status": row_val(borrower, "marital_status"),
+        "spouse_name": row_val(borrower, "spouse_name"),
+        "spouse_dob": row_val(borrower, "spouse_dob"),
+        "spouse_ssn": row_val(borrower, "spouse_ssn"),
     }
 
 
@@ -4207,6 +4215,17 @@ def form_packet_pdf(spec, data, borrower_name):
     st = Table(sig, colWidths=[4.4 * inch, 2.6 * inch])
     st.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (-1, -1), 8)]))
     story.append(st)
+    if (data.get("marital_status") or "").lower() == "married" or data.get("spouse_name"):
+        story.append(Spacer(1, 14))
+        story.append(Paragraph("<b>Spouse signature (personal guaranty)</b>", body))
+        spouse = data.get("spouse_name") or "________________________________"
+        ss = [
+            ["Spouse signature: ________________________________", "Date: ____________________"],
+            [f"Spouse printed name: {spouse}", ""],
+        ]
+        sst = Table(ss, colWidths=[4.4 * inch, 2.6 * inch])
+        sst.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (-1, -1), 8)]))
+        story.append(sst)
     story.append(Spacer(1, 18))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#c5d3e0"), spaceAfter=8))
     story.append(Paragraph("<b>Notary public — jurat</b>", body))
@@ -4318,6 +4337,24 @@ def save_borrower_from_form(f, bid=None, existing=None):
             row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
             if row:
                 db().execute("UPDATE borrowers SET ein=? WHERE id=?", (ein, row[0]))
+    except sqlite3.Error:
+        pass
+    try:
+        status = (f.get("marital_status") or "").strip()
+        sname = (f.get("spouse_name") or "").strip()
+        sdob = (f.get("spouse_dob") or "").strip()
+        sssn = (f.get("spouse_ssn") or "").strip()
+        if status != "Married":
+            sname = sname
+        target = bid
+        if not target:
+            row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
+            target = row[0] if row else None
+        if target:
+            db().execute(
+                "UPDATE borrowers SET marital_status=?, spouse_name=?, spouse_dob=?, spouse_ssn=? WHERE id=?",
+                (status, sname, sdob, sssn, target),
+            )
     except sqlite3.Error:
         pass
 
