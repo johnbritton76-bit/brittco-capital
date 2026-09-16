@@ -3636,16 +3636,6 @@ def profile_ready(b):
     elif years < 2:
         if not str(b["prev_address"] if "prev_address" in b.keys() else "" or "").strip():
             missing.append("Previous address (required if under 2 years)")
-    emp_years = None
-    try:
-        emp_years = float(b["years_employed"]) if b["years_employed"] not in (None, "") else None
-    except (KeyError, TypeError, ValueError):
-        emp_years = None
-    if emp_years is None:
-        missing.append("Years with current employer")
-    elif emp_years < 2:
-        if not str(b["prev_employer"] if "prev_employer" in b.keys() else "" or "").strip():
-            missing.append("Previous employer (required if under 2 years on the job)")
     return (len(missing) == 0), missing
 
 
@@ -3664,8 +3654,6 @@ PROFILE_GAP_FIELDS = [
     ("Previous address (required if under 2 years)", "prev_address", "text"),
     ("Current employer", "employer", "text"),
     ("Job title / occupation", "occupation", "text"),
-    ("Years with current employer", "years_employed", "number"),
-    ("Previous employer (required if under 2 years on the job)", "prev_employer", "text"),
 ]
 
 
@@ -4249,6 +4237,28 @@ def mask_ssn(ssn):
 
 def save_borrower_from_form(f, bid=None, existing=None):
     years = f.get("years_at_address")
+    choice = (f.get("addr_years_choice") or "").strip()
+    if choice == "2plus":
+        years = "2"
+    elif choice == "under2":
+        try:
+            years = years if years and float(years) < 2 else "1"
+        except (TypeError, ValueError):
+            years = "1"
+    emp_choice = (f.get("emp_choice") or "").strip()
+    employer = f.get("employer")
+    employer_phone = f.get("employer_phone")
+    employer_address = f.get("employer_address")
+    employer_city = f.get("employer_city")
+    employer_state = f.get("employer_state")
+    occupation = f.get("occupation")
+    if emp_choice == "self":
+        employer = employer or (f.get("entity_name") or "").strip() or "Self-employed"
+        employer_phone = employer_phone or f.get("phone")
+        employer_address = employer_address or f.get("address")
+        employer_city = employer_city or f.get("city")
+        employer_state = employer_state or f.get("state")
+        occupation = occupation or "Self-employed"
     payload = (
         f.get("name"),
         f.get("entity_type"),
@@ -4271,12 +4281,12 @@ def save_borrower_from_form(f, bid=None, existing=None):
         f.get("work_phone"),
         f.get("ssn"),
         f.get("dob"),
-        f.get("employer"),
-        f.get("occupation"),
-        f.get("employer_phone"),
-        f.get("employer_address"),
-        f.get("employer_city"),
-        f.get("employer_state"),
+        employer,
+        occupation,
+        employer_phone,
+        employer_address,
+        employer_city,
+        employer_state,
         float(f["years_employed"]) if f.get("years_employed") else None,
         f.get("prev_employer"),
         money(f.get("monthly_income")) if f.get("monthly_income") else None,
@@ -5600,72 +5610,32 @@ def tx_public_apply():
         f = request.form
         name = (f.get("name") or "").strip()
         email = (f.get("email") or "").strip().lower()
-        phone = (f.get("phone") or "").strip()
-        address = (f.get("address") or "").strip()
-        if not name or not email or "@" not in email or not address:
-            error = "Name, email, and property address are required."
+        if not name or not email or "@" not in email:
+            error = "Name and email are required."
         else:
-            b = db().execute("SELECT id FROM borrowers WHERE email=?", (email,)).fetchone()
-            if b:
-                bid = b["id"]
+            existing = db().execute("SELECT * FROM borrowers WHERE email=?", (email,)).fetchone()
+            if existing:
+                save_borrower_from_form(f, bid=existing["id"], existing=existing)
+                bid = existing["id"]
             else:
-                cur = db().execute(
-                    """INSERT INTO borrowers (name, entity_type, entity_name, email, phone, password, notes)
-                       VALUES (?,?,?,?,?,?,?)""",
-                    (
-                        name,
-                        f.get("entity_type") or "Individual",
-                        f.get("entity_name") or "",
-                        email,
-                        phone,
-                        secrets.token_urlsafe(8),
-                        "Public application from /tx/apply",
-                    ),
-                )
-                bid = cur.lastrowid
-            cur = db().execute(
-                """INSERT INTO deals
-                (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
-                 loan_amount, rate, points, term_months, status, exit_strategy, notes,
-                 ltv_override_reason, created_at, acked)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    bid,
-                    f.get("loan_type") or "Transactional Loan",
-                    address,
-                    money(f.get("purchase_price")) or None,
-                    money(f.get("as_is_value")) or None,
-                    money(f.get("arv")) or None,
-                    money(f.get("rehab_budget")) or None,
-                    money(f.get("loan_amount")) or None,
-                    money(f.get("rate")) or None,
-                    money(f.get("points")) or None,
-                    int(f["term_months"]) if f.get("term_months") else None,
-                    "Application",
-                    f.get("exit_strategy") or "",
-                    f.get("notes") or "",
-                    f.get("ltv_override_reason") or "",
-                    datetime.now().isoformat(timespec="minutes"),
-                    0,
-                ),
-            )
+                save_borrower_from_form(f)
+                row = db().execute("SELECT id FROM borrowers WHERE email=?", (email,)).fetchone()
+                bid = row["id"] if row else None
             db().commit()
-            did = cur.lastrowid
-            link = public_base() + url_for("deal_detail", did=did)
+            link = public_base() + (url_for("borrower_detail", bid=bid) if bid else url_for("borrowers"))
             body = (
-                f"Full application submitted from the rate-sheet link.\n\n"
-                f"Name: {name}\nEmail: {email}\nPhone: {phone}\n"
-                f"Property: {address}\nLoan type: {f.get('loan_type')}\n"
-                f"Requested loan: {f.get('loan_amount')}\n\n"
-                f"Open deal in Brittco: {link}\n"
+                f"Borrower application submitted from the rate-sheet link.\n\n"
+                f"Name: {name}\nEmail: {email}\nPhone: {f.get('phone')}\n"
+                f"Address: {f.get('address')}\nEmployer: {f.get('employer')}\n\n"
+                f"Open borrower in Brittco: {link}\n"
             )
             for em in ("john@brittcocapital.com", "nate@brittcocapital.com"):
                 try:
-                    send_mail(em, f"Full application — {name}", body)
+                    send_mail(em, f"Borrower application — {name}", body)
                 except Exception:
                     pass
-            return render_template("tx_apply.html", done=True, error=None, form=None)
-    return render_template("tx_apply.html", done=False, error=error, form=request.form if request.method == "POST" else None)
+            return render_template("tx_apply.html", done=True, error=None, b=None)
+    return render_template("tx_apply.html", done=False, error=error, b=None)
 
 
 @app.route("/tx", methods=["GET", "POST"])
