@@ -2,7 +2,7 @@
 {% block body %}
 <div class="top">
   <div>
-    <div class="tag">Transactional lead · {{ lead.status or "New" }}</div>
+    <div class="tag">{{ lead.product or "Lead" }} · {{ lead.status or "New" }}</div>
     <h2>{{ lead.first_name }} {{ lead.last_name }}</h2>
     <p class="hint">Submitted {{ lead.created_at }} · from /tx</p>
   </div>
@@ -13,6 +13,17 @@
 </div>
 {% if note %}<p class="flash">{{ note }}</p>{% endif %}
 
+<div class="card" style="margin-bottom:16px">
+  <h3>Product</h3>
+  <form method="post" action="{{ url_for('marketing_lead_product', lid=lead.id) }}">
+    <input type="hidden" name="next" value="{{ url_for('marketing_lead_detail', lid=lead.id) }}">
+    <select name="product" onchange="this.form.submit()">
+      <option value="Transactional Loan" {% if (lead.product or '')=='Transactional Loan' %}selected{% endif %}>Transactional Loan</option>
+      <option value="Fix and Flip" {% if (lead.product or '')=='Fix and Flip' %}selected{% endif %}>Fix and Flip</option>
+    </select>
+    <p class="hint">Click the product to change it if the lead picked the wrong one.</p>
+  </form>
+</div>
 <div class="grid cards">
   <div class="card"><h3>Email</h3><div>{{ lead.email }}</div></div>
   <div class="card"><h3>Mobile</h3><div>{{ lead.phone }}</div></div>

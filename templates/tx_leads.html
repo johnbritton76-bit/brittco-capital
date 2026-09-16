@@ -2,20 +2,29 @@
 {% block body %}
 <div class="top">
   <div>
-    <div class="tag">Marketing</div>
-    <h2>Transactional leads</h2>
+    <div class="tag">Desk</div>
+    <h2>Lead</h2>
   </div>
 </div>
 <p class="hint">Public link to publish: <strong>{{ request.url_root.rstrip('/') }}/tx</strong></p>
 <div class="card">
 <table class="table">
   <tr>
-    <th>When</th><th>Name</th><th>Contact</th><th>Closings / credit</th><th>Need</th><th>Deal</th><th></th>
+    <th>When</th><th>Name</th><th>Product</th><th>Contact</th><th>Closings / credit</th><th>Need</th><th>Deal</th><th></th>
   </tr>
   {% for l in leads %}
   <tr>
     <td>{{ l.created_at }}</td>
     <td><a href="{{ url_for('marketing_lead_detail', lid=l.id) }}">{{ l.first_name }} {{ l.last_name }}</a></td>
+    <td>
+      <form method="post" action="{{ url_for('marketing_lead_product', lid=l.id) }}">
+        <select name="product" onchange="this.form.submit()">
+          {% for p in products %}
+          <option value="{{ p }}" {% if (l.product or 'Transactional Loan')==p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </td>
     <td>{{ l.email }}<br>{{ l.phone }}</td>
     <td>{{ l.deals_12mo }} closings<br>Score {{ l.credit_score }}</td>
     <td>{% if l.immediate_need == 'yes' %}<span class="badge warn">This week</span>{% else %}Future{% endif %}</td>

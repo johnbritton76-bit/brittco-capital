@@ -11,7 +11,7 @@
   </div>
   <div><label>Loan type</label>
     <select name="loan_type">
-      {% for t in ['Hard Money','Bridge','Fix and Flip','Transactional Loan'] %}
+      {% for t in ['Fix and Flip','Transactional Loan'] %}
       <option value="{{ t }}" {% if d and d.loan_type==t %}selected{% endif %}>{{ t }}</option>
       {% endfor %}
     </select>

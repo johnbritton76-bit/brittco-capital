@@ -21,7 +21,7 @@
   <div class="card">
     <h3>Select loan type</h3>
     <p class="hint">Your profile is already on this file. Next you will enter only the property, rate, and term.</p>
-    {% for t in ['Fix and Flip','Bridge','Transactional Loan'] %}
+    {% for t in ['Fix and Flip','Transactional Loan'] %}
     <p><a class="btn" href="{{ url_for('portal_apply_new', loan_type=t) }}">{{ t }}</a></p>
     {% endfor %}
   </div>

@@ -43,7 +43,15 @@
         <input name="credit_score" type="number" min="300" max="850" required placeholder="Example: 720" value="{{ form.credit_score if form else '' }}">
       </div>
       <div class="span-2">
-        <label>Do you need transactional funding in the next 14 days?</label>
+        <label>What kind of loan do you need?</label>
+        <select name="product" required>
+          <option value="">Select</option>
+          <option value="Transactional Loan" {% if form and form.product=='Transactional Loan' %}selected{% endif %}>Transactional</option>
+          <option value="Fix and Flip" {% if form and form.product=='Fix and Flip' %}selected{% endif %}>Fix and Flip</option>
+        </select>
+      </div>
+      <div class="span-2">
+        <label>Do you need funding in the next 14 days?</label>
         <select name="immediate_need" id="need" required>
           <option value="">Select</option>
           <option value="yes">Yes — I have a live deal</option>
