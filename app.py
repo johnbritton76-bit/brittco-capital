@@ -5031,6 +5031,180 @@ def ensure_leads_table():
     db().commit()
 
 
+def tx_rate_sheet_pdf(lead=None):
+    """One-page transactional rate and term sheet."""
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    NAVY = HexColor("#0c2c4a")
+    GOLD = HexColor("#c9a24a")
+    INK = HexColor("#1c2430")
+    MUTED = HexColor("#5a6570")
+    LINE = HexColor("#d8dee6")
+    BOX = HexColor("#f4f6f8")
+    GREEN = HexColor("#2d6a4f")
+
+    W, H = letter
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    c.setTitle("Brittco Capital — Transactional Rate and Term Sheet")
+    c.setAuthor("Brittco Capital, Inc.")
+
+    c.setFillColor(NAVY)
+    c.rect(0, H - 78, W, 78, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, H - 83, W, 5, fill=1, stroke=0)
+
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    if os.path.exists(logo):
+        c.setFillColor(white)
+        c.roundRect(28, H - 68, 46, 46, 6, fill=1, stroke=0)
+        c.drawImage(
+            logo, 31, H - 65, width=40, height=40,
+            mask="auto", preserveAspectRatio=True, anchor="c",
+        )
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(84, H - 38, "BRITTCO CAPITAL, INC.")
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica", 7.5)
+    c.drawString(84, H - 52, "YOUR BRIDGE TO BUILDING WEALTH")
+    c.setFillColor(white)
+    c.setFont("Helvetica", 8)
+    c.drawRightString(W - 32, H - 30, "4825 Vasca Drive")
+    c.drawRightString(W - 32, H - 42, "Sarasota, Florida 34240")
+    c.drawRightString(W - 32, H - 54, "816-694-1658")
+
+    y = H - 118
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y + 12, "EFFECTIVE")
+    c.drawRightString(W - 36, y + 12, "DOCUMENT")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(36, y - 2, datetime.now().strftime("%B %d, %Y"))
+    c.setFont("Helvetica-Bold", 10)
+    c.drawRightString(W - 36, y - 2, "Rate & Term Sheet")
+
+    y -= 36
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(W / 2, y, "TRANSACTIONAL FUNDING")
+    y -= 16
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawCentredString(W / 2, y, "Same-day and short-hold double-close programs · Business-purpose only")
+
+    who = ""
+    if lead:
+        who = f"{lead.get('first_name') or ''} {lead.get('last_name') or ''}".strip()
+    if who:
+        y -= 22
+        c.setFillColor(INK)
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(W / 2, y, f"Prepared for {who}")
+
+    y -= 28
+    # Two rate cards
+    card_w = (W - 72 - 12) / 2
+    card_h = 118
+    left_x = 36
+    right_x = 36 + card_w + 12
+    card_y = y - card_h
+
+    def rate_card(x, title, term, rate, note):
+        c.setFillColor(BOX)
+        c.setStrokeColor(LINE)
+        c.setLineWidth(0.8)
+        c.roundRect(x, card_y, card_w, card_h, 8, fill=1, stroke=1)
+        c.setFillColor(GOLD)
+        c.rect(x, card_y + card_h - 6, card_w, 6, fill=1, stroke=0)
+        c.setFillColor(NAVY)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x + 14, card_y + card_h - 28, title)
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 8)
+        c.drawString(x + 14, card_y + card_h - 44, term)
+        c.setFillColor(GREEN)
+        c.setFont("Helvetica-Bold", 28)
+        c.drawString(x + 14, card_y + 38, rate)
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 8)
+        c.drawString(x + 14, card_y + 20, note)
+
+    rate_card(
+        left_x,
+        "SAME-DAY DOUBLE CLOSE",
+        "Fund and exit the same business day",
+        "1.00%",
+        "of the funded loan amount",
+    )
+    rate_card(
+        right_x,
+        "SHORT HOLD  ·  2 TO 7 DAYS",
+        "Hold period of two through seven days",
+        "2.00%",
+        "of the funded loan amount",
+    )
+
+    y = card_y - 28
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(36, y, "PROGRAM NOTES")
+    y -= 16
+    notes = [
+        "Fee is calculated on the funded amount, not the resale price.",
+        "Typical use: A-B purchase and B-C resale on the same asset (double close).",
+        "Terms assume a complete file, clear title path, and an executable exit.",
+        "This sheet is pricing guidance. It is not a commitment to lend and does not lock a rate.",
+        "Business-purpose loans only. Not a consumer mortgage.",
+    ]
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 9)
+    for line in notes:
+        c.drawString(36, y, "•  " + line)
+        y -= 14
+
+    y -= 10
+    c.setFillColor(HexColor("#eef6f1"))
+    c.setStrokeColor(HexColor("#b7d4c4"))
+    c.roundRect(36, y - 52, W - 72, 62, 8, fill=1, stroke=1)
+    c.setFillColor(GREEN)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(48, y + 2, "EXISTING CUSTOMERS")
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 9)
+    c.drawString(48, y - 16, "Rates may be negotiable for existing Brittco Capital customers with a proven")
+    c.drawString(48, y - 30, "track record. Ask your desk contact before the file is locked for closing.")
+
+    y -= 80
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(36, y, "HOW TO PROCEED")
+    y -= 16
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 9)
+    c.drawString(36, y, "Call 816-694-1658 or reply to this email with the A-B contract, B-C contract, ID, and entity papers.")
+    y -= 14
+    c.drawString(36, y, "Staff will open your inquiry on the Brittco desk and confirm whether the file can close on the requested day.")
+
+    c.setFillColor(NAVY)
+    c.rect(0, 0, W, 36, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, 36, W, 3, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica", 7.5)
+    c.drawCentredString(
+        W / 2,
+        16,
+        "Brittco Capital, Inc.  ·  brittcocapital.com  ·  Confidential  ·  For the named recipient only",
+    )
+    c.save()
+    return buf.getvalue()
+
+
 @app.route("/tx", methods=["GET", "POST"])
 @app.route("/transactional-funding", methods=["GET", "POST"])
 def transactional_lead():
@@ -5084,7 +5258,7 @@ def transactional_lead():
             stored = f"lead_{int(datetime.now().timestamp())}_{secrets.token_hex(3)}_{name}"
             up.save(os.path.join(UPLOAD_DIR, stored))
             saved_names.append(stored + "|" + name)
-        db().execute(
+        cur = db().execute(
             """INSERT INTO marketing_leads
                (first_name, last_name, email, phone, deals_12mo, credit_score,
                 immediate_need, amount, purchase_close, resale_close, notes, files,
@@ -5107,7 +5281,53 @@ def transactional_lead():
                 datetime.now().isoformat(timespec="minutes"),
             ),
         )
+        lead_id = cur.lastrowid
         db().commit()
+        lead_row = {
+            "id": lead_id,
+            "first_name": first,
+            "last_name": last,
+            "email": email,
+            "amount": amount,
+        }
+        pdf_bytes = None
+        try:
+            pdf_bytes = tx_rate_sheet_pdf(lead_row)
+            stored_pdf = f"lead_{lead_id}_rate_sheet.pdf"
+            with open(os.path.join(UPLOAD_DIR, stored_pdf), "wb") as out:
+                out.write(pdf_bytes)
+            saved_names.append(stored_pdf + "|Brittco-Transactional-Rate-Sheet.pdf")
+            db().execute(
+                "UPDATE marketing_leads SET files=? WHERE id=?",
+                (json.dumps(saved_names), lead_id),
+            )
+            db().commit()
+        except Exception:
+            pdf_bytes = None
+        if email and pdf_bytes:
+            lead_body = (
+                f"Hello {first},\n\n"
+                "Thank you for contacting Brittco Capital Inc about transactional funding.\n\n"
+                "Attached is our current rate and term sheet:\n"
+                "  • Same-day double close — 1.00% of the funded amount\n"
+                "  • Hold of 2 to 7 days — 2.00% of the funded amount\n\n"
+                "Rates may be negotiable for existing Brittco Capital customers.\n"
+                "This sheet is not a commitment to lend.\n\n"
+                "If you have a live file, call (816) 694-1658 or reply with the A-B contract, "
+                "B-C contract, ID, and entity papers.\n\n"
+                "Brittco Capital Inc\n"
+                "4825 Vasca Drive, Sarasota, Florida 34240\n"
+            )
+            try:
+                send_mail(
+                    email,
+                    "Brittco Capital — transactional rate and term sheet",
+                    lead_body,
+                    attachment=pdf_bytes,
+                    attachment_name="Brittco-Transactional-Rate-Sheet.pdf",
+                )
+            except Exception:
+                pass
         when = datetime.now().strftime("%b %d, %Y %I:%M %p")
         body = (
             f"New transactional funding inquiry from the public link.\n\n"
@@ -5127,8 +5347,8 @@ def transactional_lead():
         if f.get("notes"):
             body += f"Notes: {f.get('notes')}\n"
         body += f"Files uploaded: {len(saved_names)}\nSubmitted: {when}\n"
-        link = public_base() + url_for("marketing_leads")
-        body += f"\nOpen in Brittco: {link}\n"
+        link = public_base() + url_for("marketing_lead_detail", lid=lead_id)
+        body += f"\nOpen this lead in Brittco: {link}\n"
         for em in ("john@brittcocapital.com", "nate@brittcocapital.com"):
             try:
                 send_mail(em, f"Transactional funding lead — {first} {last}", body)
@@ -5159,7 +5379,91 @@ def marketing_leads():
 def marketing_lead_ack(lid):
     db().execute("UPDATE marketing_leads SET acked=1, status=? WHERE id=?", ("Reviewed", lid))
     db().commit()
-    return redirect(url_for("marketing_leads"))
+    return redirect(url_for("marketing_lead_detail", lid=lid))
+
+
+def _lead_or_404(lid):
+    ensure_leads_table()
+    row = db().execute("SELECT * FROM marketing_leads WHERE id=?", (lid,)).fetchone()
+    return row
+
+
+@app.route("/leads/<int:lid>")
+@staff_required
+def marketing_lead_detail(lid):
+    row = _lead_or_404(lid)
+    if not row:
+        return redirect(url_for("marketing_leads"))
+    d = dict(row)
+    try:
+        raw = json.loads(d.get("files") or "[]")
+    except (TypeError, ValueError):
+        raw = []
+    files = []
+    for item in raw:
+        if "|" in item:
+            stored, original = item.split("|", 1)
+        else:
+            stored, original = item, item
+        files.append({"stored": stored, "original": original})
+    return render_template(
+        "tx_lead_detail.html",
+        title=f"{d.get('first_name','')} {d.get('last_name','')}".strip() or "Lead",
+        nav="leads",
+        lead=d,
+        files=files,
+        note=session.pop("last_invite_note", None),
+    )
+
+
+@app.route("/leads/<int:lid>/rate-sheet")
+@staff_required
+def marketing_lead_rate_sheet(lid):
+    row = _lead_or_404(lid)
+    if not row:
+        return redirect(url_for("marketing_leads"))
+    pdf = tx_rate_sheet_pdf(dict(row))
+    return send_file(
+        BytesIO(pdf),
+        mimetype="application/pdf",
+        download_name=f"Brittco-Rate-Sheet-{lid}.pdf",
+        as_attachment=False,
+    )
+
+
+@app.route("/leads/<int:lid>/rate-sheet/send", methods=["POST"])
+@staff_required
+def marketing_lead_rate_sheet_send(lid):
+    row = _lead_or_404(lid)
+    if not row:
+        return redirect(url_for("marketing_leads"))
+    d = dict(row)
+    email = (d.get("email") or "").strip()
+    pdf = tx_rate_sheet_pdf(d)
+    sent = False
+    if email:
+        body = (
+            f"Hello {d.get('first_name') or ''},\n\n"
+            "Attached is the Brittco Capital transactional rate and term sheet.\n\n"
+            "Same-day double close: 1.00%\n"
+            "Hold of 2 to 7 days: 2.00%\n\n"
+            "Rates may be negotiable for existing customers.\n\n"
+            "Brittco Capital Inc\n"
+        )
+        try:
+            sent = send_mail(
+                email,
+                "Brittco Capital — transactional rate and term sheet",
+                body,
+                attachment=pdf,
+                attachment_name="Brittco-Transactional-Rate-Sheet.pdf",
+            )
+        except Exception:
+            sent = False
+    session["last_invite_note"] = (
+        "Rate sheet emailed to the lead." if sent else "Could not send email. Download the PDF and send it."
+    )
+    return redirect(url_for("marketing_lead_detail", lid=lid))
 
 
 @app.route("/")
