@@ -5025,7 +5025,7 @@ def marketing_lead_ack(lid):
 @staff_required
 def dashboard():
     try:
-        seed_crossley_tx(db())
+        
         seed_dos_gringos_tx(db())
         cleanup_duplicate_loans(db())
         db().commit()
