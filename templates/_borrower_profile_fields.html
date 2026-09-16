@@ -1,0 +1,129 @@
+{# Shared borrower application fields. Expects b (row or none). #}
+{% set b = b or {} %}
+<div><label>Full name</label><input name="name" value="{{ b.name if b else '' }}" required></div>
+<div><label>Date of birth</label><input name="dob" type="date" value="{{ b.dob if b else '' }}"></div>
+<div><label>Entity type</label>
+  <select name="entity_type">
+    {% for t in ['Individual','LLC','Trust','Corporation'] %}
+    <option value="{{ t }}" {% if b and b.entity_type==t %}selected{% endif %}>{{ t }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div><label>Entity / LLC name</label><input name="entity_name" id="entity_name" value="{{ b.entity_name if b else '' }}"></div>
+<div><label>Email</label><input name="email" type="email" value="{{ b.email if b else '' }}" required></div>
+<div><label>Mobile / cell phone</label><input name="phone" id="phone" value="{{ b.phone if b else '' }}"></div>
+<div><label>Social Security number</label><input name="ssn" value="{{ b.ssn if b else '' }}" autocomplete="off"></div>
+<div class="span-2"><label>Current address</label><input name="address" id="address" value="{{ b.address if b else '' }}"></div>
+<div><label>City</label><input name="city" id="city" value="{{ b.city if b else '' }}"></div>
+<div><label>State</label><input name="state" id="state" value="{{ b.state if b else '' }}"></div>
+<div><label>ZIP</label><input name="zip" id="zip" value="{{ b.zip if b else '' }}"></div>
+<div><label>Own or rent</label>
+  <select name="own_or_rent">
+    {% for t in ['','Own','Rent'] %}
+    <option value="{{ t }}" {% if b and b.own_or_rent==t %}selected{% endif %}>{{ t or '—' }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="span-2">
+  <label>Years at this address</label>
+  <input type="hidden" name="years_at_address" id="years_at_address" value="{{ b.years_at_address if b else '' }}">
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="addr_years_choice" value="2plus" {% if b and b.years_at_address and b.years_at_address|float >= 2 %}checked{% endif %}>
+      2+ years
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="addr_years_choice" value="under2" {% if b and b.years_at_address and b.years_at_address|float < 2 %}checked{% endif %}>
+      Less than 2 years
+    </label>
+  </div>
+</div>
+<div id="prev-address-block" class="span-2" style="display:none">
+  <div class="form-grid">
+    <div class="span-2"><label>Previous address</label><input name="prev_address" value="{{ b.prev_address if b else '' }}"></div>
+    <div><label>Previous city</label><input name="prev_city" value="{{ b.prev_city if b else '' }}"></div>
+    <div><label>Previous state</label><input name="prev_state" value="{{ b.prev_state if b else '' }}"></div>
+    <div><label>Previous ZIP</label><input name="prev_zip" value="{{ b.prev_zip if b else '' }}"></div>
+  </div>
+</div>
+<div class="span-2"><h3>Employment</h3></div>
+<div class="span-2">
+  <label>Current employment</label>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="emp_choice" value="self" {% if b and b.employer and 'self' in (b.employer|lower) %}checked{% endif %}>
+      Self employed
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="emp_choice" value="enter" {% if b and b.employer and 'self' not in (b.employer|lower) %}checked{% endif %}>
+      Enter employer information
+    </label>
+  </div>
+</div>
+<div id="employer-block" class="span-2" style="display:none">
+  <div class="form-grid">
+    <div><label>Current employer</label><input name="employer" id="employer" value="{{ b.employer if b else '' }}"></div>
+    <div><label>Job title</label><input name="occupation" value="{{ b.occupation if b else '' }}"></div>
+    <div><label>Years at this employer</label><input name="years_employed" type="number" step="0.1" value="{{ b.years_employed if b else '' }}"></div>
+    <div><label>Employer phone</label><input name="employer_phone" id="employer_phone" value="{{ b.employer_phone if b else '' }}"></div>
+    <div class="span-2"><label>Employer street</label><input name="employer_address" id="employer_address" value="{{ b.employer_address if b else '' }}"></div>
+    <div><label>Employer city</label><input name="employer_city" id="employer_city" value="{{ b.employer_city if b else '' }}"></div>
+    <div><label>Employer state</label><input name="employer_state" id="employer_state" value="{{ b.employer_state if b else '' }}"></div>
+    <p class="hint span-2">If self employed, these start as your home address and cell. You can edit them.</p>
+  </div>
+</div>
+<div><label>Liquid assets</label><input name="liquid_assets" type="number" step="0.01" value="{{ b.liquid_assets if b else '' }}"></div>
+<div><label>Bankruptcy / foreclosure (7 yrs)</label>
+  <select name="credit_events">
+    {% for t in ['None','Bankruptcy','Foreclosure','Both'] %}
+    <option value="{{ t }}" {% if b and b.credit_events==t %}selected{% endif %}>{{ t }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div><label>Credit score</label><input name="credit_score" type="number" value="{{ b.credit_score if b else '' }}"></div>
+<script>
+(function(){
+  function val(name){
+    var el = document.querySelector('[name="'+name+'"]');
+    return el && el.checked ? el.value : null;
+  }
+  function chosen(name){
+    var els = document.querySelectorAll('[name="'+name+'"]');
+    for (var i=0;i<els.length;i++) if (els[i].checked) return els[i].value;
+    return "";
+  }
+  function syncAddr(){
+    var choice = chosen("addr_years_choice");
+    var prev = document.getElementById("prev-address-block");
+    var years = document.getElementById("years_at_address");
+    if (prev) prev.style.display = choice === "under2" ? "block" : "none";
+    if (years) {
+      if (choice === "2plus") years.value = "2";
+      else if (choice === "under2" && (!years.value || parseFloat(years.value) >= 2)) years.value = "1";
+    }
+  }
+  function fillSelf(){
+    var emp = document.getElementById("employer");
+    var phone = document.getElementById("employer_phone");
+    var street = document.getElementById("employer_address");
+    var city = document.getElementById("employer_city");
+    var st = document.getElementById("employer_state");
+    var entity = document.getElementById("entity_name");
+    if (emp && !emp.value) emp.value = (entity && entity.value) ? entity.value : "Self-employed";
+    if (phone && !phone.value) phone.value = (document.getElementById("phone")||{}).value || "";
+    if (street && !street.value) street.value = (document.getElementById("address")||{}).value || "";
+    if (city && !city.value) city.value = (document.getElementById("city")||{}).value || "";
+    if (st && !st.value) st.value = (document.getElementById("state")||{}).value || "";
+  }
+  function syncEmp(){
+    var choice = chosen("emp_choice");
+    var block = document.getElementById("employer-block");
+    if (block) block.style.display = (choice === "self" || choice === "enter") ? "block" : "none";
+    if (choice === "self") fillSelf();
+  }
+  document.querySelectorAll('[name="addr_years_choice"]').forEach(function(el){ el.addEventListener("change", syncAddr); });
+  document.querySelectorAll('[name="emp_choice"]').forEach(function(el){ el.addEventListener("change", syncEmp); });
+  syncAddr();
+  syncEmp();
+})();
+</script>

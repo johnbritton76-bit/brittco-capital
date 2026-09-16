@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Full application | Brittco Capital Inc</title>
+  <title>Borrower application | Brittco Capital Inc</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,49 +11,25 @@
     <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
     <div>
       <div class="tag">Full application</div>
-      <h2 style="margin:4px 0 0">Same form as New deal on the Brittco desk</h2>
+      <h2 style="margin:4px 0 0">Borrower profile</h2>
     </div>
   </div>
   {% if done %}
   <div class="card">
     <h3>Application received</h3>
-    <p>Thank you. The file is now on the Brittco desk as an Application. A team member will open it and contact you.</p>
-    <p>If you still need contracts: <a href="{{ url_for('tx_contracts_page') }}">A-B and B-C templates</a>.</p>
+    <p>Thank you. Your borrower file is on the Brittco desk. A team member will contact you.</p>
+    <p>Need contracts? <a href="{{ url_for('tx_contracts_page') }}">A-B and B-C templates</a>.</p>
   </div>
   {% else %}
   <div class="card">
-    <p>This is the public version of the staff <strong>New deal</strong> form. Completing it creates a deal on the Brittco desk.</p>
+    <p>This is the same application staff uses when adding a borrower.</p>
     {% if error %}<div class="flash">{{ error }}</div>{% endif %}
     <form method="post" class="form-grid">
-      <div><label>Your name</label><input name="name" required value="{{ form.name if form else '' }}"></div>
-      <div><label>Entity name (if any)</label><input name="entity_name" value="{{ form.entity_name if form else '' }}"></div>
-      <div><label>Email</label><input name="email" type="email" required value="{{ form.email if form else '' }}"></div>
-      <div><label>Phone</label><input name="phone" value="{{ form.phone if form else '' }}"></div>
-      <div>
-        <label>Loan type</label>
-        <select name="loan_type">
-          {% for t in ['Transactional Loan','Hard Money','Bridge','Fix and Flip'] %}
-          <option value="{{ t }}" {% if form and form.loan_type==t %}selected{% endif %}>{{ t }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="span-2"><label>Property address</label><input name="address" required value="{{ form.address if form else '' }}"></div>
-      <div><label>Purchase price</label><input name="purchase_price" type="number" step="0.01" value="{{ form.purchase_price if form else '' }}"></div>
-      <div><label>Current value / as-is</label><input name="as_is_value" type="number" step="0.01" value="{{ form.as_is_value if form else '' }}"></div>
-      <div><label>ARV</label><input name="arv" type="number" step="0.01" value="{{ form.arv if form else '' }}"></div>
-      <div><label>Rehab budget</label><input name="rehab_budget" type="number" step="0.01" value="{{ form.rehab_budget if form else '' }}"></div>
-      <div><label>Requested loan amount</label><input name="loan_amount" type="number" step="0.01" value="{{ form.loan_amount if form else '' }}"></div>
-      <div><label>Rate (%)</label><input name="rate" type="number" step="0.01" value="{{ form.rate if form else '' }}"></div>
-      <div><label>Points</label><input name="points" type="number" step="0.01" value="{{ form.points if form else '' }}"></div>
-      <div><label>Term (months)</label><input name="term_months" type="number" value="{{ form.term_months if form else '' }}"></div>
-      <div class="span-2"><label>Exit strategy</label><input name="exit_strategy" value="{{ form.exit_strategy if form else '' }}"></div>
-      <div class="span-2"><label>Market / property notes</label><textarea name="notes">{{ form.notes if form else '' }}</textarea></div>
-      <div class="span-2"><label>Guideline override reason (if loan is over 100% of current value, or all-in is over 75% of ARV)</label>
-        <textarea name="ltv_override_reason">{{ form.ltv_override_reason if form else '' }}</textarea></div>
+      {% include "_borrower_profile_fields.html" %}
       <div class="span-2"><button class="btn" type="submit">Submit application</button></div>
     </form>
   </div>
-  <p class="hint">Business-purpose loans only. Not a consumer mortgage. Not a commitment to lend.</p>
+  <p class="hint">Business-purpose loans only. Not a consumer mortgage.</p>
   {% endif %}
 </main>
 </body>
