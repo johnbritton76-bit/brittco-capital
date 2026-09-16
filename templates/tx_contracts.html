@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A-B and B-C contracts | Brittco Capital Inc</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:720px;margin:0 auto;padding:24px 16px">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Transactional funding</div>
+      <h2 style="margin:4px 0 0">Fillable contract templates</h2>
+    </div>
+  </div>
+  <div class="card">
+    <p>Use these if you do not already have an A-B purchase contract or a B-C resale contract. They follow the same layout as Brittco’s working transactional files. Fill the fields, sign, and send them with your file.</p>
+    <p class="hint">Templates only. Brittco Capital is not a party unless named. Have an attorney review before you sign.</p>
+    <p>
+      <a class="btn" href="{{ url_for('tx_contract_ab') }}">A-B purchase contract</a>
+      <a class="btn" href="{{ url_for('tx_contract_bc') }}">B-C resale contract</a>
+    </p>
+    <p>
+      <a class="btn ghost" href="{{ url_for('tx_public_apply') }}">Request a full application</a>
+      <a class="btn ghost" href="{{ url_for('transactional_lead') }}">Back to inquiry form</a>
+    </p>
+  </div>
+</main>
+</body>
+</html>
