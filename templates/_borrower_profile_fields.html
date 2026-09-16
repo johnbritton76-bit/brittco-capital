@@ -18,6 +18,26 @@
 <div><label>City</label><input name="city" id="city" value="{{ b.city if b else '' }}"></div>
 <div><label>State</label><input name="state" id="state" value="{{ b.state if b else '' }}"></div>
 <div><label>ZIP</label><input name="zip" id="zip" value="{{ b.zip if b else '' }}"></div>
+<div class="span-2">
+  <label>Marital status</label>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="marital_status" value="Single" {% if b and b.marital_status=='Single' %}checked{% endif %}>
+      Single
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;border:1px solid #c5d2de;border-radius:10px;padding:8px 12px;cursor:pointer">
+      <input type="radio" name="marital_status" value="Married" {% if b and b.marital_status=='Married' %}checked{% endif %}>
+      Married
+    </label>
+  </div>
+</div>
+<div id="spouse-block" class="span-2" style="display:none">
+  <div class="form-grid">
+    <div><label>Spouse full name</label><input name="spouse_name" value=""></div>
+    <div><label>Spouse date of birth</label><input name="spouse_dob" type="date" value=""></div>
+    <div><label>Spouse Social Security/TIN#</label><input name="spouse_ssn" value="" autocomplete="off"></div>
+  </div>
+</div>
 <div><label>Own or rent</label>
   <select name="own_or_rent">
     {% for t in ['','Own','Rent'] %}
@@ -122,9 +142,16 @@
     if (block) block.style.display = (choice === "self" || choice === "enter") ? "block" : "none";
     if (choice === "self") fillSelf();
   }
+  function syncMarried(){
+    var choice = chosen("marital_status");
+    var block = document.getElementById("spouse-block");
+    if (block) block.style.display = choice === "Married" ? "block" : "none";
+  }
   document.querySelectorAll('[name="addr_years_choice"]').forEach(function(el){ el.addEventListener("change", syncAddr); });
   document.querySelectorAll('[name="emp_choice"]').forEach(function(el){ el.addEventListener("change", syncEmp); });
+  document.querySelectorAll('[name="marital_status"]').forEach(function(el){ el.addEventListener("change", syncMarried); });
   syncAddr();
   syncEmp();
+  syncMarried();
 })();
 </script>

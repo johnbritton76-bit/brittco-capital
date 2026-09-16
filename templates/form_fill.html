@@ -54,6 +54,11 @@
     <h3>Signature — wet ink only</h3>
     <p>Signature: ________________________________ &nbsp;&nbsp; Date: ____________________</p>
     <p>Printed name: {{ borrower.name if borrower else "" }}</p>
+    {% if data.get('marital_status') == 'Married' or data.get('spouse_name') %}
+    <h3 style="margin-top:18px">Spouse signature — personal guaranty</h3>
+    <p>Spouse signature: ________________________________ &nbsp;&nbsp; Date: ____________________</p>
+    <p>Spouse printed name: {{ data.get('spouse_name') or '' }}</p>
+    {% endif %}
     <h3 style="margin-top:18px">Notary public</h3>
     <p>State of {{ data.get('state') or '____________' }} &nbsp; County of {{ data.get('county') or '____________' }}</p>
     <p>Sworn to and subscribed before me this ______ day of ______________, ________.</p>

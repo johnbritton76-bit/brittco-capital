@@ -67,6 +67,8 @@
     {{ b.own_or_rent or "Own/rent not set" }}
     {% if b.years_at_address %} · {{ b.years_at_address }} years at this address{% endif %}
     {% if b.dob %}<br>DOB {{ b.dob }}{% endif %}
+    {% if b.marital_status %}<br>{{ b.marital_status }}{% endif %}
+    {% if b.spouse_name %}<br>Spouse: {{ b.spouse_name }}{% endif %}
   </p>
   {% if b.years_at_address and b.years_at_address < 2 and b.prev_address %}
   <p class="hint">Previous address (under 2 years): {{ b.prev_address }}, {{ b.prev_city }} {{ b.prev_state }} {{ b.prev_zip }}</p>
