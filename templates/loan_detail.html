@@ -101,7 +101,7 @@
     · {{ money_txt(latest_letter.total) if false else "" }}
     ${{ "{:,.2f}".format(latest_letter.total or 0) }}
     good through {{ latest_letter.good_through }}
-    · <a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=latest_letter.id) }}" target="_blank">View PDF</a>
+    · <a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=latest_letter.id) }}" target="_blank" rel="noopener">View PDF</a>
   </p>
   {% if latest_letter.status == 'pending' %}
   <form method="post" action="{{ url_for('loan_payoff_approve', lid=loan.id, pid=latest_letter.id) }}" style="display:inline">
