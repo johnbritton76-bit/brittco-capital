@@ -5177,18 +5177,45 @@ def tx_rate_sheet_pdf(lead=None):
     c.setFillColor(INK)
     c.setFont("Helvetica", 9)
     c.drawString(48, y - 16, "Rates may be negotiable for existing Brittco Capital customers with a proven")
-    c.drawString(48, y - 30, "track record. Ask your desk contact before the file is locked for closing.")
+    c.drawString(48, y - 30, "track record.")
 
-    y -= 80
+    y -= 86
     c.setFillColor(NAVY)
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(36, y, "HOW TO PROCEED")
-    y -= 16
-    c.setFillColor(INK)
-    c.setFont("Helvetica", 9)
-    c.drawString(36, y, "Call 816-694-1658 or reply to this email with the A-B contract, B-C contract, ID, and entity papers.")
-    y -= 14
-    c.drawString(36, y, "Staff will open your inquiry on the Brittco desk and confirm whether the file can close on the requested day.")
+    c.drawString(36, y, "NEXT STEPS")
+    y -= 18
+    base = ""
+    try:
+        base = public_base()
+    except Exception:
+        base = ""
+    base = (base or os.environ.get("PUBLIC_BASE_URL") or "https://app.brittcocapital.com").rstrip("/")
+    contracts_url = base + "/tx/contracts"
+    apply_url = base + "/tx/apply"
+    btn_w = (W - 72 - 12) / 2
+    btn_h = 34
+    btn_y = y - btn_h
+
+    def draw_btn(x, label, url):
+        c.setFillColor(NAVY)
+        c.roundRect(x, btn_y, btn_w, btn_h, 6, fill=1, stroke=0)
+        c.setFillColor(GOLD)
+        c.rect(x, btn_y, 6, btn_h, fill=1, stroke=0)
+        c.setFillColor(white)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(x + btn_w / 2, btn_y + 13, label)
+        try:
+            c.linkURL(url, (x, btn_y, x + btn_w, btn_y + btn_h), relative=0, thickness=0)
+        except Exception:
+            pass
+
+    draw_btn(36, "OPEN A-B AND B-C CONTRACTS", contracts_url)
+    draw_btn(36 + btn_w + 12, "REQUEST A FULL APPLICATION", apply_url)
+
+    y = btn_y - 16
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Click a button in this PDF, or use the links in your email. Call 816-694-1658 for a same-week file.")
 
     c.setFillColor(NAVY)
     c.rect(0, 0, W, 36, fill=1, stroke=0)
@@ -5203,6 +5230,442 @@ def tx_rate_sheet_pdf(lead=None):
     )
     c.save()
     return buf.getvalue()
+
+
+def _pdf_header(c, W, H, subtitle):
+    from reportlab.lib.colors import HexColor, white
+    NAVY = HexColor("#0c2c4a")
+    GOLD = HexColor("#c9a24a")
+    c.setFillColor(NAVY)
+    c.rect(0, H - 64, W, 64, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, H - 68, W, 4, fill=1, stroke=0)
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    if os.path.exists(logo):
+        c.setFillColor(white)
+        c.roundRect(22, H - 56, 38, 38, 5, fill=1, stroke=0)
+        c.drawImage(logo, 24, H - 54, width=34, height=34, mask="auto", preserveAspectRatio=True, anchor="c")
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(70, H - 32, "BRITTCO CAPITAL, INC.")
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica", 7)
+    c.drawString(70, H - 44, subtitle)
+    c.setFillColor(white)
+    c.setFont("Helvetica", 7.5)
+    c.drawRightString(W - 28, H - 28, "816-694-1658")
+    c.drawRightString(W - 28, H - 40, "app.brittcocapital.com")
+
+
+def _pdf_field(c, name, x, y, w, h=14, value=""):
+    try:
+        c.acroForm.textfield(
+            name=name,
+            tooltip=name.replace("_", " "),
+            x=x,
+            y=y,
+            width=w,
+            height=h,
+            borderWidth=0.6,
+            borderColor=HexColor_safe("#0c2c4a"),
+            fillColor=HexColor_safe("#ffffff"),
+            textColor=HexColor_safe("#1c2430"),
+            forceBorder=True,
+            fontSize=8,
+            value=value or "",
+        )
+    except Exception:
+        c.setStrokeColor(HexColor_safe("#0c2c4a"))
+        c.rect(x, y, w, h, fill=0, stroke=1)
+
+
+def HexColor_safe(code):
+    from reportlab.lib.colors import HexColor
+    return HexColor(code)
+
+
+def tx_ab_contract_pdf():
+    """Fillable A-B Residential Real Estate Contract in the Crossley/Ludwig format."""
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    NAVY = HexColor("#0c2c4a")
+    INK = HexColor("#1c2430")
+    MUTED = HexColor("#5a6570")
+    W, H = letter
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    c.setTitle("A-B Residential Real Estate Contract — Brittco Capital")
+    _pdf_header(c, W, H, "TRANSACTIONAL TEMPLATE  ·  A-B PURCHASE CONTRACT")
+
+    y = H - 92
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(W / 2, y, "Residential Real Estate Contract")
+    y -= 14
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawCentredString(W / 2, y, "A-B purchase  ·  Seller to transactional buyer  ·  Fillable template")
+
+    y -= 28
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "Seller")
+    c.drawString(320, y, "Buyer")
+    y -= 18
+    _pdf_field(c, "ab_seller", 36, y, 260)
+    _pdf_field(c, "ab_buyer", 320, y, 256)
+
+    y -= 28
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(NAVY)
+    c.drawString(36, y, "1.  Property")
+    y -= 14
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "BUYER agrees to purchase and SELLER agrees to sell the following real estate, including all improvements (Purchase And/Or Assign).")
+    y -= 18
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Street")
+    c.drawString(320, y, "City")
+    c.drawString(470, y, "State")
+    c.drawString(530, y, "ZIP")
+    y -= 16
+    _pdf_field(c, "ab_street", 36, y, 270)
+    _pdf_field(c, "ab_city", 320, y, 140)
+    _pdf_field(c, "ab_state", 470, y, 50)
+    _pdf_field(c, "ab_zip", 530, y, 46)
+    y -= 22
+    c.drawString(36, y, "Legal description")
+    y -= 16
+    _pdf_field(c, "ab_legal", 36, y, 540, 28)
+
+    y -= 42
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "2.  Purchase price")
+    y -= 16
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Purchase price $")
+    _pdf_field(c, "ab_price", 130, y - 2, 100)
+    y -= 22
+    c.drawString(36, y, "a. Earnest money $")
+    _pdf_field(c, "ab_earnest", 140, y - 2, 80)
+    c.drawString(230, y, "deposited with (title / escrow)")
+    _pdf_field(c, "ab_title", 370, y - 2, 206)
+    y -= 22
+    c.drawString(36, y, "Title contact / address")
+    y -= 16
+    _pdf_field(c, "ab_title_addr", 36, y, 540, 28)
+    y -= 40
+    c.drawString(36, y, "b. Approximate cash balance due from BUYER at closing $")
+    _pdf_field(c, "ab_cash", 320, y - 2, 120)
+
+    y -= 28
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "3.  Closing")
+    y -= 16
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Closing shall be completed on or before")
+    _pdf_field(c, "ab_close", 220, y - 2, 110)
+    c.drawString(340, y, "SELLER shall deliver possession at closing.")
+
+    y -= 24
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "4.  Evidence of title")
+    y -= 14
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "SELLER shall provide BUYER clear evidence of title. Taxes are to be prorated at closing.")
+
+    y -= 22
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "5.  Disclosure")
+    y -= 14
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Buyer is a below-market / investor purchaser that may hold or resell. If Seller is in foreclosure, Buyer has not acted")
+    y -= 12
+    c.drawString(36, y, "as a foreclosure consultant. Seller should obtain legal advice before any real estate transaction.")
+
+    y -= 22
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "6.  Additional terms and conditions")
+    y -= 16
+    _pdf_field(c, "ab_terms", 36, y - 40, 540, 54)
+
+    y -= 80
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawCentredString(W / 2, y, "WHEN SIGNED BY ALL PARTIES THIS IS A LEGALLY BINDING CONTRACT.")
+    y -= 12
+    c.drawCentredString(W / 2, y, "IF NOT UNDERSTOOD, CONSULT AN ATTORNEY BEFORE SIGNING.")
+
+    y -= 30
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Seller signature")
+    c.drawString(320, y, "Date")
+    y -= 16
+    _pdf_field(c, "ab_seller_sig", 36, y, 260)
+    _pdf_field(c, "ab_seller_date", 320, y, 120)
+    y -= 28
+    c.drawString(36, y, "Buyer signature")
+    c.drawString(320, y, "Date")
+    y -= 16
+    _pdf_field(c, "ab_buyer_sig", 36, y, 260)
+    _pdf_field(c, "ab_buyer_date", 320, y, 120)
+
+    c.setFillColor(NAVY)
+    c.rect(0, 0, W, 28, fill=1, stroke=0)
+    c.setFillColor(HexColor("#c9a24a"))
+    c.rect(0, 28, W, 3, fill=1, stroke=0)
+    from reportlab.lib.colors import white
+    c.setFillColor(white)
+    c.setFont("Helvetica", 7)
+    c.drawCentredString(W / 2, 12, "Template only  ·  Brittco Capital, Inc. is not a party unless named  ·  Business-purpose use")
+    c.save()
+    return buf.getvalue()
+
+
+def tx_bc_contract_pdf():
+    """Fillable B-C Purchase and Sale Agreement in the Crossley resale format."""
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    NAVY = HexColor("#0c2c4a")
+    INK = HexColor("#1c2430")
+    MUTED = HexColor("#5a6570")
+    W, H = letter
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    c.setTitle("B-C Purchase and Sale Agreement — Brittco Capital")
+    _pdf_header(c, W, H, "TRANSACTIONAL TEMPLATE  ·  B-C RESALE CONTRACT")
+
+    y = H - 92
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(W / 2, y, "Purchase and Sale Agreement")
+    y -= 14
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawCentredString(W / 2, y, "B-C resale  ·  Transactional seller to end buyer  ·  Fillable template")
+
+    y -= 26
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "This Purchase & Sale Agreement is made on")
+    _pdf_field(c, "bc_date", 250, y - 2, 120)
+    c.drawString(380, y, "by and between:")
+
+    y -= 24
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "Seller (B)")
+    c.drawString(320, y, "Buyer (C)")
+    y -= 16
+    _pdf_field(c, "bc_seller", 36, y, 260)
+    _pdf_field(c, "bc_buyer", 320, y, 256)
+    y -= 22
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Seller phone")
+    c.drawString(320, y, "Buyer phone")
+    y -= 16
+    _pdf_field(c, "bc_seller_phone", 36, y, 260)
+    _pdf_field(c, "bc_buyer_phone", 320, y, 256)
+    y -= 22
+    c.drawString(36, y, "Seller mailing address")
+    c.drawString(320, y, "Buyer mailing address")
+    y -= 16
+    _pdf_field(c, "bc_seller_addr", 36, y, 260, 28)
+    _pdf_field(c, "bc_buyer_addr", 320, y, 256, 28)
+
+    y -= 44
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "Property")
+    y -= 16
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Address")
+    _pdf_field(c, "bc_property", 90, y - 2, 486)
+    y -= 22
+    c.drawString(36, y, "Purchase price $")
+    _pdf_field(c, "bc_price", 130, y - 2, 110)
+    c.drawString(260, y, "Earnest money $")
+    _pdf_field(c, "bc_earnest", 350, y - 2, 90)
+    c.drawString(450, y, "Closing on or before")
+    y -= 18
+    _pdf_field(c, "bc_close", 36, y, 140)
+
+    y -= 24
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "Terms and conditions")
+    terms = [
+        "1. Seller understands Buyer is acting as a principal and is not acting as a real estate broker representing anyone other than itself.",
+        "2. The property is sold in present “As-Is” condition.",
+        "3. Property taxes, HOA dues, and rents (if any) will be prorated at closing. Seller pays items incurred during ownership.",
+        "4. Seller understands Buyer may bring in a funding partner or end-buyer and may assign this agreement for a fee paid by the end-buyer.",
+        "5. Seller grants Buyer access to show inspectors, contractors, partners, renters, or buyers, and to market the property.",
+        "6. Seller represents free title and will convey good and marketable title. Buyer may choose the title company.",
+        "7. Buyer may inspect the property for final approval before transfer of title.",
+        "8. Closing occurs when exclusive possession is given and the deed is recorded. All parties shall comply with this contract.",
+        "9. Buyer shall approve title status. Closing shall be on or before the date stated above.",
+        "10. Inspection period (days):",
+    ]
+    y -= 14
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    for line in terms:
+        c.drawString(36, y, line)
+        y -= 12
+    _pdf_field(c, "bc_inspect_days", 160, y + 2, 40)
+    c.drawString(210, y + 4, "If inspections are unsatisfactory, Buyer may cancel. If no inspection, no cancel right for condition.")
+    y -= 14
+    c.drawString(36, y, "11. Seller will provide keys and vacate by 12:00 a.m. on the day of closing.")
+    y -= 12
+    c.drawString(36, y, "12. Signatures bind the parties. Typed or handwritten addenda control printed terms if initialed by both parties.")
+    y -= 12
+    c.drawString(36, y, "13. Buyer pays Buyer’s normal non-recurring escrow charges and recording fees.")
+    y -= 18
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(36, y, "14. Special provisions")
+    y -= 16
+    _pdf_field(c, "bc_special", 36, y - 36, 540, 50)
+
+    y -= 70
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(36, y, "Buyer signature")
+    c.drawString(320, y, "Seller signature")
+    y -= 16
+    _pdf_field(c, "bc_buyer_sig", 36, y, 260)
+    _pdf_field(c, "bc_seller_sig", 320, y, 256)
+    y -= 22
+    c.drawString(36, y, "Company name")
+    c.drawString(320, y, "Seller name (printed)")
+    y -= 16
+    _pdf_field(c, "bc_buyer_co", 36, y, 260)
+    _pdf_field(c, "bc_seller_print", 320, y, 256)
+
+    c.setFillColor(NAVY)
+    c.rect(0, 0, W, 28, fill=1, stroke=0)
+    c.setFillColor(HexColor("#c9a24a"))
+    c.rect(0, 28, W, 3, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica", 7)
+    c.drawCentredString(W / 2, 12, "Template only  ·  Brittco Capital, Inc. is not a party unless named  ·  Business-purpose use")
+    c.save()
+    return buf.getvalue()
+
+
+@app.route("/tx/contracts")
+def tx_contracts_page():
+    return render_template("tx_contracts.html")
+
+
+@app.route("/tx/contracts/ab.pdf")
+def tx_contract_ab():
+    return send_file(
+        BytesIO(tx_ab_contract_pdf()),
+        mimetype="application/pdf",
+        download_name="Brittco-AB-Purchase-Contract.pdf",
+        as_attachment=False,
+    )
+
+
+@app.route("/tx/contracts/bc.pdf")
+def tx_contract_bc():
+    return send_file(
+        BytesIO(tx_bc_contract_pdf()),
+        mimetype="application/pdf",
+        download_name="Brittco-BC-Resale-Contract.pdf",
+        as_attachment=False,
+    )
+
+
+@app.route("/tx/apply", methods=["GET", "POST"])
+def tx_public_apply():
+    error = None
+    if request.method == "POST":
+        f = request.form
+        name = (f.get("name") or "").strip()
+        email = (f.get("email") or "").strip().lower()
+        phone = (f.get("phone") or "").strip()
+        address = (f.get("address") or "").strip()
+        if not name or not email or "@" not in email or not address:
+            error = "Name, email, and property address are required."
+        else:
+            b = db().execute("SELECT id FROM borrowers WHERE email=?", (email,)).fetchone()
+            if b:
+                bid = b["id"]
+            else:
+                cur = db().execute(
+                    """INSERT INTO borrowers (name, entity_type, entity_name, email, phone, password, notes)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        name,
+                        f.get("entity_type") or "Individual",
+                        f.get("entity_name") or "",
+                        email,
+                        phone,
+                        secrets.token_urlsafe(8),
+                        "Public application from /tx/apply",
+                    ),
+                )
+                bid = cur.lastrowid
+            cur = db().execute(
+                """INSERT INTO deals
+                (borrower_id, loan_type, address, purchase_price, as_is_value, arv, rehab_budget,
+                 loan_amount, rate, points, term_months, status, exit_strategy, notes,
+                 ltv_override_reason, created_at, acked)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    bid,
+                    f.get("loan_type") or "Transactional Loan",
+                    address,
+                    money(f.get("purchase_price")) or None,
+                    money(f.get("as_is_value")) or None,
+                    money(f.get("arv")) or None,
+                    money(f.get("rehab_budget")) or None,
+                    money(f.get("loan_amount")) or None,
+                    money(f.get("rate")) or None,
+                    money(f.get("points")) or None,
+                    int(f["term_months"]) if f.get("term_months") else None,
+                    "Application",
+                    f.get("exit_strategy") or "",
+                    f.get("notes") or "",
+                    f.get("ltv_override_reason") or "",
+                    datetime.now().isoformat(timespec="minutes"),
+                    0,
+                ),
+            )
+            db().commit()
+            did = cur.lastrowid
+            link = public_base() + url_for("deal_detail", did=did)
+            body = (
+                f"Full application submitted from the rate-sheet link.\n\n"
+                f"Name: {name}\nEmail: {email}\nPhone: {phone}\n"
+                f"Property: {address}\nLoan type: {f.get('loan_type')}\n"
+                f"Requested loan: {f.get('loan_amount')}\n\n"
+                f"Open deal in Brittco: {link}\n"
+            )
+            for em in ("john@brittcocapital.com", "nate@brittcocapital.com"):
+                try:
+                    send_mail(em, f"Full application — {name}", body)
+                except Exception:
+                    pass
+            return render_template("tx_apply.html", done=True, error=None, form=None)
+    return render_template("tx_apply.html", done=False, error=error, form=request.form if request.method == "POST" else None)
 
 
 @app.route("/tx", methods=["GET", "POST"])
@@ -5313,6 +5776,8 @@ def transactional_lead():
                 "  • Hold of 2 to 7 days — 2.00% of the funded amount\n\n"
                 "Rates may be negotiable for existing Brittco Capital customers.\n"
                 "This sheet is not a commitment to lend.\n\n"
+                f"Contracts: {public_base()}/tx/contracts\n"
+                f"Full application: {public_base()}/tx/apply\n\n"
                 "If you have a live file, call (816) 694-1658 or reply with the A-B contract, "
                 "B-C contract, ID, and entity papers.\n\n"
                 "Brittco Capital Inc\n"
