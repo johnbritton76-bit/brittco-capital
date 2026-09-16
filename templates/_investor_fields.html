@@ -8,6 +8,18 @@
     <input name="capital_available" type="number" step="0.01" value="{{ inv.capital_available or 0 }}">
     <p class="hint">How much can go into a new deal right now. Investor and staff can both change this.</p>
   </div>
+  {% if staff %}
+  <div class="span-2"><h3>1099 information</h3></div>
+  <div>
+    <label>TIN type</label>
+    <select name="tin_type">
+      <option value="SSN" {% if (inv.tin_type or 'SSN')=='SSN' %}selected{% endif %}>SSN</option>
+      <option value="EIN" {% if inv.tin_type=='EIN' %}selected{% endif %}>EIN</option>
+    </select>
+  </div>
+  <div><label>SSN / EIN (for 1099-INT)</label><input name="tin" value="{{ inv.tin or '' }}" autocomplete="off"></div>
+  <div class="span-2"><label>Mailing address for 1099</label><input name="mailing_address" value="{{ inv.mailing_address or '' }}"></div>
+  {% endif %}
   <div class="span-2"><h3>Wire instructions</h3></div>
   <div><label>Bank name</label><input name="wire_bank" value="{{ inv.wire_bank or '' }}"></div>
   <div><label>Name on account</label><input name="wire_name" value="{{ inv.wire_name or '' }}"></div>
