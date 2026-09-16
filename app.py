@@ -492,7 +492,8 @@ def init_db():
         seed_demo_books(c)
         seed_transactional_sample(c)
     try:
-        seed_crossley_tx(c)
+       c.execute("DELETE FROM participations WHERE loan_id IN (SELECT id FROM loans WHERE loan_number=?)", ("BC-TX-10W96",))
+        c.execute("DELETE FROM loans WHERE loan_number=?", ("BC-TX-10W96",))
         seed_dos_gringos_tx(c)
         cleanup_duplicate_loans(c)
     except Exception:
@@ -501,6 +502,7 @@ def init_db():
     c.close()
     
 def seed_crossley_tx(c):
+        return
     """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
     import shutil
 
