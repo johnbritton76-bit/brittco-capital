@@ -3302,7 +3302,12 @@ def payoff_letter_pdf(loan, borrower, data):
         entity = ((borrower["entity_name"] if borrower["entity_name"] else "") or "").strip()
     except (KeyError, IndexError, TypeError):
         entity = ""
-    who = entity or ((borrower["name"] or "").strip())
+    who = entity or ""
+    if not who and borrower is not None:
+        try:
+            who = (borrower["name"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            who = ""
     prop = (loan["property_address"] or "").strip()
 
     y -= 22
@@ -8010,20 +8015,57 @@ def loan_payoff_send(lid, pid):
     return redirect(url_for("loan_detail", lid=lid))
 
 
+@app.route("/loans/<int:lid>/payoff-letter/<int:pid>")
 @app.route("/loans/<int:lid>/payoff/<int:pid>.pdf")
 def loan_payoff_pdf(lid, pid):
+    loan = _loan_or_404(lid)
+    if not loan:
+        return "Loan not found.", 404
+    if not can_touch_loan_files(loan):
+        return redirect(url_for("login"))
     row = db().execute(
         "SELECT * FROM payoff_letters WHERE id=? AND loan_id=?", (pid, lid)
     ).fetchone()
-    loan = _loan_or_404(lid)
-    if not row or not loan or not can_touch_loan_files(loan):
-        return redirect(url_for("login"))
-    if not session.get("staff_id") and row["status"] not in ("sent", "approved"):
-        return redirect(url_for("portal_home"))
-    path = os.path.join(UPLOAD_DIR, row["filename"] or "")
-    if not os.path.isfile(path):
-        return redirect(url_for("loan_detail", lid=lid) if session.get("staff_id") else url_for("portal_home"))
-    return send_file(path, mimetype="application/pdf", download_name=f"Payoff-{loan['loan_number']}.pdf")
+    if not row:
+        row = db().execute(
+            "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
+        ).fetchone()
+    if not row:
+        data = payoff_defaults(loan)
+    else:
+        if not session.get("staff_id") and row["status"] not in ("sent", "approved"):
+            return redirect(url_for("portal_home"))
+        data = payoff_defaults(loan)
+        for k in (
+            "letter_date", "good_through", "principal", "interest_fee", "other_fees",
+            "per_diem", "total", "wire_bank", "wire_name", "wire_routing",
+            "wire_account", "wire_further", "notes",
+        ):
+            try:
+                if row[k] not in (None, ""):
+                    data[k] = row[k]
+            except (KeyError, IndexError):
+                pass
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    try:
+        pdf_bytes = payoff_letter_pdf(loan, b, data)
+    except Exception:
+        from reportlab.pdfgen import canvas as pdfcanvas
+        from reportlab.lib.pagesizes import letter
+        buf = BytesIO()
+        c = pdfcanvas.Canvas(buf, pagesize=letter)
+        c.setFont("Helvetica", 12)
+        c.drawString(72, 720, "Brittco Capital Inc — Payoff Statement")
+        c.drawString(72, 700, f"Loan {loan['loan_number'] or lid}")
+        c.drawString(72, 680, f"Total {data.get('total')}")
+        c.save()
+        pdf_bytes = buf.getvalue()
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        download_name=f"Payoff-{loan['loan_number'] or lid}.pdf",
+        as_attachment=False,
+    )
 
 
 @app.route("/loans/<int:lid>/payment", methods=["POST"])
