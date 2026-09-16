@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Admin only · corporate books</div>
+    <h2>Brittco Capital accounting</h2>
+  </div>
+  <form method="get" action="{{ url_for('accounting') }}">
+    <label>Year
+      <select name="year" onchange="this.form.submit()">
+        <option value="all" {% if year=='all' %}selected{% endif %}>All time</option>
+        {% for y in years %}
+        <option value="{{ y }}" {% if year==y %}selected{% endif %}>{{ y }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+</div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+<p class="hint">
+  Built for the Brittco Capital, Inc. corporate return. Brittco is lender of record.
+  Borrower interest is income. Investor interest is a deduction. Nate is a 1099-NEC contractor, paid only after the investor has basis back.
+  Principal in and out is shown but is not income or expense. Investors never see this tab.
+</p>
+<p>
+  <a class="btn" href="{{ url_for('accounting_csv', year=year, kind='pl') }}">Download P&L</a>
+  <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='deals') }}">Download deal worksheet</a>
+  <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='1099') }}">Download 1099 worksheet</a>
+  <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='all') }}">Download all (zip)</a>
+</p>
+
+<div class="grid cards">
+  <div class="card"><h3>Net income (cash)</h3><div class="n">${{ "{:,.2f}".format(books.pl.net_cash) }}</div></div>
+  <div class="card"><h3>Collected from borrowers</h3><div>${{ "{:,.2f}".format(books.pl.borrower_interest) }}</div></div>
+  <div class="card"><h3>Paid to investors</h3><div>${{ "{:,.2f}".format(books.pl.paid_investors) }}</div></div>
+  <div class="card"><h3>Nate paid (1099)</h3><div>${{ "{:,.2f}".format(books.pl.nate_paid) }}</div></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Corporate P&L — {{ year }}</h3>
+  <table class="table">
+    <tr><th>Line</th><th>Cash</th><th>Accrual</th></tr>
+    <tr><td>Interest / fees collected from borrowers</td><td>${{ "{:,.2f}".format(books.pl.borrower_interest) }}</td><td>${{ "{:,.2f}".format(books.pl.borrower_interest) }}</td></tr>
+    <tr><td>Brittco capital fee collected (only when turned on for a loan)</td><td>${{ "{:,.2f}".format(books.pl.brittco_fee_cash) }}</td><td>${{ "{:,.2f}".format(books.pl.brittco_fee_cash + books.pl.brittco_fee_accrual) }}</td></tr>
+    <tr><td>Other income (typed below)</td><td>${{ "{:,.2f}".format(books.pl.other_income) }}</td><td>${{ "{:,.2f}".format(books.pl.other_income) }}</td></tr>
+    <tr><td><strong>Total income</strong></td><td><strong>${{ "{:,.2f}".format(books.pl.total_income) }}</strong></td><td><strong>${{ "{:,.2f}".format(books.pl.total_income + books.pl.brittco_fee_accrual) }}</strong></td></tr>
+    <tr><td>Less: interest paid to investors</td><td>${{ "{:,.2f}".format(books.pl.paid_investors) }}</td><td>${{ "{:,.2f}".format(books.pl.paid_investors) }}</td></tr>
+    <tr><td>Less: Nate Holland (1099-NEC) — cash = paid; accrual = realized this year</td><td>${{ "{:,.2f}".format(books.pl.nate_paid) }}</td><td>${{ "{:,.2f}".format(books.pl.nate_accrual) }}</td></tr>
+    <tr><td>Less: operating expenses (typed below)</td><td>${{ "{:,.2f}".format(books.pl.opex) }}</td><td>${{ "{:,.2f}".format(books.pl.opex) }}</td></tr>
+    <tr><td><strong>Net income — Brittco Capital, Inc.</strong></td><td><strong>${{ "{:,.2f}".format(books.pl.net_cash) }}</strong></td><td><strong>${{ "{:,.2f}".format(books.pl.net_accrual) }}</strong></td></tr>
+    <tr><td class="hint">Principal collected from borrowers (not income)</td><td>${{ "{:,.2f}".format(books.pl.principal_in) }}</td><td>${{ "{:,.2f}".format(books.pl.principal_in) }}</td></tr>
+    <tr><td class="hint">Principal returned to investors (not an expense)</td><td>${{ "{:,.2f}".format(books.pl.principal_out) }}</td><td>${{ "{:,.2f}".format(books.pl.principal_out) }}</td></tr>
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Balance sheet (lite)</h3>
+  <table class="table">
+    <tr><td>Notes receivable (borrowers still owe)</td><td>${{ "{:,.2f}".format(books.bs.notes_receivable) }}</td></tr>
+    <tr><td>Due to investors (capital still in deals)</td><td>${{ "{:,.2f}".format(books.bs.due_investors) }}</td></tr>
+    <tr><td>Nate payable (realized, not yet paid)</td><td>${{ "{:,.2f}".format(books.bs.nate_payable) }}</td></tr>
+    <tr><td>Nate estimated on open loans (not payable yet)</td><td>${{ "{:,.2f}".format(books.bs.nate_accrued_open) }}</td></tr>
+  </table>
+  <p class="hint">Cash in the bank is kept by your CPA. Enter bank balances in their software.</p>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Deal-by-deal worksheet</h3>
+  <p class="hint">Set Brittco’s % on the loan page only when you are actually taking a capital fee on that file (leave 0 if not).</p>
+  <table class="table">
+    <tr>
+      <th>Loan</th><th>Property</th><th>Borrower</th><th>Status</th>
+      <th>Collected</th><th>To investors</th><th>Brittco %</th><th>Nate payable</th><th>Brittco net</th>
+    </tr>
+    {% for r in books.deals %}
+    <tr>
+      <td><a href="{{ url_for('loan_detail', lid=r.id) }}">{{ r.loan_number }}</a></td>
+      <td>{{ r.property }}</td>
+      <td>{{ r.borrower }}</td>
+      <td>{{ r.status }}</td>
+      <td>${{ "{:,.2f}".format(r.gross_collected) }}</td>
+      <td>${{ "{:,.2f}".format(r.paid_investors) }}</td>
+      <td>{{ "%.2f"|format(r.brittco_pct) }}%{% if r.brittco_fee %} · ${{ "{:,.2f}".format(r.brittco_fee) }}{% endif %}</td>
+      <td>${{ "{:,.2f}".format(r.nate_due) }}</td>
+      <td>${{ "{:,.2f}".format(r.brittco_net_cash) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9">No loans yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>1099-INT — investors</h3>
+  <p class="hint">Interest actually paid this period. Add SSN/EIN on the investor profile. Give this sheet to the CPA for 1099-INT filing.</p>
+  <table class="table">
+    <tr><th>Investor</th><th>TIN</th><th>Address</th><th>Interest paid</th><th>Principal returned</th></tr>
+    {% for r in books.form1099 %}
+    <tr>
+      <td><a href="{{ url_for('investor_detail', iid=r.id) }}">{{ r.name }}</a> {% if r.entity %}<span class="hint">{{ r.entity }}</span>{% endif %}</td>
+      <td>{% if r.missing %}<span class="badge warn">Need TIN</span>{% else %}{{ r.tin_type }} {{ r.tin }}{% endif %}</td>
+      <td>{{ r.address or "—" }}</td>
+      <td>${{ "{:,.2f}".format(r.interest) }}</td>
+      <td>${{ "{:,.2f}".format(r.principal) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No investor interest in this period.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>1099-NEC — Nate Holland</h3>
+  <p class="hint">Report amounts <strong>paid</strong> in the year, not estimates on open loans.</p>
+  <div class="grid cards">
+    <div class="card"><h3>Paid this period</h3><div class="n">${{ "{:,.2f}".format(books.nate.paid_year) }}</div></div>
+    <div class="card"><h3>Still payable</h3><div>${{ "{:,.2f}".format(books.nate.payable) }}</div></div>
+    <div class="card"><h3>Realized this period (accrual)</h3><div>${{ "{:,.2f}".format(books.nate.realized_year) }}</div></div>
+  </div>
+  <form method="post" action="{{ url_for('accounting') }}" class="form-grid" style="margin-top:12px">
+    <input type="hidden" name="save_nate" value="1">
+    <input type="hidden" name="year" value="{{ year }}">
+    <div><label>Name</label><input name="nate_name" value="{{ books.nate.name }}"></div>
+    <div><label>SSN / EIN</label><input name="nate_tin" value="{{ books.nate.tin }}" autocomplete="off"></div>
+    <div class="span-2"><label>Address</label><input name="nate_address" value="{{ books.nate.address }}"></div>
+    <div><label>Email</label><input name="nate_email" value="{{ books.nate.email }}"></div>
+    <div><button class="btn ghost" type="submit">Save Nate 1099 details</button></div>
+  </form>
+  <form method="post" action="{{ url_for('accounting_nate_pay') }}" class="form-grid" style="margin-top:16px">
+    <input type="hidden" name="year" value="{{ year }}">
+    <div><label>Paid on</label><input name="paid_on" type="date"></div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
+    <div>
+      <label>Loan (optional)</label>
+      <select name="loan_id">
+        <option value="">General</option>
+        {% for l in loans %}
+        <option value="{{ l.id }}">{{ l.loan_number }} — {{ l.property_address }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="span-2"><label>Notes</label><input name="notes" placeholder="Check #, wire, etc."></div>
+    <div><button class="btn" type="submit">Record payment to Nate</button></div>
+  </form>
+  {% if books.nate.payments %}
+  <table class="table" style="margin-top:12px">
+    <tr><th>Date</th><th>Amount</th><th>Loan</th><th>Notes</th><th></th></tr>
+    {% for p in books.nate.payments %}
+    <tr>
+      <td>{{ p.paid_on }}</td>
+      <td>${{ "{:,.2f}".format(p.amount or 0) }}</td>
+      <td>{{ p.loan_number or "General" }}</td>
+      <td>{{ p.notes }}</td>
+      <td>
+        <form method="post" action="{{ url_for('accounting_nate_pay_delete', pid=p.id) }}" onsubmit="return confirm('Remove this Nate payment?');">
+          <input type="hidden" name="year" value="{{ year }}">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Adjustments the CPA can type</h3>
+  <p class="hint">Legal, software, insurance, credit pulls, marketing. These are Brittco books only.</p>
+  <form method="post" action="{{ url_for('accounting_entry') }}" class="form-grid">
+    <input type="hidden" name="year" value="{{ year if year!='all' else years[-1] }}">
+    <div>
+      <label>Type</label>
+      <select name="kind">
+        <option value="expense">Expense</option>
+        <option value="income">Income</option>
+      </select>
+    </div>
+    <div>
+      <label>Category</label>
+      <select name="category">
+        {% for c in expense_cats %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        {% for c in income_cats %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
+    <div class="span-2"><label>Memo</label><input name="memo" placeholder="Invoice #, vendor"></div>
+    <div><button class="btn" type="submit">Add line</button></div>
+  </form>
+  {% if books.entries %}
+  <table class="table" style="margin-top:12px">
+    <tr><th>Year</th><th>Type</th><th>Category</th><th>Memo</th><th>Amount</th><th></th></tr>
+    {% for e in books.entries %}
+    <tr>
+      <td>{{ e.year }}</td>
+      <td>{{ e.kind }}</td>
+      <td>{{ e.category }}</td>
+      <td>{{ e.memo }}</td>
+      <td>${{ "{:,.2f}".format(e.amount or 0) }}</td>
+      <td>
+        <form method="post" action="{{ url_for('accounting_entry_delete', eid=e.id) }}" onsubmit="return confirm('Remove this line?');">
+          <input type="hidden" name="year" value="{{ year }}">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+{% endblock %}
