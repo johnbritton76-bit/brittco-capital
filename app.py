@@ -1933,6 +1933,7 @@ try:
         ("own_or_rent", "TEXT"),
         ("work_phone", "TEXT"),
         ("ssn", "TEXT"),
+        ("ein", "TEXT"),
         ("dob", "TEXT"),
         ("employer", "TEXT"),
         ("occupation", "TEXT"),
@@ -4309,6 +4310,16 @@ def save_borrower_from_form(f, bid=None, existing=None):
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             payload,
         )
+    try:
+        ein = (f.get("ein") or "").strip()
+        if bid:
+            db().execute("UPDATE borrowers SET ein=? WHERE id=?", (ein, bid))
+        else:
+            row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
+            if row:
+                db().execute("UPDATE borrowers SET ein=? WHERE id=?", (ein, row[0]))
+    except sqlite3.Error:
+        pass
 
 
 def save_investor_profile(f, iid, existing=None):
