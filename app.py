@@ -499,9 +499,125 @@ def init_db():
         pass
     c.commit()
     c.close()
+
+
+def ensure_deleted_loans_table(c):
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS deleted_loan_numbers (
+            loan_number TEXT PRIMARY KEY,
+            deleted_at TEXT
+        )"""
+    )
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO deleted_loan_numbers (loan_number, deleted_at) VALUES (?,?)",
+            ("BC-TX-10W96", datetime.now().isoformat(timespec="minutes")),
+        )
+    except sqlite3.Error:
+        pass
+
+
+def remember_deleted_loan(c, number):
+    number = (number or "").strip()
+    if not number:
+        return
+    ensure_deleted_loans_table(c)
+    try:
+        c.execute(
+            "INSERT OR REPLACE INTO deleted_loan_numbers (loan_number, deleted_at) VALUES (?,?)",
+            (number, datetime.now().isoformat(timespec="minutes")),
+        )
+    except sqlite3.Error:
+        pass
+
+
+def loan_number_is_deleted(c, number):
+    number = (number or "").strip()
+    if not number:
+        return False
+    ensure_deleted_loans_table(c)
+    row = c.execute(
+        "SELECT 1 FROM deleted_loan_numbers WHERE loan_number=?", (number,)
+    ).fetchone()
+    return bool(row)
+
+
+def purge_loan_number(c, number):
+    number = (number or "").strip()
+    if not number:
+        return
+    remember_deleted_loan(c, number)
+    rows = list(c.execute("SELECT id FROM loans WHERE loan_number=?", (number,)).fetchall())
+    if number == "BC-TX-10W96":
+        extra = c.execute(
+            """SELECT l.id FROM loans l
+               LEFT JOIN borrowers b ON b.id=l.borrower_id
+               WHERE l.property_address LIKE ?
+                  OR IFNULL(b.email,'')=?
+                  OR IFNULL(b.name,'') LIKE ?""",
+            ("%10 W 96th%", "kate.crossley@gmail.com", "%Crossley%"),
+        ).fetchall()
+        rows.extend(extra)
+    seen = set()
+    for row in rows:
+        lid = row[0]
+        if lid in seen:
+            continue
+        seen.add(lid)
+        for sql in (
+            "DELETE FROM distributions WHERE loan_id=?",
+            "DELETE FROM payments WHERE loan_id=?",
+            "DELETE FROM extensions WHERE loan_id=?",
+            "DELETE FROM participations WHERE loan_id=?",
+            "DELETE FROM reminder_log WHERE loan_id=?",
+            "DELETE FROM loans WHERE id=?",
+        ):
+            try:
+                c.execute(sql, (lid,))
+            except sqlite3.Error:
+                pass
+    if number == "BC-TX-10W96":
+        try:
+            c.execute("DELETE FROM deals WHERE address LIKE ?", ("%10 W 96th%",))
+        except sqlite3.Error:
+            pass
+        try:
+            c.execute(
+                "DELETE FROM messages WHERE body LIKE ? OR body LIKE ?",
+                ("%BC-TX-10W96%", "%Crossley%"),
+            )
+        except sqlite3.Error:
+            pass
+
+
+def live_servicing_book(c):
+    """One row per live loan number. Deleted numbers stay out."""
+    ensure_deleted_loans_table(c)
+    row = c.execute(
+        """
+        SELECT COUNT(*) c, COALESCE(SUM(bal),0) bal FROM (
+            SELECT COALESCE(NULLIF(loan_number,''), 'id-' || id) AS num,
+                   MAX(COALESCE(current_balance,0)) AS bal
+            FROM loans
+            WHERE status NOT IN ('Paid Off','Written Off','Closed','Termed','Sold')
+              AND COALESCE(archived,0)=0
+              AND COALESCE(loan_number,'') != 'BC-TX-10W96'
+              AND COALESCE(loan_number,'') NOT IN (
+                  SELECT loan_number FROM deleted_loan_numbers
+              )
+            GROUP BY COALESCE(NULLIF(loan_number,''), 'id-' || id)
+        )
+        """
+    ).fetchone()
+    return row
+
     
 def seed_crossley_tx(c):
-    """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
+    """Crossley BC-TX-10W96 stays deleted. Do not recreate."""
+    ensure_deleted_loans_table(c)
+    remember_deleted_loan(c, "BC-TX-10W96")
+    purge_loan_number(c, "BC-TX-10W96")
+    return
     import shutil
 
     existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone()
@@ -710,7 +826,10 @@ def cleanup_duplicate_loans(c):
         bid = _row_get(row, "borrower_id", 1)
         num = (_row_get(row, "loan_number", 2) or "").strip()
         addr = _addr_key(_row_get(row, "property_address", 3))
-        if num in ("BC-TX-10W96", "BC-TX-409SM"):
+        if num == "BC-TX-10W96" or loan_number_is_deleted(c, num):
+            drop.append(lid)
+            continue
+        if num == "BC-TX-409SM":
             if num:
                 keep_num[num] = lid
             if addr:
@@ -796,6 +915,11 @@ def cleanup_duplicate_loans(c):
 
 def seed_dos_gringos_tx(c):
     import shutil
+
+    ensure_deleted_loans_table(c)
+    if loan_number_is_deleted(c, "BC-TX-409SM"):
+        purge_loan_number(c, "BC-TX-409SM")
+        return
 
     existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-409SM",)).fetchone()
     if existing:
@@ -955,7 +1079,11 @@ def seed_dos_gringos_tx(c):
             )
             
 def seed_crossley_tx(c):
-    """Live transactional file: 10 W 96th Terrace, Crossley Innovations LLC."""
+    """Crossley BC-TX-10W96 stays deleted. Do not recreate."""
+    ensure_deleted_loans_table(c)
+    remember_deleted_loan(c, "BC-TX-10W96")
+    purge_loan_number(c, "BC-TX-10W96")
+    return
     import shutil
 
     existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-10W96",)).fetchone()
@@ -1164,7 +1292,10 @@ def cleanup_duplicate_loans(c):
         bid = _row_get(row, "borrower_id", 1)
         num = (_row_get(row, "loan_number", 2) or "").strip()
         addr = _addr_key(_row_get(row, "property_address", 3))
-        if num in ("BC-TX-10W96", "BC-TX-409SM"):
+        if num == "BC-TX-10W96" or loan_number_is_deleted(c, num):
+            drop.append(lid)
+            continue
+        if num == "BC-TX-409SM":
             if num:
                 keep_num[num] = lid
             if addr:
@@ -1250,6 +1381,11 @@ def cleanup_duplicate_loans(c):
 
 def seed_dos_gringos_tx(c):
     import shutil
+
+    ensure_deleted_loans_table(c)
+    if loan_number_is_deleted(c, "BC-TX-409SM"):
+        purge_loan_number(c, "BC-TX-409SM")
+        return
 
     existing = c.execute("SELECT id FROM loans WHERE loan_number=?", ("BC-TX-409SM",)).fetchone()
     if existing:
@@ -4284,6 +4420,11 @@ def loan_alerts():
     for r in rows:
         lid = r["id"]
         num = (r["loan_number"] or "").strip()
+        name = (r["borrower_name"] or "")
+        if num == "BC-TX-10W96" or loan_number_is_deleted(db(), num):
+            continue
+        if "crossley" in name.lower() or "10 w 96" in (r["property_address"] or "").lower():
+            continue
         mark = num or lid
         if mark in seen:
             continue
@@ -5039,13 +5180,17 @@ def dashboard():
         ).fetchall()
     )
     funded = sum(money(d["loan_amount"]) for d in deals if d["status"] == "Funded")
-    book = db().execute(
-        "SELECT COUNT(*) c, COALESCE(SUM(current_balance),0) bal FROM loans WHERE status NOT IN ('Paid Off','Written Off') AND COALESCE(archived,0)=0"
-    ).fetchone()
+    book = live_servicing_book(db())
     try:
         alerts = loan_alerts()
     except Exception:
         alerts = []
+    alerts = [
+        a
+        for a in alerts
+        if "crossley" not in (a.get("name") or "").lower()
+        and (a.get("label") or "") != "BC-TX-10W96"
+    ]
     try:
         post_reminders(alerts)
     except Exception:
@@ -7549,6 +7694,12 @@ def loan_restore(lid):
 
 def wipe_loan(lid):
     lid = int(lid)
+    try:
+        row = db().execute("SELECT loan_number FROM loans WHERE id=?", (lid,)).fetchone()
+        if row:
+            remember_deleted_loan(db(), row["loan_number"] if "loan_number" in row.keys() else row[0])
+    except sqlite3.Error:
+        pass
     for sql, args in (
         ("DELETE FROM distributions WHERE loan_id=?", (lid,)),
         ("DELETE FROM payments WHERE loan_id=?", (lid,)),
