@@ -1813,6 +1813,17 @@ try:
         _c.execute("UPDATE loans SET archived=0 WHERE archived IS NULL")
     if loan_cols and "archived_at" not in loan_cols:
         _c.execute("ALTER TABLE loans ADD COLUMN archived_at TEXT")
+    if loan_cols and "base_term_months" not in loan_cols:
+        _c.execute("ALTER TABLE loans ADD COLUMN base_term_months INTEGER")
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS loan_ext_options (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            seq INTEGER,
+            months INTEGER,
+            rate REAL
+        )"""
+    )
     _c.execute(
         """CREATE TABLE IF NOT EXISTS form_packets (
             id INTEGER PRIMARY KEY,
@@ -3069,12 +3080,66 @@ def annualized_days(rate_pct, days):
 def _row_months(row):
     if row is None:
         return 0
+    for key in ("base_term_months", "term_months"):
+        try:
+            if key in row.keys() and row[key] not in (None, ""):
+                return int(row[key] or 0)
+        except Exception:
+            pass
+    return 0
+
+
+def loan_ext_options(lid):
     try:
-        if "term_months" not in row.keys():
-            return 0
-        return int(row["term_months"] or 0)
-    except Exception:
-        return 0
+        return db().execute(
+            "SELECT * FROM loan_ext_options WHERE loan_id=? ORDER BY seq, id", (lid,)
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def save_loan_ext_options(lid, form):
+    months_list = form.getlist("ext_months")
+    rates_list = form.getlist("ext_rate")
+    try:
+        db().execute("DELETE FROM loan_ext_options WHERE loan_id=?", (lid,))
+    except sqlite3.Error:
+        return
+    seq = 1
+    for months, rate in zip(months_list, rates_list):
+        m = int(float(months)) if months not in (None, "") else 0
+        r = money(rate)
+        if m <= 0 and r <= 0:
+            continue
+        if m <= 0:
+            m = 1
+        db().execute(
+            "INSERT INTO loan_ext_options (loan_id, seq, months, rate) VALUES (?,?,?,?)",
+            (lid, seq, m, r),
+        )
+        seq += 1
+
+
+def used_extension_fee(loan):
+    prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    try:
+        rows = db().execute(
+            "SELECT rate FROM extensions WHERE loan_id=?", (loan["id"],)
+        ).fetchall()
+    except (sqlite3.Error, KeyError, TypeError):
+        return 0.0
+    total = 0.0
+    for r in rows:
+        total += prin * money(r["rate"]) / 100.0
+    return round(total, 2)
+
+
+def scheduled_extension_fee(loan):
+    prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    total = 0.0
+    for opt in loan_ext_options(loan["id"] if loan is not None else 0):
+        total += prin * money(opt["rate"]) / 100.0
+    return round(total, 2)
 
 
 def loan_term_days(loan, p=None):
@@ -3104,6 +3169,11 @@ def payoff_amount(loan):
     pts = money(row_val(loan, "points"))
     if pts and "Transactional" in kind:
         return prin + prin * pts / 100.0
+    base = money(row_val(loan, "rate"))
+    base_fee = prin * base / 100.0 if base else 0.0
+    used = used_extension_fee(loan) if loan is not None else 0.0
+    if base_fee or used:
+        return round(prin + base_fee + used, 2)
     return extra or prin
 
 
@@ -3264,7 +3334,10 @@ def payoff_letter_pdf(loan, borrower, data):
     if os.path.exists(logo):
         c.setFillColor(white)
         c.roundRect(28, H - 68, 46, 46, 6, fill=1, stroke=0)
-        c.drawImage(logo, 31, H - 65, width=40, height=40, mask="auto", preserveAspectRatio=True, anchor="c")
+        try:
+            c.drawImage(logo, 31, H - 65, width=40, height=40, preserveAspectRatio=True, anchor="c")
+        except Exception:
+            pass
     c.setFillColor(white)
     c.setFont("Helvetica-Bold", 15)
     c.drawString(84, H - 38, "BRITTCO CAPITAL, INC.")
@@ -3308,7 +3381,7 @@ def payoff_letter_pdf(loan, borrower, data):
             who = (borrower["name"] or "").strip()
         except (KeyError, IndexError, TypeError):
             who = ""
-    prop = (loan["property_address"] or "").strip()
+    prop = (row_val(loan, "property_address") or "").strip()
 
     y -= 22
     box_h = 78
@@ -3370,7 +3443,7 @@ def payoff_letter_pdf(loan, borrower, data):
     c.drawCentredString(36 + half + 6 + (half - 6) / 2, y - 16, "GOOD THROUGH")
     c.setFillColor(NAVY)
     c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(36 + (half - 6) / 2, y - 40, f"${money(data['total']):,.2f}")
+    c.drawCentredString(36 + (half - 6) / 2, y - 40, f"${money(data.get('total')):,.2f}")
     good = pretty_date(data.get("good_through")).upper()
     c.setFont("Helvetica-Bold", 13)
     c.drawCentredString(36 + half + 6 + (half - 6) / 2, y - 40, good)
@@ -3476,7 +3549,10 @@ def payoff_letter_pdf(loan, borrower, data):
 
     sig = os.path.join(APP_DIR, "static", "signature.png")
     if os.path.exists(sig):
-        c.drawImage(sig, mid + 8, y - 44, width=128, height=32, mask="auto", preserveAspectRatio=True, anchor="sw")
+        try:
+            c.drawImage(sig, mid + 8, y - 44, width=128, height=32, preserveAspectRatio=True, anchor="sw")
+        except Exception:
+            pass
     c.setStrokeColor(INK)
     c.setLineWidth(0.6)
     c.line(mid + 8, y - 46, mid + 168, y - 46)
@@ -7669,13 +7745,21 @@ def loan_new():
     if request.method == "POST":
         f = request.form
         principal = money(f.get("original_principal"))
-        db().execute(
+        base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else None
+        start = f.get("start_date")
+        maturity = f.get("maturity_date")
+        if start and base_term and not maturity:
+            try:
+                maturity = (parse_date(start) + timedelta(days=30 * base_term)).isoformat()
+            except Exception:
+                maturity = f.get("maturity_date")
+        cur = db().execute(
             """INSERT INTO loans
             (borrower_id, deal_id, loan_number, loan_type, property_address,
              original_principal, current_balance, rate, points, start_date, maturity_date,
              payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
-             status, notes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             status, notes, base_term_months)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(f["borrower_id"]),
                 int(f["deal_id"]) if f.get("deal_id") else None,
@@ -7686,19 +7770,22 @@ def loan_new():
                 money(f.get("current_balance")) or principal,
                 money(f.get("rate")) or None,
                 money(f.get("points")) or None,
-                f.get("start_date"),
-                f.get("maturity_date"),
+                start,
+                maturity,
                 f.get("payment_type"),
                 money(f.get("payment_amount")) or None,
                 f.get("payment_frequency") or "Monthly",
-                f.get("next_payment_due"),
+                f.get("next_payment_due") or maturity,
                 money(f.get("late_fee")) or 0,
                 f.get("status") or "Current",
                 f.get("notes"),
+                base_term,
             ),
         )
+        lid = cur.lastrowid
+        save_loan_ext_options(lid, f)
         db().commit()
-        return redirect(url_for("loans"))
+        return redirect(url_for("loan_detail", lid=lid))
     return render_template(
         "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None
     )
@@ -7792,6 +7879,10 @@ def loan_detail(lid):
         letters=letters,
         latest_letter=latest,
         flash=session.pop("last_invite_note", None),
+        ext_options=loan_ext_options(lid),
+        used_exts=db().execute(
+            "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
+        ).fetchall(),
     )
 
 
@@ -8018,54 +8109,98 @@ def loan_payoff_send(lid, pid):
 @app.route("/loans/<int:lid>/payoff-letter/<int:pid>")
 @app.route("/loans/<int:lid>/payoff/<int:pid>.pdf")
 def loan_payoff_pdf(lid, pid):
-    loan = _loan_or_404(lid)
-    if not loan:
-        return "Loan not found.", 404
-    if not can_touch_loan_files(loan):
-        return redirect(url_for("login"))
-    row = db().execute(
-        "SELECT * FROM payoff_letters WHERE id=? AND loan_id=?", (pid, lid)
-    ).fetchone()
-    if not row:
-        row = db().execute(
-            "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
-        ).fetchone()
-    if not row:
-        data = payoff_defaults(loan)
-    else:
-        if not session.get("staff_id") and row["status"] not in ("sent", "approved"):
-            return redirect(url_for("portal_home"))
-        data = payoff_defaults(loan)
-        for k in (
-            "letter_date", "good_through", "principal", "interest_fee", "other_fees",
-            "per_diem", "total", "wire_bank", "wire_name", "wire_routing",
-            "wire_account", "wire_further", "notes",
-        ):
-            try:
-                if row[k] not in (None, ""):
-                    data[k] = row[k]
-            except (KeyError, IndexError):
-                pass
-    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
     try:
-        pdf_bytes = payoff_letter_pdf(loan, b, data)
+        loan = _loan_or_404(lid)
+        if not loan:
+            return "Loan not found.", 404
+        if not can_touch_loan_files(loan):
+            return redirect(url_for("login"))
+        row = db().execute(
+            "SELECT * FROM payoff_letters WHERE id=? AND loan_id=?", (pid, lid)
+        ).fetchone()
+        if not row:
+            row = db().execute(
+                "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
+            ).fetchone()
+        data = {
+            "letter_date": "",
+            "good_through": "",
+            "principal": 0,
+            "interest_fee": 0,
+            "other_fees": 0,
+            "per_diem": 0,
+            "total": 0,
+            "wire_bank": "Prism Bank",
+            "wire_bank_address": "2610 S Division Street, Guthrie, OK 73044",
+            "wire_name": "Brittco Capital, Inc.",
+            "wire_routing": "",
+            "wire_account": "",
+            "wire_further": row_val(loan, "property_address"),
+            "notes": "",
+        }
+        try:
+            data.update(payoff_defaults(loan))
+        except Exception:
+            pass
+        if row:
+            for k in list(data.keys()):
+                try:
+                    if row[k] not in (None, ""):
+                        data[k] = row[k]
+                except Exception:
+                    pass
+        b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+        pdf_bytes = None
+        try:
+            pdf_bytes = payoff_letter_pdf(loan, b, data)
+        except Exception:
+            pdf_bytes = None
+        if not pdf_bytes:
+            from reportlab.pdfgen import canvas as pdfcanvas
+            from reportlab.lib.pagesizes import letter as letter_size
+            buf = BytesIO()
+            c = pdfcanvas.Canvas(buf, pagesize=letter_size)
+            y = 740
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(50, y, "Brittco Capital, Inc. — Payoff Statement")
+            y -= 28
+            c.setFont("Helvetica", 11)
+            lines = [
+                f"Loan: {row_val(loan, 'loan_number') or lid}",
+                f"Borrower: {(b['name'] if b else '')}",
+                f"Property: {row_val(loan, 'property_address')}",
+                f"Letter date: {data.get('letter_date')}",
+                f"Good through: {data.get('good_through')}",
+                f"Principal: ${money(data.get('principal')):,.2f}",
+                f"Interest / fee: ${money(data.get('interest_fee')):,.2f}",
+                f"Other fees: ${money(data.get('other_fees')):,.2f}",
+                f"Total payoff: ${money(data.get('total')):,.2f}",
+                f"Per diem: ${money(data.get('per_diem')):,.2f}",
+                "",
+                "Wire to:",
+                data.get("wire_name") or "Brittco Capital, Inc.",
+                data.get("wire_bank") or "",
+                data.get("wire_bank_address") or "",
+                f"Routing: {data.get('wire_routing') or ''}",
+                f"Account: {data.get('wire_account') or ''}",
+                f"Reference: {data.get('wire_further') or ''}",
+                "",
+                "John Britton, President",
+                "4825 Vasca Drive, Sarasota, FL 34240  ·  816-694-1658",
+            ]
+            for line in lines:
+                c.drawString(50, y, str(line)[:95])
+                y -= 16
+            c.save()
+            pdf_bytes = buf.getvalue()
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            download_name=f"Payoff-{row_val(loan, 'loan_number') or lid}.pdf",
+            as_attachment=False,
+        )
     except Exception:
-        from reportlab.pdfgen import canvas as pdfcanvas
-        from reportlab.lib.pagesizes import letter
-        buf = BytesIO()
-        c = pdfcanvas.Canvas(buf, pagesize=letter)
-        c.setFont("Helvetica", 12)
-        c.drawString(72, 720, "Brittco Capital Inc — Payoff Statement")
-        c.drawString(72, 700, f"Loan {loan['loan_number'] or lid}")
-        c.drawString(72, 680, f"Total {data.get('total')}")
-        c.save()
-        pdf_bytes = buf.getvalue()
-    return send_file(
-        BytesIO(pdf_bytes),
-        mimetype="application/pdf",
-        download_name=f"Payoff-{loan['loan_number'] or lid}.pdf",
-        as_attachment=False,
-    )
+        return "Payoff letter could not be built. Generate a new letter from the loan page.", 500
 
 
 @app.route("/loans/<int:lid>/payment", methods=["POST"])
@@ -8477,6 +8612,40 @@ def update_participation(lid, pid):
         ),
     )
     db().commit()
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/use-extension", methods=["POST"])
+@staff_required
+def use_loan_extension(lid):
+    loan = _loan_or_404(lid)
+    if not loan:
+        return redirect(url_for("loans"))
+    used_n = db().execute(
+        "SELECT COUNT(*) AS n FROM extensions WHERE loan_id=? AND (participation_id IS NULL OR participation_id=0)",
+        (lid,),
+    ).fetchone()["n"]
+    opts = loan_ext_options(lid)
+    if used_n >= len(opts):
+        session["last_invite_note"] = "No unused extension options left on this loan."
+        return redirect(url_for("loan_detail", lid=lid))
+    opt = opts[used_n]
+    months = int(opt["months"] or 1)
+    rate = money(opt["rate"])
+    db().execute(
+        "INSERT INTO extensions (participation_id, loan_id, months, rate, created_at) VALUES (?,?,?,?,?)",
+        (0, lid, months, rate, datetime.now().isoformat(timespec="minutes")),
+    )
+    mat = parse_date(row_val(loan, "maturity_date")) or date.today()
+    new_mat = (mat + timedelta(days=30 * months)).isoformat()
+    db().execute(
+        "UPDATE loans SET maturity_date=?, next_payment_due=? WHERE id=?",
+        (new_mat, new_mat, lid),
+    )
+    db().commit()
+    session["last_invite_note"] = (
+        f"Extension {used_n + 1} applied: {months} month(s) at {rate:g}%. New maturity {new_mat}."
+    )
     return redirect(url_for("loan_detail", lid=lid))
 
 
