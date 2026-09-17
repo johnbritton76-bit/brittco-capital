@@ -8312,6 +8312,280 @@ def loan_payoff_pdf(lid, pid):
         return "Payoff letter could not be built. Generate a new letter from the loan page.", 500
 
 
+def attach_loan_pdf(loan, pdf_bytes, display_name, kind):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stored = f"{kind.replace(' ', '_').lower()}_{loan['id']}_{int(datetime.now().timestamp())}.pdf"
+    path = os.path.join(UPLOAD_DIR, stored)
+    with open(path, "wb") as fh:
+        fh.write(pdf_bytes)
+    folder, _ = loan_folder_docs(loan)
+    db().execute(
+        """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            loan["deal_id"],
+            loan["borrower_id"],
+            stored,
+            display_name,
+            kind,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    doc_id = db().execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    if folder:
+        db().execute(
+            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+            (folder["id"], doc_id),
+        )
+    return stored
+
+
+def _stmt_pdf_lines(title, lines):
+    from reportlab.pdfgen import canvas as pdfcanvas
+    from reportlab.lib.pagesizes import letter as letter_size
+
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=letter_size)
+    width, height = letter_size
+    y = height - 50
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Brittco Capital, Inc.")
+    y -= 18
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 16
+    c.setFont("Helvetica", 9)
+    c.drawString(50, y, "4825 Vasca Drive, Sarasota, FL 34240  ·  816-694-1658")
+    y -= 22
+    c.setFont("Helvetica", 10)
+    for line in lines:
+        if y < 50:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 10)
+        text = str(line if line is not None else "")
+        while len(text) > 98:
+            c.drawString(50, y, text[:98])
+            text = text[98:]
+            y -= 13
+        c.drawString(50, y, text)
+        y -= 13
+    c.save()
+    return buf.getvalue()
+
+
+def loan_closeout_pdf(loan, borrower):
+    prin = money(row_val(loan, "original_principal"))
+    bal = money(row_val(loan, "current_balance"))
+    pays = db().execute(
+        "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on, id", (loan["id"],)
+    ).fetchall()
+    dists = db().execute(
+        "SELECT * FROM distributions WHERE loan_id=? ORDER BY id", (loan["id"],)
+    ).fetchall()
+    parts = db().execute(
+        """SELECT p.*, i.name AS investor_name FROM participations p
+           LEFT JOIN investors i ON i.id=p.investor_id WHERE p.loan_id=?""",
+        (loan["id"],),
+    ).fetchall()
+    opts = loan_ext_options(loan["id"])
+    by_kind = {}
+    for p in pays:
+        k = p["applied_to"] or "Other"
+        by_kind[k] = by_kind.get(k, 0) + money(p["amount"])
+    base_fee = prin * money(row_val(loan, "rate")) / 100.0
+    deferred = deferred_extension_fee(loan)
+    upfront = upfront_extension_fee(loan)
+    payoff = payoff_amount(loan)
+    lines = [
+        f"Loan payoff accounting statement",
+        f"Prepared {date.today().isoformat()}",
+        "",
+        f"Borrower: {(borrower['name'] if borrower else '')}",
+        f"Entity: {row_val(borrower, 'entity_name') if borrower else ''}",
+        f"Loan number: {row_val(loan, 'loan_number')}",
+        f"Loan type: {row_val(loan, 'loan_type')}  ·  Payment type: {row_val(loan, 'payment_type')}",
+        f"Property: {row_val(loan, 'property_address')}",
+        "",
+        "ORIGINATION",
+        f"  Purchase price: ${money(row_val(loan, 'purchase_price')):,.2f}",
+        f"  Rehab cost: ${money(row_val(loan, 'rehab_cost')):,.2f}",
+        f"  Points: {money(row_val(loan, 'points')):g}%",
+        f"  Total loan amount / principal: ${prin:,.2f}",
+        f"  Base rate: {money(row_val(loan, 'rate')):g}% for {row_val(loan, 'base_term_months') or '—'} months",
+        f"  Start: {row_val(loan, 'start_date')}   Maturity: {row_val(loan, 'maturity_date')}",
+        f"  Remaining balance at statement: ${bal:,.2f}",
+        "",
+        "SCHEDULED COST TO PAY OFF",
+        f"  Principal: ${prin:,.2f}",
+        f"  Base rate fee: ${base_fee:,.2f}",
+        f"  Deferred extension fees (in balloon): ${deferred:,.2f}",
+        f"  Up-front extension fees (collected separately): ${upfront:,.2f}",
+        f"  Balloon / payoff due: ${payoff:,.2f}",
+        "",
+        "EXTENSION OPTIONS",
+    ]
+    if not opts:
+        lines.append("  None")
+    for i, opt in enumerate(opts, 1):
+        fee = prin * money(opt["rate"]) / 100.0
+        lines.append(
+            f"  {i}. {opt['months']} month(s) at {money(opt['rate']):g}%  ·  {opt_when(opt)}  ·  ${fee:,.2f}"
+        )
+    lines += ["", "PAYMENTS RECEIVED"]
+    if not pays:
+        lines.append("  None recorded")
+    for p in pays:
+        lines.append(
+            f"  {p['paid_on']}  ${money(p['amount']):,.2f}  {p['applied_to'] or ''}  {p['note'] or ''}"
+        )
+    lines.append("")
+    lines.append("PAYMENTS BY CATEGORY")
+    for k, v in sorted(by_kind.items()):
+        lines.append(f"  {k}: ${v:,.2f}")
+    lines += ["", "INVESTOR CAPITAL"]
+    if not parts:
+        lines.append("  None recorded")
+    for p in parts:
+        lines.append(
+            f"  {p['investor_name'] or 'Investor'}: ${money(p['amount']):,.2f} in  ·  {money(p['investor_rate']):g}%  ·  {p['status'] or ''}"
+        )
+    lines += ["", "DISTRIBUTIONS TO CAPITAL PARTNERS"]
+    if not dists:
+        lines.append("  None recorded")
+    inv_tot = brit_tot = nate_tot = 0.0
+    for d in dists:
+        inv_tot += money(d["investor_amount"])
+        brit_tot += money(d["brittco_amount"])
+        try:
+            nate_tot += money(d["nate_amount"])
+        except Exception:
+            pass
+        lines.append(
+            f"  {d['created_at']}  inv ${money(d['investor_amount']):,.2f}  "
+            f"Brittco ${money(d['brittco_amount']):,.2f}  {d['kind'] or ''}"
+        )
+    lines += [
+        "",
+        "DISTRIBUTION TOTALS",
+        f"  Paid to investors: ${inv_tot:,.2f}",
+        f"  Brittco spread retained: ${brit_tot:,.2f}",
+        f"  Nate fee attributed: ${nate_tot:,.2f}",
+        "",
+        "This statement is a servicing record of amounts booked on this loan. It is not a tax form.",
+        "Brittco Capital, Inc.",
+    ]
+    num = row_val(loan, "loan_number") or loan["id"]
+    return _stmt_pdf_lines(f"Loan accounting statement — {num}", lines)
+
+
+def borrower_year_report_pdf(borrower, year):
+    bid = borrower["id"]
+    loans = db().execute(
+        "SELECT * FROM loans WHERE borrower_id=? ORDER BY start_date, id", (bid,)
+    ).fetchall()
+    lines = [
+        f"Annual borrower accounting report — {year}",
+        f"Prepared {date.today().isoformat()}",
+        "",
+        f"Borrower: {borrower['name']}",
+        f"Entity: {row_val(borrower, 'entity_name')}",
+        f"Email: {row_val(borrower, 'email')}   Phone: {row_val(borrower, 'phone')}",
+        "",
+        f"This report lists every Brittco loan for this borrower and the activity recorded in {year}.",
+        "",
+    ]
+    year_prin = year_int = year_fee = year_other = 0.0
+    for loan in loans:
+        pays = db().execute(
+            "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on, id", (loan["id"],)
+        ).fetchall()
+        year_pays = [p for p in pays if _in_year(p["paid_on"], year)]
+        prin = money(row_val(loan, "original_principal"))
+        lines += [
+            f"LOAN {row_val(loan, 'loan_number') or loan['id']}",
+            f"  Property: {row_val(loan, 'property_address')}",
+            f"  Status: {row_val(loan, 'status')}  ·  {row_val(loan, 'loan_type')}  ·  {row_val(loan, 'payment_type')}",
+            f"  Principal / total loan: ${prin:,.2f}",
+            f"  Purchase ${money(row_val(loan, 'purchase_price')):,.2f}  Rehab ${money(row_val(loan, 'rehab_cost')):,.2f}  Points {money(row_val(loan, 'points')):g}%",
+            f"  Base {money(row_val(loan, 'rate')):g}% for {row_val(loan, 'base_term_months') or '—'} months",
+            f"  Term {row_val(loan, 'start_date')} through {row_val(loan, 'maturity_date')}",
+            f"  Balance now: ${money(row_val(loan, 'current_balance')):,.2f}",
+            f"  Contract payoff (prin + base + deferred extensions): ${payoff_amount(loan):,.2f}",
+        ]
+        opts = loan_ext_options(loan["id"])
+        if opts:
+            lines.append("  Extensions:")
+            for opt in opts:
+                fee = prin * money(opt["rate"]) / 100.0
+                lines.append(
+                    f"    {opt['months']} mo @ {money(opt['rate']):g}%  {opt_when(opt)}  ${fee:,.2f}"
+                )
+        if year_pays:
+            lines.append(f"  Activity in {year}:")
+            for p in year_pays:
+                amt = money(p["amount"])
+                kind = p["applied_to"] or "Other"
+                if kind == "Principal":
+                    year_prin += amt
+                elif kind in ("Brittco fee", "Points"):
+                    year_fee += amt
+                elif kind in ("Interest", "Fees"):
+                    year_int += amt
+                else:
+                    year_other += amt
+                lines.append(
+                    f"    {p['paid_on']}  ${amt:,.2f}  {kind}  {p['note'] or ''}"
+                )
+        else:
+            lines.append(f"  No payments recorded in {year}.")
+        lines.append("")
+    lines += [
+        f"YEAR {year} TOTALS FOR THIS BORROWER",
+        f"  Principal collected: ${year_prin:,.2f}",
+        f"  Interest / extension fees collected: ${year_int:,.2f}",
+        f"  Brittco fees / points collected: ${year_fee:,.2f}",
+        f"  Other collections: ${year_other:,.2f}",
+        f"  All collections: ${year_prin + year_int + year_fee + year_other:,.2f}",
+        "",
+        "This report is a servicing ledger. It is not a 1098, 1099, or tax opinion.",
+        "Keep it with the borrower file for year-end accounting.",
+        "Brittco Capital, Inc.",
+    ]
+    return _stmt_pdf_lines(f"Annual accounting report {year} — {borrower['name']}", lines)
+
+
+def file_payoff_accounting_docs(loan):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    if not b:
+        return
+    year = date.today().year
+    paid = row_val(loan, "maturity_date") or date.today().isoformat()
+    try:
+        year = parse_date(paid).year if parse_date(paid) else year
+    except Exception:
+        pass
+    num = row_val(loan, "loan_number") or loan["id"]
+    try:
+        attach_loan_pdf(
+            loan,
+            loan_closeout_pdf(loan, b),
+            f"Loan-accounting-{num}.pdf",
+            "Loan accounting statement",
+        )
+    except Exception:
+        pass
+    try:
+        attach_loan_pdf(
+            loan,
+            borrower_year_report_pdf(b, year),
+            f"Annual-accounting-{b['name']}-{year}.pdf",
+            "Annual accounting report",
+        )
+    except Exception:
+        pass
+
+
 @app.route("/loans/<int:lid>/payment", methods=["POST"])
 @staff_required
 def loan_payment(lid):
@@ -8349,6 +8623,9 @@ def loan_payment(lid):
         "UPDATE loans SET current_balance=?, status=?, next_payment_due=? WHERE id=?",
         (new_bal, status, nxt, lid),
     )
+    if status == "Paid Off" and (loan["status"] or "") != "Paid Off":
+        fresh = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+        file_payoff_accounting_docs(fresh or loan)
     db().commit()
     return redirect(url_for("loan_detail", lid=lid))
 
