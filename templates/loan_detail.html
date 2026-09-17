@@ -121,8 +121,8 @@
         <option value="deferred">Deferred</option>
         <option value="upfront">Up front</option>
       </select>
-      <p class="hint" id="add-ext-amt"></p>
     </div>
+    <div><label>Up-front payment</label><input id="add-ext-amt" type="text" readonly placeholder="Select Up front"></div>
     <div class="span-2"><button class="btn ghost" type="submit">Add extension</button></div>
   </form>
   <script>
@@ -135,9 +135,10 @@
       if (!out || !when) return;
       if (when.value === "upfront"){
         var r = parseFloat((rate && rate.value) || "0") || 0;
-        out.textContent = "Due up front: $" + (prin * r / 100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+        out.value = "$" + (prin * r / 100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       } else {
-        out.textContent = "Deferred — added to payoff";
+        out.value = "";
+        out.placeholder = "Select Up front";
       }
     }
     if (when) when.addEventListener("change", sync);
