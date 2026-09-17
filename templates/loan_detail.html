@@ -26,7 +26,7 @@
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
-  <div class="card"><h3>Original principal</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
+  <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
   <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
   <div class="card"><h3>Amount due at maturity</h3>
@@ -110,8 +110,13 @@
     <button class="btn" type="submit">Apply next extension</button>
   </form>
   {% else %}
-  <p class="hint">No extension options on this loan. Enter them when you create the next loan, or apply investor extensions below.</p>
+  <p class="hint">No extension options yet. Add one below. Maturity moves with every option.</p>
   {% endif %}
+  <form method="post" action="{{ url_for('add_loan_ext_option', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div><label>Add extension term (months)</label><input name="ext_months" type="number" min="1" value="1"></div>
+    <div><label>Add extension rate (%)</label><input name="ext_rate" type="number" step="0.01" value="2"></div>
+    <div class="span-2"><button class="btn ghost" type="submit">Add extension</button></div>
+  </form>
 </div>
 
 <div class="card" style="margin-top:14px">

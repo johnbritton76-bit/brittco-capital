@@ -20,13 +20,16 @@
     </select>
   </div>
   <div class="span-2"><label>Property address</label><input name="property_address" required></div>
-  <div><label>Original principal</label><input name="original_principal" type="number" step="0.01" required></div>
-  <div><label>Current balance</label><input name="current_balance" type="number" step="0.01" placeholder="Same as principal if new"></div>
+  <div><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01" required></div>
+  <div><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01"></div>
+  <div><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered"></div>
+  <div><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" readonly></div>
   <div><label>Base rate (%)</label><input name="rate" type="number" step="0.01" placeholder="Example: 10"></div>
-  <div><label>Base term (months)</label><input name="base_term" type="number" step="1" min="0" placeholder="Example: 3"></div>
-  <div><label>Points</label><input name="points" type="number" step="0.01"></div>
-  <div><label>Start date</label><input name="start_date" type="date"></div>
-  <div><label>Maturity date</label><input name="maturity_date" type="date"></div>
+  <div><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3"></div>
+  <div><label>Start date</label><input name="start_date" id="start_date" type="date"></div>
+  <div><label>Maturity date</label><input name="maturity_date" id="maturity_date" type="date" readonly>
+    <p class="hint">Filled from start date + base term + every extension.</p>
+  </div>
   <div><label>Payment type</label>
     <select name="payment_type">
       <option>Interest only</option><option>Amortizing</option><option>Balloon</option>
@@ -40,7 +43,7 @@
   <div><label>Late fee</label><input name="late_fee" type="number" step="0.01"></div>
   <div><label>Status</label>
     <select name="status">
-      <option>Current</option><option>Late</option><option>Default</option><option>Paid Off</option>
+      <option>Current</option><option>Default</option><option>Paid Off</option>
     </select>
   </div>
   <div class="span-2"><label>Notes</label><textarea name="notes"></textarea></div>
@@ -56,6 +59,35 @@
 (function(){
   var list = document.getElementById("ext-list");
   var n = 0;
+  function num(id){
+    var el = document.getElementById(id);
+    return el && el.value ? parseFloat(el.value) : 0;
+  }
+  function syncTotal(){
+    var purchase = num("purchase_price");
+    var rehab = num("rehab_cost");
+    var pts = num("points");
+    var base = purchase + rehab;
+    var total = base + base * pts / 100;
+    var out = document.getElementById("total_loan_amount");
+    if (out) out.value = total ? total.toFixed(2) : "";
+  }
+  function addDays(iso, days){
+    if (!iso) return "";
+    var d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0,10);
+  }
+  function syncMaturity(){
+    var start = (document.getElementById("start_date")||{}).value;
+    var base = parseInt((document.getElementById("base_term")||{}).value || "0", 10) || 0;
+    var extra = 0;
+    document.querySelectorAll('[name="ext_months"]').forEach(function(el){
+      extra += parseInt(el.value || "0", 10) || 0;
+    });
+    var out = document.getElementById("maturity_date");
+    if (out) out.value = start ? addDays(start, (base + extra) * 30) : "";
+  }
   function row(months, rate){
     n += 1;
     var wrap = document.createElement("div");
@@ -65,8 +97,20 @@
       '<div><label>Extension ' + n + ' term (months)</label><input name="ext_months" type="number" min="1" step="1" value="'+(months||1)+'"></div>' +
       '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>';
     list.appendChild(wrap);
+    wrap.querySelectorAll("input").forEach(function(el){ el.addEventListener("input", syncMaturity); });
+    syncMaturity();
   }
+  ["purchase_price","rehab_cost","points"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("input", syncTotal);
+  });
+  ["start_date","base_term"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("input", syncMaturity);
+  });
   document.getElementById("add-ext").addEventListener("click", function(){ row(1, 2); });
+  syncTotal();
+  syncMaturity();
 })();
 </script>
 {% endblock %}
