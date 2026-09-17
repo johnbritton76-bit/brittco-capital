@@ -27,7 +27,7 @@
 <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
   <div class="card"><h3>Original principal</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
-  <div class="card"><h3>Rate</h3><div>{{ loan.rate or "—" }}%</div></div>
+  <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
   <div class="card"><h3>Amount due at maturity</h3>
     <div class="n">${{ "{:,.0f}".format(perf.payoff) }}</div>
@@ -88,6 +88,29 @@
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Term and extensions</h3>
+  <p>Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.</p>
+  {% if ext_options %}
+  <table class="table">
+    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Status</th></tr>
+    {% for opt in ext_options %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ opt.months }} months</td>
+      <td>{{ opt.rate }}%</td>
+      <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('use_loan_extension', lid=loan.id) }}" style="margin-top:8px">
+    <button class="btn" type="submit">Apply next extension</button>
+  </form>
+  {% else %}
+  <p class="hint">No extension options on this loan. Enter them when you create the next loan, or apply investor extensions below.</p>
   {% endif %}
 </div>
 
