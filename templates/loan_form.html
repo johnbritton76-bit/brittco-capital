@@ -24,18 +24,18 @@
   <div><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01"></div>
   <div><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered"></div>
   <div><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" readonly></div>
-  <div><label>Base rate (%)</label><input name="rate" type="number" step="0.01" placeholder="Example: 10"></div>
+  <div><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10"></div>
   <div><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3"></div>
   <div><label>Start date</label><input name="start_date" id="start_date" type="date"></div>
   <div><label>Maturity date</label><input name="maturity_date" id="maturity_date" type="date" readonly>
     <p class="hint">Filled from start date + base term + every extension.</p>
   </div>
   <div><label>Payment type</label>
-    <select name="payment_type">
+    <select name="payment_type" id="payment_type">
       <option>Interest only</option><option>Amortizing</option><option>Balloon</option>
     </select>
   </div>
-  <div><label>Payment amount</label><input name="payment_amount" type="number" step="0.01"></div>
+  <div><label id="pay-label">Payment amount</label><input name="payment_amount" id="payment_amount" type="number" step="0.01"></div>
   <div><label>Frequency</label>
     <select name="payment_frequency"><option>Monthly</option><option>Interest due at maturity</option></select>
   </div>
@@ -49,7 +49,7 @@
   <div class="span-2"><label>Notes</label><textarea name="notes"></textarea></div>
   <div class="span-2">
     <h3>Extensions</h3>
-    <p class="hint">Example: 3 months at 10% base, then three options at 2% each. Accounting uses each option when you apply it.</p>
+    <p class="hint">Deferred extensions roll into the balloon / payoff. Up front extensions are collected when applied and stay off the payoff.</p>
     <div id="ext-list"></div>
     <button class="btn ghost" type="button" id="add-ext">Add extension</button>
   </div>
@@ -63,6 +63,12 @@
     var el = document.getElementById(id);
     return el && el.value ? parseFloat(el.value) : 0;
   }
+  function syncPayLabel(){
+    var t = (document.getElementById("payment_type")||{}).value;
+    var lab = document.getElementById("pay-label");
+    if (lab) lab.textContent = t === "Balloon" ? "Payoff" : "Payment amount";
+    syncPayoff();
+  }
   function syncTotal(){
     var purchase = num("purchase_price");
     var rehab = num("rehab_cost");
@@ -71,6 +77,23 @@
     var total = base + base * pts / 100;
     var out = document.getElementById("total_loan_amount");
     if (out) out.value = total ? total.toFixed(2) : "";
+    syncPayoff();
+  }
+  function syncPayoff(){
+    var t = (document.getElementById("payment_type")||{}).value;
+    var out = document.getElementById("payment_amount");
+    if (!out || t !== "Balloon") return;
+    var prin = num("total_loan_amount");
+    var rate = num("rate");
+    var deferred = 0;
+    var rates = document.querySelectorAll('[name="ext_rate"]');
+    var whens = document.querySelectorAll('[name="ext_when"]');
+    for (var i=0;i<rates.length;i++){
+      var when = (whens[i] && whens[i].value) || "deferred";
+      if (when === "deferred") deferred += parseFloat(rates[i].value || "0") || 0;
+    }
+    var payoff = prin + prin * rate / 100 + prin * deferred / 100;
+    if (payoff) out.value = payoff.toFixed(2);
   }
   function addDays(iso, days){
     if (!iso) return "";
@@ -95,10 +118,15 @@
     wrap.style.marginBottom = "8px";
     wrap.innerHTML =
       '<div><label>Extension ' + n + ' term (months)</label><input name="ext_months" type="number" min="1" step="1" value="'+(months||1)+'"></div>' +
-      '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>';
+      '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>' +
+      '<div><label>Collect</label><select name="ext_when"><option value="deferred" selected>Deferred</option><option value="upfront">Up front</option></select></div>';
     list.appendChild(wrap);
-    wrap.querySelectorAll("input").forEach(function(el){ el.addEventListener("input", syncMaturity); });
+    wrap.querySelectorAll("input,select").forEach(function(el){
+      el.addEventListener("input", function(){ syncMaturity(); syncPayoff(); });
+      el.addEventListener("change", function(){ syncMaturity(); syncPayoff(); });
+    });
     syncMaturity();
+    syncPayoff();
   }
   ["purchase_price","rehab_cost","points"].forEach(function(id){
     var el = document.getElementById(id);
@@ -108,9 +136,14 @@
     var el = document.getElementById(id);
     if (el) el.addEventListener("input", syncMaturity);
   });
+  var ptype = document.getElementById("payment_type");
+  if (ptype) ptype.addEventListener("change", syncPayLabel);
+  var rateEl = document.querySelector('[name="rate"]');
+  if (rateEl) rateEl.addEventListener("input", syncPayoff);
   document.getElementById("add-ext").addEventListener("click", function(){ row(1, 2); });
   syncTotal();
   syncMaturity();
+  syncPayLabel();
 })();
 </script>
 {% endblock %}

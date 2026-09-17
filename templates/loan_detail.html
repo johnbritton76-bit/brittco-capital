@@ -96,12 +96,13 @@
   <p>Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.</p>
   {% if ext_options %}
   <table class="table">
-    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Status</th></tr>
+    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Collect</th><th>Status</th></tr>
     {% for opt in ext_options %}
     <tr>
       <td>{{ loop.index }}</td>
       <td>{{ opt.months }} months</td>
       <td>{{ opt.rate }}%</td>
+      <td>{{ opt.pay_when or "deferred" }}</td>
       <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
     </tr>
     {% endfor %}
@@ -115,6 +116,12 @@
   <form method="post" action="{{ url_for('add_loan_ext_option', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
     <div><label>Add extension term (months)</label><input name="ext_months" type="number" min="1" value="1"></div>
     <div><label>Add extension rate (%)</label><input name="ext_rate" type="number" step="0.01" value="2"></div>
+    <div><label>Collect</label>
+      <select name="ext_when">
+        <option value="deferred">Deferred</option>
+        <option value="upfront">Up front</option>
+      </select>
+    </div>
     <div class="span-2"><button class="btn ghost" type="submit">Add extension</button></div>
   </form>
 </div>
