@@ -1815,6 +1815,10 @@ try:
         _c.execute("ALTER TABLE loans ADD COLUMN archived_at TEXT")
     if loan_cols and "base_term_months" not in loan_cols:
         _c.execute("ALTER TABLE loans ADD COLUMN base_term_months INTEGER")
+    if loan_cols and "purchase_price" not in loan_cols:
+        _c.execute("ALTER TABLE loans ADD COLUMN purchase_price REAL")
+    if loan_cols and "rehab_cost" not in loan_cols:
+        _c.execute("ALTER TABLE loans ADD COLUMN rehab_cost REAL")
     _c.execute(
         """CREATE TABLE IF NOT EXISTS loan_ext_options (
             id INTEGER PRIMARY KEY,
@@ -3118,6 +3122,7 @@ def save_loan_ext_options(lid, form):
             (lid, seq, m, r),
         )
         seq += 1
+    refresh_loan_maturity(lid)
 
 
 def used_extension_fee(loan):
@@ -3132,6 +3137,51 @@ def used_extension_fee(loan):
     for r in rows:
         total += prin * money(r["rate"]) / 100.0
     return round(total, 2)
+
+
+def compute_loan_total(purchase, rehab, points):
+    base = money(purchase) + money(rehab)
+    pts = money(points)
+    return round(base + base * pts / 100.0, 2)
+
+
+def option_months_total(lid):
+    total = 0
+    for opt in loan_ext_options(lid):
+        total += int(opt["months"] or 0)
+    return total
+
+
+def scheduled_maturity_date(start, base_term, extra_months):
+    d = parse_date(start)
+    if not d:
+        return None
+    months = int(base_term or 0) + int(extra_months or 0)
+    if months <= 0:
+        return d.isoformat()
+    return (d + timedelta(days=30 * months)).isoformat()
+
+
+def refresh_loan_maturity(lid, start=None, base_term=None):
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return None
+    start = start or row_val(loan, "start_date")
+    if base_term is None:
+        base_term = _row_months(loan)
+    mat = scheduled_maturity_date(start, base_term, option_months_total(lid))
+    if not mat:
+        return None
+    status = row_val(loan, "status") or "Current"
+    if status == "Late":
+        end = parse_date(mat)
+        if end and date.today() <= end:
+            status = "Current"
+    db().execute(
+        "UPDATE loans SET maturity_date=?, next_payment_due=?, status=? WHERE id=?",
+        (mat, mat, status, lid),
+    )
+    return mat
 
 
 def scheduled_extension_fee(loan):
@@ -4565,19 +4615,19 @@ def loan_alerts():
         if mark in seen:
             continue
         seen.add(mark)
-        due = days_until(r["next_payment_due"])
-        mat = days_until(r["maturity_date"])
+        mat_date = scheduled_maturity_date(
+            row_val(r, "start_date"),
+            _row_months(r),
+            option_months_total(lid),
+        ) or row_val(r, "maturity_date")
+        mat = days_until(mat_date)
         name = r["borrower_name"]
         label = num or f"Loan {lid}"
         items = []
-        if due is not None and due < 0:
-            items.append({"level": "bad", "kind": "payment_late", "text": f"Payoff/payment is {abs(due)} day(s) late ({r['next_payment_due']})."})
-        elif due is not None and due <= 7:
-            items.append({"level": "warn", "kind": "payment_due", "text": f"Payment due in {due} day(s) ({r['next_payment_due']})."})
         if mat is not None and mat < 0:
-            items.append({"level": "bad", "kind": "matured", "text": f"Loan matured {abs(mat)} day(s) ago ({r['maturity_date']})."})
-        elif mat is not None and mat <= 45:
-            items.append({"level": "warn", "kind": "maturity", "text": f"Matures {r['maturity_date']} ({mat} day(s))."})
+            items.append({"level": "bad", "kind": "matured", "text": f"Base term and extensions exhausted {abs(mat)} day(s) ago ({mat_date})."})
+        elif mat is not None and mat <= 14:
+            items.append({"level": "warn", "kind": "maturity", "text": f"Matures {mat_date} ({mat} day(s)) after base term and extensions."})
         if items:
             alerts.append({"loan": r, "name": name, "label": label, "items": items, "count": len(items)})
     return alerts
@@ -7744,22 +7794,31 @@ def loan_new():
     deals = db().execute("SELECT id, address, loan_type FROM deals ORDER BY id DESC").fetchall()
     if request.method == "POST":
         f = request.form
-        principal = money(f.get("original_principal"))
-        base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else None
+        purchase = money(f.get("purchase_price"))
+        rehab = money(f.get("rehab_cost"))
+        points = money(f.get("points"))
+        principal = compute_loan_total(purchase, rehab, points)
+        if f.get("total_loan_amount"):
+            principal = money(f.get("total_loan_amount")) or principal
+        base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else 0
         start = f.get("start_date")
-        maturity = f.get("maturity_date")
-        if start and base_term and not maturity:
+        extra = 0
+        for m in f.getlist("ext_months"):
             try:
-                maturity = (parse_date(start) + timedelta(days=30 * base_term)).isoformat()
-            except Exception:
-                maturity = f.get("maturity_date")
+                extra += int(float(m)) if m else 0
+            except (TypeError, ValueError):
+                pass
+        maturity = scheduled_maturity_date(start, base_term, extra) or f.get("maturity_date")
+        status = f.get("status") or "Current"
+        if status == "Late":
+            status = "Current"
         cur = db().execute(
             """INSERT INTO loans
             (borrower_id, deal_id, loan_number, loan_type, property_address,
              original_principal, current_balance, rate, points, start_date, maturity_date,
              payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
-             status, notes, base_term_months)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             status, notes, base_term_months, purchase_price, rehab_cost)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(f["borrower_id"]),
                 int(f["deal_id"]) if f.get("deal_id") else None,
@@ -7767,23 +7826,26 @@ def loan_new():
                 f.get("loan_type"),
                 f.get("property_address"),
                 principal,
-                money(f.get("current_balance")) or principal,
+                principal,
                 money(f.get("rate")) or None,
-                money(f.get("points")) or None,
+                points or None,
                 start,
                 maturity,
                 f.get("payment_type"),
                 money(f.get("payment_amount")) or None,
-                f.get("payment_frequency") or "Monthly",
-                f.get("next_payment_due") or maturity,
+                f.get("payment_frequency") or "Interest due at maturity",
+                maturity,
                 money(f.get("late_fee")) or 0,
-                f.get("status") or "Current",
+                status,
                 f.get("notes"),
                 base_term,
+                purchase,
+                rehab,
             ),
         )
         lid = cur.lastrowid
         save_loan_ext_options(lid, f)
+        refresh_loan_maturity(lid, start=start, base_term=base_term)
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
     return render_template(
@@ -8636,16 +8698,39 @@ def use_loan_extension(lid):
         "INSERT INTO extensions (participation_id, loan_id, months, rate, created_at) VALUES (?,?,?,?,?)",
         (0, lid, months, rate, datetime.now().isoformat(timespec="minutes")),
     )
-    mat = parse_date(row_val(loan, "maturity_date")) or date.today()
-    new_mat = (mat + timedelta(days=30 * months)).isoformat()
-    db().execute(
-        "UPDATE loans SET maturity_date=?, next_payment_due=? WHERE id=?",
-        (new_mat, new_mat, lid),
-    )
+    new_mat = refresh_loan_maturity(lid)
     db().commit()
     session["last_invite_note"] = (
-        f"Extension {used_n + 1} applied: {months} month(s) at {rate:g}%. New maturity {new_mat}."
+        f"Extension {used_n + 1} applied: {months} month(s) at {rate:g}%. Maturity {new_mat or 'updated'}."
     )
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/add-option", methods=["POST"])
+@staff_required
+def add_loan_ext_option(lid):
+    months = request.form.get("ext_months")
+    rate = request.form.get("ext_rate")
+    try:
+        m = int(float(months)) if months else 0
+    except (TypeError, ValueError):
+        m = 0
+    r = money(rate)
+    if m <= 0 and r <= 0:
+        session["last_invite_note"] = "Enter an extension term and rate."
+        return redirect(url_for("loan_detail", lid=lid))
+    if m <= 0:
+        m = 1
+    nxt = db().execute(
+        "SELECT COALESCE(MAX(seq),0)+1 AS n FROM loan_ext_options WHERE loan_id=?", (lid,)
+    ).fetchone()["n"]
+    db().execute(
+        "INSERT INTO loan_ext_options (loan_id, seq, months, rate) VALUES (?,?,?,?)",
+        (lid, nxt, m, r),
+    )
+    mat = refresh_loan_maturity(lid)
+    db().commit()
+    session["last_invite_note"] = f"Added {m} month extension at {r:g}%. Maturity is now {mat}."
     return redirect(url_for("loan_detail", lid=lid))
 
 
