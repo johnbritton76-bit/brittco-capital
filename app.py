@@ -1825,9 +1825,16 @@ try:
             loan_id INTEGER,
             seq INTEGER,
             months INTEGER,
-            rate REAL
+            rate REAL,
+            pay_when TEXT
         )"""
     )
+    try:
+        opt_cols = [r[1] for r in _c.execute("PRAGMA table_info(loan_ext_options)")]
+        if opt_cols and "pay_when" not in opt_cols:
+            _c.execute("ALTER TABLE loan_ext_options ADD COLUMN pay_when TEXT")
+    except sqlite3.Error:
+        pass
     _c.execute(
         """CREATE TABLE IF NOT EXISTS form_packets (
             id INTEGER PRIMARY KEY,
@@ -3105,12 +3112,17 @@ def loan_ext_options(lid):
 def save_loan_ext_options(lid, form):
     months_list = form.getlist("ext_months")
     rates_list = form.getlist("ext_rate")
+    when_list = form.getlist("ext_when")
     try:
         db().execute("DELETE FROM loan_ext_options WHERE loan_id=?", (lid,))
     except sqlite3.Error:
         return
     seq = 1
-    for months, rate in zip(months_list, rates_list):
+    for i, months in enumerate(months_list):
+        rate = rates_list[i] if i < len(rates_list) else ""
+        when = when_list[i] if i < len(when_list) else "deferred"
+        if (when or "").lower() not in ("deferred", "upfront"):
+            when = "deferred"
         m = int(float(months)) if months not in (None, "") else 0
         r = money(rate)
         if m <= 0 and r <= 0:
@@ -3118,8 +3130,8 @@ def save_loan_ext_options(lid, form):
         if m <= 0:
             m = 1
         db().execute(
-            "INSERT INTO loan_ext_options (loan_id, seq, months, rate) VALUES (?,?,?,?)",
-            (lid, seq, m, r),
+            "INSERT INTO loan_ext_options (loan_id, seq, months, rate, pay_when) VALUES (?,?,?,?,?)",
+            (lid, seq, m, r, when),
         )
         seq += 1
     refresh_loan_maturity(lid)
@@ -3184,12 +3196,37 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
     return mat
 
 
-def scheduled_extension_fee(loan):
+def opt_when(opt):
+    try:
+        w = (opt["pay_when"] or "deferred").lower()
+    except Exception:
+        w = "deferred"
+    return "upfront" if w == "upfront" else "deferred"
+
+
+def deferred_extension_fee(loan):
+    prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    total = 0.0
+    opts = loan_ext_options(loan["id"] if loan is not None else 0)
+    if opts:
+        for opt in opts:
+            if opt_when(opt) == "deferred":
+                total += prin * money(opt["rate"]) / 100.0
+        return round(total, 2)
+    return used_extension_fee(loan)
+
+
+def upfront_extension_fee(loan):
     prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
     total = 0.0
     for opt in loan_ext_options(loan["id"] if loan is not None else 0):
-        total += prin * money(opt["rate"]) / 100.0
+        if opt_when(opt) == "upfront":
+            total += prin * money(opt["rate"]) / 100.0
     return round(total, 2)
+
+
+def scheduled_extension_fee(loan):
+    return round(deferred_extension_fee(loan) + upfront_extension_fee(loan), 2)
 
 
 def loan_term_days(loan, p=None):
@@ -3221,8 +3258,12 @@ def payoff_amount(loan):
         return prin + prin * pts / 100.0
     base = money(row_val(loan, "rate"))
     base_fee = prin * base / 100.0 if base else 0.0
+    deferred = deferred_extension_fee(loan) if loan is not None else 0.0
+    balloon = "Balloon" in kind or "balloon" in kind.lower()
+    if base_fee or deferred or balloon:
+        return round(prin + base_fee + deferred, 2)
     used = used_extension_fee(loan) if loan is not None else 0.0
-    if base_fee or used:
+    if used:
         return round(prin + base_fee + used, 2)
     return extra or prin
 
@@ -7846,6 +7887,12 @@ def loan_new():
         lid = cur.lastrowid
         save_loan_ext_options(lid, f)
         refresh_loan_maturity(lid, start=start, base_term=base_term)
+        saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+        if saved and (row_val(saved, "payment_type") or "") == "Balloon":
+            db().execute(
+                "UPDATE loans SET payment_amount=? WHERE id=?",
+                (payoff_amount(saved), lid),
+            )
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
     return render_template(
@@ -8698,11 +8745,37 @@ def use_loan_extension(lid):
         "INSERT INTO extensions (participation_id, loan_id, months, rate, created_at) VALUES (?,?,?,?,?)",
         (0, lid, months, rate, datetime.now().isoformat(timespec="minutes")),
     )
+    when = opt_when(opt)
+    fee = (money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))) * rate / 100.0
+    if when == "upfront" and fee:
+        db().execute(
+            "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
+            (
+                lid,
+                date.today().isoformat(),
+                round(fee, 2),
+                "Fees",
+                f"Up-front extension {used_n + 1}: {months} mo at {rate:g}%",
+            ),
+        )
     new_mat = refresh_loan_maturity(lid)
+    try:
+        if (row_val(loan, "payment_type") or "") == "Balloon":
+            db().execute(
+                "UPDATE loans SET payment_amount=? WHERE id=?",
+                (payoff_amount(db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()), lid),
+            )
+    except Exception:
+        pass
     db().commit()
-    session["last_invite_note"] = (
-        f"Extension {used_n + 1} applied: {months} month(s) at {rate:g}%. Maturity {new_mat or 'updated'}."
-    )
+    if when == "upfront":
+        session["last_invite_note"] = (
+            f"Up-front extension applied: {months} month(s) at {rate:g}% (${fee:,.2f} booked as a fee payment)."
+        )
+    else:
+        session["last_invite_note"] = (
+            f"Deferred extension applied: {months} month(s) at {rate:g}% added to payoff. Maturity {new_mat or 'updated'}."
+        )
     return redirect(url_for("loan_detail", lid=lid))
 
 
@@ -8711,6 +8784,9 @@ def use_loan_extension(lid):
 def add_loan_ext_option(lid):
     months = request.form.get("ext_months")
     rate = request.form.get("ext_rate")
+    when = (request.form.get("ext_when") or "deferred").lower()
+    if when not in ("deferred", "upfront"):
+        when = "deferred"
     try:
         m = int(float(months)) if months else 0
     except (TypeError, ValueError):
@@ -8725,12 +8801,15 @@ def add_loan_ext_option(lid):
         "SELECT COALESCE(MAX(seq),0)+1 AS n FROM loan_ext_options WHERE loan_id=?", (lid,)
     ).fetchone()["n"]
     db().execute(
-        "INSERT INTO loan_ext_options (loan_id, seq, months, rate) VALUES (?,?,?,?)",
-        (lid, nxt, m, r),
+        "INSERT INTO loan_ext_options (loan_id, seq, months, rate, pay_when) VALUES (?,?,?,?,?)",
+        (lid, nxt, m, r, when),
     )
     mat = refresh_loan_maturity(lid)
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if loan and (row_val(loan, "payment_type") or "") == "Balloon":
+        db().execute("UPDATE loans SET payment_amount=? WHERE id=?", (payoff_amount(loan), lid))
     db().commit()
-    session["last_invite_note"] = f"Added {m} month extension at {r:g}%. Maturity is now {mat}."
+    session["last_invite_note"] = f"Added {m} month {when} extension at {r:g}%. Maturity is now {mat}."
     return redirect(url_for("loan_detail", lid=lid))
 
 
