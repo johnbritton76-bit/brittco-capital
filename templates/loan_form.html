@@ -94,6 +94,25 @@
     }
     var payoff = prin + prin * rate / 100 + prin * deferred / 100;
     if (payoff) out.value = payoff.toFixed(2);
+    syncUpfrontAmts();
+  }
+  function moneyTxt(n){
+    return "$" + (n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+  function syncUpfrontAmts(){
+    var prin = num("total_loan_amount");
+    var rates = document.querySelectorAll('[name="ext_rate"]');
+    var whens = document.querySelectorAll('[name="ext_when"]');
+    for (var i=0;i<whens.length;i++){
+      var box = whens[i].parentNode.querySelector(".upfront-amt");
+      if (!box) continue;
+      if (whens[i].value === "upfront"){
+        var r = parseFloat((rates[i]&&rates[i].value)||"0")||0;
+        box.textContent = "Due up front: " + moneyTxt(prin * r / 100);
+      } else {
+        box.textContent = "";
+      }
+    }
   }
   function addDays(iso, days){
     if (!iso) return "";
@@ -119,7 +138,7 @@
     wrap.innerHTML =
       '<div><label>Extension ' + n + ' term (months)</label><input name="ext_months" type="number" min="1" step="1" value="'+(months||1)+'"></div>' +
       '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>' +
-      '<div><label>Collect</label><select name="ext_when"><option value="deferred" selected>Deferred</option><option value="upfront">Up front</option></select></div>';
+      '<div><label>Collect</label><select name="ext_when"><option value="deferred" selected>Deferred</option><option value="upfront">Up front</option></select><div class="hint upfront-amt" style="margin-top:4px"></div></div>';
     list.appendChild(wrap);
     wrap.querySelectorAll("input,select").forEach(function(el){
       el.addEventListener("input", function(){ syncMaturity(); syncPayoff(); });

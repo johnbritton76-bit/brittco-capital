@@ -102,7 +102,7 @@
       <td>{{ loop.index }}</td>
       <td>{{ opt.months }} months</td>
       <td>{{ opt.rate }}%</td>
-      <td>{{ opt.pay_when or "deferred" }}</td>
+      <td>{{ opt.pay_when or "deferred" }}{% if (opt.pay_when or '') == 'upfront' %} · ${{ "{:,.2f}".format((loan.original_principal or 0) * (opt.rate or 0) / 100) }}{% endif %}</td>
       <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
     </tr>
     {% endfor %}
@@ -117,13 +117,34 @@
     <div><label>Add extension term (months)</label><input name="ext_months" type="number" min="1" value="1"></div>
     <div><label>Add extension rate (%)</label><input name="ext_rate" type="number" step="0.01" value="2"></div>
     <div><label>Collect</label>
-      <select name="ext_when">
+      <select name="ext_when" id="add-ext-when">
         <option value="deferred">Deferred</option>
         <option value="upfront">Up front</option>
       </select>
+      <p class="hint" id="add-ext-amt"></p>
     </div>
     <div class="span-2"><button class="btn ghost" type="submit">Add extension</button></div>
   </form>
+  <script>
+  (function(){
+    var when = document.getElementById("add-ext-when");
+    var rate = document.querySelector('[name="ext_rate"]');
+    var out = document.getElementById("add-ext-amt");
+    var prin = {{ loan.original_principal or 0 }};
+    function sync(){
+      if (!out || !when) return;
+      if (when.value === "upfront"){
+        var r = parseFloat((rate && rate.value) || "0") || 0;
+        out.textContent = "Due up front: $" + (prin * r / 100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+      } else {
+        out.textContent = "Deferred — added to payoff";
+      }
+    }
+    if (when) when.addEventListener("change", sync);
+    if (rate) rate.addEventListener("input", sync);
+    sync();
+  })();
+  </script>
 </div>
 
 <div class="card" style="margin-top:14px">
