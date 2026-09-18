@@ -6212,11 +6212,29 @@ def dashboard():
             for i in db().execute("SELECT id FROM investors").fetchall()
         ),
     }
+    recent_loans = db().execute(
+        """SELECT l.*, b.name AS borrower_name
+           FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+           WHERE COALESCE(l.archived,0)=0
+             AND COALESCE(l.loan_number,'') != 'BC-TX-10W96'
+           ORDER BY l.id DESC LIMIT 5"""
+    ).fetchall()
+    loan_statuses = [
+        "Current",
+        "Closed",
+        "Paid Off",
+        "Termed",
+        "Default",
+        "Sold",
+        "Written Off",
+    ]
     return render_template(
         "dashboard.html",
         title="Dashboard",
         nav="dash",
         deals=deals[:5],
+        recent_loans=recent_loans,
+        loan_statuses=loan_statuses,
         stats=stats,
         alerts=alerts,
         public_url=public_base() or request.url_root.rstrip("/"),
@@ -8009,6 +8027,27 @@ def loans_dedupe():
     after = db().execute("SELECT COUNT(*) c FROM loans").fetchone()["c"]
     session["last_invite_note"] = f"Removed {before - after} extra loan(s). {after} loan(s) remain."
     return redirect(url_for("loans"))
+
+
+@app.route("/loans/<int:lid>/status", methods=["POST"])
+@staff_required
+def loan_set_status(lid):
+    status = (request.form.get("status") or "").strip()
+    allowed = {
+        "Current",
+        "Closed",
+        "Paid Off",
+        "Termed",
+        "Default",
+        "Sold",
+        "Written Off",
+        "Late",
+    }
+    if status in allowed:
+        db().execute("UPDATE loans SET status=? WHERE id=?", (status, lid))
+        db().commit()
+    nxt = request.form.get("next") or url_for("loan_detail", lid=lid)
+    return redirect(nxt)
 
 
 @app.route("/loans")
