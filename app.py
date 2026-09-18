@@ -10689,7 +10689,7 @@ def ensure_statement_sends():
     db().commit()
 
 
-def send_borrower_month_statements(year=None, month=None, force=False):
+def send_borrower_month_statements(year=None, month=None, force=False, only_ids=None):
     ensure_statement_sends()
     today = date.today()
     if year is None or month is None:
@@ -10698,7 +10698,15 @@ def send_borrower_month_statements(year=None, month=None, force=False):
         year, month = prior.year, prior.month
     sent = 0
     skipped = 0
-    for b in db().execute("SELECT * FROM borrowers ORDER BY name").fetchall():
+    q = "SELECT * FROM borrowers ORDER BY name"
+    args = []
+    if only_ids:
+        ids = [int(x) for x in only_ids if str(x).isdigit()]
+        if not ids:
+            return 0, 0
+        q = f"SELECT * FROM borrowers WHERE id IN ({','.join('?' * len(ids))}) ORDER BY name"
+        args = ids
+    for b in db().execute(q, args).fetchall():
         already = db().execute(
             "SELECT id FROM statement_sends WHERE borrower_id=? AND year=? AND month=?",
             (b["id"], year, month),
@@ -10754,9 +10762,13 @@ def cron_statements():
 @app.route("/borrowers/statements/send", methods=["POST"])
 @staff_required
 def borrowers_send_statements():
-    sent, skipped = send_borrower_month_statements(force=True)
+    ids = request.form.getlist("borrower_id")
+    if not ids:
+        session["last_invite_note"] = "Select one or more borrowers, then click Email last month’s statements."
+        return redirect(url_for("borrowers"))
+    sent, skipped = send_borrower_month_statements(force=True, only_ids=ids)
     session["last_invite_note"] = (
-        f"Monthly statements prepared. Emailed {sent}. Already on file this month: {skipped}."
+        f"Last month’s statements sent to the selected borrowers. Emailed {sent}."
     )
     return redirect(url_for("borrowers"))
 
@@ -10768,11 +10780,15 @@ def borrower_statement_pdf_view(bid):
     if not b:
         return redirect(url_for("borrowers"))
     today = date.today()
-    year = int(request.args.get("year") or today.year)
-    month = int(request.args.get("month") or today.month)
+    first = date(today.year, today.month, 1)
+    prior = first - timedelta(days=1)
+    year = int(request.args.get("year") or prior.year)
+    month = int(request.args.get("month") or prior.month)
     data = borrower_month_statement_pdf(b, year, month)
     if not data:
-        session["last_invite_note"] = "No loan activity in that month to put on a statement."
+        data = borrower_month_statement_pdf(b, today.year, today.month)
+    if not data:
+        session["last_invite_note"] = "No loan activity to put on a statement yet."
         return redirect(url_for("borrower_detail", bid=bid))
     name = f"statement-{b['name']}-{year}-{month:02d}.pdf"
     return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=False, download_name=name)
