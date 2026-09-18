@@ -1819,6 +1819,18 @@ try:
         _c.execute("ALTER TABLE loans ADD COLUMN purchase_price REAL")
     if loan_cols and "rehab_cost" not in loan_cols:
         _c.execute("ALTER TABLE loans ADD COLUMN rehab_cost REAL")
+    for col, typ in (
+        ("term_kind", "TEXT"),
+        ("call_notice_days", "INTEGER"),
+        ("payoff_notice_on", "TEXT"),
+        ("unsecured", "INTEGER"),
+        ("first_payment_amount", "REAL"),
+    ):
+        if loan_cols and col not in loan_cols:
+            try:
+                _c.execute(f"ALTER TABLE loans ADD COLUMN {col} {typ}")
+            except sqlite3.Error:
+                pass
     _c.execute(
         """CREATE TABLE IF NOT EXISTS loan_ext_options (
             id INTEGER PRIMARY KEY,
@@ -3157,6 +3169,60 @@ def compute_loan_total(purchase, rehab, points):
     return round(base + base * pts / 100.0, 2)
 
 
+def is_standing_loan(loan):
+    if loan is None:
+        return False
+    kind = (row_val(loan, "term_kind") or "").lower()
+    freq = (row_val(loan, "payment_frequency") or "").lower()
+    ltype = (row_val(loan, "loan_type") or "").lower()
+    if kind == "perpetual" or "perpetual" in freq:
+        return True
+    if ltype == "other" and not _row_months(loan):
+        return True
+    return False
+
+
+def standing_payoff_due(loan):
+    sent = parse_date(row_val(loan, "payoff_notice_on"))
+    if not sent:
+        return None
+    days = int(row_val(loan, "call_notice_days") or 90)
+    return (sent + timedelta(days=days)).isoformat()
+
+
+def loan_term_dates(loan):
+    """Base-term end and full maturity (base + every scheduled extension)."""
+    if loan is None:
+        return None, None
+    if is_standing_loan(loan):
+        due = standing_payoff_due(loan)
+        return None, due
+    start = parse_date(row_val(loan, "start_date"))
+    if not start:
+        stored = parse_date(row_val(loan, "maturity_date"))
+        iso = stored.isoformat() if stored else None
+        return iso, iso
+    lid = loan["id"]
+    base = int(_row_months(loan) or 0)
+    if base <= 0:
+        base = 3
+    extra = int(option_months_total(lid) or 0)
+    try:
+        used_rows = db().execute(
+            "SELECT months FROM extensions WHERE loan_id=?", (lid,)
+        ).fetchall()
+        used_months = sum(int(r["months"] or 0) for r in used_rows)
+    except sqlite3.Error:
+        used_months = 0
+    extra = max(extra, used_months)
+    base_end = start + timedelta(days=30 * max(base, 0))
+    full_end = start + timedelta(days=30 * (max(base, 0) + max(extra, 0)))
+    stored = parse_date(row_val(loan, "maturity_date"))
+    if stored and stored > full_end:
+        full_end = stored
+    return base_end.isoformat(), full_end.isoformat()
+
+
 def loan_term_phase(loan):
     """late only after base term plus every scheduled extension. Else in_extension after base end."""
     if loan is None:
@@ -3164,21 +3230,35 @@ def loan_term_phase(loan):
     st = (row_val(loan, "status") or "").lower()
     if st in ("paid off", "closed", "termed", "sold", "written off"):
         return None
-    start = parse_date(row_val(loan, "start_date"))
-    if not start:
+    if is_standing_loan(loan):
+        due = parse_date(row_val(loan, "next_payment_due"))
+        grace = 10
+        if due and date.today() > due + timedelta(days=grace):
+            return "late"
+        call = parse_date(standing_payoff_due(loan))
+        if call and date.today() > call:
+            return "late"
         return None
-    lid = loan["id"]
-    base = int(_row_months(loan) or 0)
-    extra = int(option_months_total(lid) or 0)
+    base_iso, full_iso = loan_term_dates(loan)
+    base_end = parse_date(base_iso)
+    full_end = parse_date(full_iso)
     today = date.today()
-    base_end = start + timedelta(days=30 * max(base, 0))
-    full_end = start + timedelta(days=30 * (max(base, 0) + max(extra, 0)))
-    stored = parse_date(row_val(loan, "maturity_date"))
-    if stored and stored > full_end:
-        full_end = stored
-    if today > full_end:
+    extra = 0
+    used_n = 0
+    try:
+        extra = int(option_months_total(loan["id"]) or 0)
+        used_n = db().execute(
+            "SELECT COUNT(*) AS n FROM extensions WHERE loan_id=?", (loan["id"],)
+        ).fetchone()["n"]
+    except sqlite3.Error:
+        pass
+    if full_end and today > full_end:
         return "late"
-    if extra > 0 and today > base_end:
+    if used_n and (not full_end or today <= full_end):
+        return "in_extension"
+    if extra and base_end and today > base_end and (not full_end or today <= full_end):
+        return "in_extension"
+    if base_end and full_end and full_end > base_end and today > base_end and today <= full_end:
         return "in_extension"
     return None
 
@@ -3204,6 +3284,8 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
     loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
     if not loan:
         return None
+    if is_standing_loan(loan):
+        return row_val(loan, "maturity_date")
     start = start or row_val(loan, "start_date")
     if base_term is None:
         base_term = _row_months(loan)
@@ -8055,6 +8137,26 @@ def loans_dedupe():
     return redirect(url_for("loans"))
 
 
+@app.route("/loans/<int:lid>/payoff-notice", methods=["POST"])
+@staff_required
+def loan_payoff_notice(lid):
+    days = request.form.get("call_notice_days") or "90"
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = 90
+    sent = request.form.get("payoff_notice_on") or None
+    try:
+        db().execute(
+            "UPDATE loans SET payoff_notice_on=?, call_notice_days=?, term_kind=? WHERE id=?",
+            (sent, days, "Perpetual", lid),
+        )
+        db().commit()
+    except sqlite3.Error:
+        pass
+    return redirect(url_for("loan_detail", lid=lid))
+
+
 @app.route("/loans/<int:lid>/status", methods=["POST"])
 @staff_required
 def loan_set_status(lid):
@@ -8103,9 +8205,22 @@ def loans():
             continue
         if num:
             seen_nums.add(num)
+        borrower_name = r["borrower_name"]
         d = dict(r)
-        d["due_in"] = days_until(r["next_payment_due"])
-        d["matures_in"] = days_until(r["maturity_date"])
+        try:
+            refresh_loan_maturity(r["id"])
+            fresh = db().execute("SELECT * FROM loans WHERE id=?", (r["id"],)).fetchone()
+            if fresh:
+                r = fresh
+                d = dict(r)
+        except Exception:
+            pass
+        d["borrower_name"] = borrower_name
+        base_iso, full_iso = loan_term_dates(r)
+        d["due_in"] = days_until(r["next_payment_due"] if "next_payment_due" in r.keys() else None)
+        d["matures_in"] = days_until(full_iso)
+        d["base_maturity"] = base_iso
+        d["full_maturity"] = full_iso
         d["term_phase"] = loan_term_phase(r)
         enriched.append(d)
     counts = db().execute(
@@ -8132,21 +8247,40 @@ def loan_new():
     deals = db().execute("SELECT id, address, loan_type FROM deals ORDER BY id DESC").fetchall()
     if request.method == "POST":
         f = request.form
+        standing = (f.get("term_kind") or "") == "Perpetual" or (f.get("loan_type") or "") == "Other"
         purchase = money(f.get("purchase_price"))
         rehab = money(f.get("rehab_cost"))
         points = money(f.get("points"))
-        principal = compute_loan_total(purchase, rehab, points)
-        if f.get("total_loan_amount"):
-            principal = money(f.get("total_loan_amount")) or principal
-        base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else 0
-        start = f.get("start_date")
-        extra = 0
-        for m in f.getlist("ext_months"):
-            try:
-                extra += int(float(m)) if m else 0
-            except (TypeError, ValueError):
-                pass
-        maturity = scheduled_maturity_date(start, base_term, extra) or f.get("maturity_date")
+        if standing:
+            principal = money(f.get("standing_principal")) or money(f.get("total_loan_amount"))
+            base_term = 0
+            start = f.get("start_date")
+            maturity = None
+            pay_amt = money(f.get("monthly_interest")) or money(f.get("payment_amount"))
+            pay_type = "Interest only"
+            pay_freq = "Monthly"
+            next_due = f.get("first_due") or f.get("next_payment_due")
+            late_fee = money(f.get("late_fee"))
+            if not late_fee:
+                late_fee = round(pay_amt * 0.05, 2) if pay_amt else 0
+        else:
+            principal = compute_loan_total(purchase, rehab, points)
+            if f.get("total_loan_amount"):
+                principal = money(f.get("total_loan_amount")) or principal
+            base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else 0
+            start = f.get("start_date")
+            extra = 0
+            for m in f.getlist("ext_months"):
+                try:
+                    extra += int(float(m)) if m else 0
+                except (TypeError, ValueError):
+                    pass
+            maturity = scheduled_maturity_date(start, base_term, extra) or f.get("maturity_date")
+            pay_amt = money(f.get("payment_amount")) or None
+            pay_type = f.get("payment_type")
+            pay_freq = f.get("payment_frequency") or "Interest due at maturity"
+            next_due = maturity
+            late_fee = money(f.get("late_fee")) or 0
         status = f.get("status") or "Current"
         if status == "Late":
             status = "Current"
@@ -8169,11 +8303,11 @@ def loan_new():
                 points or None,
                 start,
                 maturity,
-                f.get("payment_type"),
-                money(f.get("payment_amount")) or None,
-                f.get("payment_frequency") or "Interest due at maturity",
-                maturity,
-                money(f.get("late_fee")) or 0,
+                pay_type,
+                pay_amt,
+                pay_freq,
+                next_due,
+                late_fee,
                 status,
                 f.get("notes"),
                 base_term,
@@ -8182,8 +8316,26 @@ def loan_new():
             ),
         )
         lid = cur.lastrowid
-        save_loan_ext_options(lid, f)
-        refresh_loan_maturity(lid, start=start, base_term=base_term)
+        if standing:
+            try:
+                db().execute(
+                    """UPDATE loans SET term_kind=?, call_notice_days=?, payoff_notice_on=?,
+                       unsecured=?, first_payment_amount=?, payment_frequency=? WHERE id=?""",
+                    (
+                        "Perpetual",
+                        int(f.get("call_notice_days") or 90),
+                        f.get("payoff_notice_on") or None,
+                        1 if f.get("unsecured") == "1" else 0,
+                        money(f.get("first_payment_amount")) or None,
+                        "Monthly",
+                        lid,
+                    ),
+                )
+            except sqlite3.Error:
+                pass
+        else:
+            save_loan_ext_options(lid, f)
+            refresh_loan_maturity(lid, start=start, base_term=base_term)
         saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
         if saved and (row_val(saved, "payment_type") or "") == "Balloon":
             db().execute(
@@ -8271,6 +8423,8 @@ def loan_detail(lid):
         title=loan["loan_number"],
         nav="loans",
         loan=loan,
+        standing=is_standing_loan(loan),
+        payoff_due=standing_payoff_due(loan),
         payments=payments,
         perf=perf,
         parts=parts,
