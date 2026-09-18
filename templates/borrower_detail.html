@@ -167,7 +167,7 @@
   <div class="form-grid" style="margin:8px 0">
     <div>
       <label>With selected</label>
-      <select name="bulk_action" required>
+      <select name="bulk_action" form="bulk-docs">
         <option value="delete">Delete</option>
         <option value="move_file">Move to folder on this file</option>
         <option value="move_borrower">Move to another borrower</option>
@@ -175,7 +175,7 @@
     </div>
     <div>
       <label>Folder</label>
-      <select name="dest_file">
+      <select name="dest_file" form="bulk-docs">
         <option value="">Choose folder</option>
         {% for pack in named_files %}
         <option value="{{ pack.file.id }}">{{ pack.file.name }}</option>
@@ -184,7 +184,7 @@
     </div>
     <div>
       <label>Borrower</label>
-      <select name="dest_borrower">
+      <select name="dest_borrower" form="bulk-docs">
         <option value="">Choose borrower</option>
         {% for p in all_borrowers %}
         {% if p.id != b.id %}
@@ -193,8 +193,22 @@
         {% endfor %}
       </select>
     </div>
-    <div><button class="btn" type="submit" onclick="return confirm('Apply this to the checked files?');">Apply to checked files</button></div>
+    <div><button class="btn" type="submit" form="bulk-docs">Apply to checked files</button></div>
   </div>
+  </form>
+  <script>
+  document.getElementById("bulk-docs").addEventListener("submit", function(e){
+    var boxes = document.querySelectorAll('input[name="doc_ids"]:checked');
+    if (!boxes.length){
+      e.preventDefault();
+      alert("Check the files first, then click Apply to checked files.");
+      return;
+    }
+    if (!confirm("Apply this to " + boxes.length + " file(s)?")){
+      e.preventDefault();
+    }
+  });
+  </script>
   {% for pack in named_files %}
   <details class="drop-file" data-add="{{ url_for('borrower_named_file_add', bid=b.id, fid=pack.file.id) }}" data-upload="{{ url_for('borrower_named_file_upload', bid=b.id, fid=pack.file.id) }}" style="margin:8px 0;border:1px solid #d5dee8;border-radius:10px;padding:8px 12px;background:#fff">
     <summary style="cursor:pointer;font-weight:600">
@@ -210,7 +224,7 @@
     <ul>
       {% for doc in pack.docs %}
       <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
-        <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}"></label>
+        <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}" form="bulk-docs"></label>
         <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
         <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
           <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
@@ -256,7 +270,7 @@
       {% for doc in group.docs %}
       <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
         <td>
-          <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}"></label>
+          <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}" form="bulk-docs"></label>
           <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
         </td>
         <td>{{ doc.kind }}</td>
@@ -276,7 +290,6 @@
     <p class="hint">No files uploaded yet.</p>
     {% endfor %}
   </details>
-  </form>
 </div>
 <div class="card" style="margin-top:14px">
   <h3>Deal history</h3>
