@@ -358,7 +358,7 @@
         {% for i in investors %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
       </select>
     </div>
-    <div><label>Amount in this deal</label><input name="amount" type="number" step="0.01" required value="{{ '%.2f'|format(perf.gap) }}"></div>
+    <div><label>Amount in this loan</label><input name="amount" type="number" step="0.01" required value="{{ '%.2f'|format(perf.gap) }}"></div>
     <div><label>Rate paid to investor % (for the term)</label><input name="investor_rate" type="number" step="0.01" required placeholder="10"></div>
     <div><label>Term (months)</label><input name="term_months" type="number" value="3" required></div>
     <div><label>Extension rate % per month</label><input name="extension_rate" type="number" step="0.01" value="2"></div>

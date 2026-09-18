@@ -36,13 +36,13 @@
       <button class="btn" type="submit">Save capital</button>
     </div>
   </form>
-  <p class="hint">This is what they can put into a new deal. It is not the amount already in loans.</p>
+  <p class="hint">This is what they can put into a new loan. It is not the amount already in loans.</p>
 </div>
 
 <div class="card">
   <h3>In plain English</h3>
   <p>
-    Money still working in deals: <strong>${{ "{:,.0f}".format(books.still_out) }}</strong>.
+    Money still working in loans: <strong>${{ "{:,.0f}".format(books.still_out) }}</strong>.
     Net profit this year after Nate’s fee: <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
     ({{ "%.1f"|format(books.ytd_ror) }}%).
     Net profit all time: <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
@@ -56,7 +56,7 @@
 </div>
 
 <div class="grid cards" style="margin-top:14px">
-  <div class="card"><h3>Still in deals</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
+  <div class="card"><h3>Still in loans</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
   <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(books.ytd_ror) }}% YTD rate</div></div>
   <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(books.all_ror) }}% all-time rate</div></div>
   <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(books.ann_rate) }}%</div></div>
@@ -64,7 +64,7 @@
 
 <div class="card" style="margin-top:14px">
   <h3>Spreadsheet summary</h3>
-  <p class="hint">Financial return = dollars paid to this investor (not principal). Rate of return = those dollars ÷ capital. Annualized rate = deal rate × 12 ÷ term months.</p>
+  <p class="hint">Financial return = dollars paid to this investor (not principal). Rate of return = those dollars ÷ capital. Annualized rate = loan rate × 12 ÷ term months.</p>
   <div style="overflow-x:auto">
   <table class="table">
     <tr>

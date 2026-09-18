@@ -23,7 +23,7 @@
   <div class="card" style="margin-top:18px">
     <h3>Your money at a glance</h3>
     <p>
-      You currently have <strong>${{ "{:,.0f}".format(books.still_out) }}</strong> working in Brittco deals.
+      You currently have <strong>${{ "{:,.0f}".format(books.still_out) }}</strong> working in Brittco loans.
       This year your net profit after Nate Holland’s fee is <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
       ({{ "%.1f"|format(books.ytd_ror) }}%).
       All-time net profit is <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
@@ -49,7 +49,7 @@
   </div>
 
   <div class="grid cards" style="margin-top:14px">
-    <div class="card"><h3>Still in deals</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
+    <div class="card"><h3>Still in loans</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
     <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(books.ytd_ror) }}%</div></div>
     <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(books.all_ror) }}%</div></div>
     <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(books.ann_rate) }}%</div></div>
@@ -58,7 +58,7 @@
   </div>
 
   <div class="card" style="margin-top:14px">
-    <h3>All deals — one spreadsheet</h3>
+    <h3>All loans — one spreadsheet</h3>
     <div style="overflow-x:auto">
     <table class="table">
       <tr>
