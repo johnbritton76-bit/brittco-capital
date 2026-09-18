@@ -2045,6 +2045,7 @@ try:
     seed_crossley_tx(_s)
     seed_dos_gringos_tx(_s)
     cleanup_duplicate_loans(_s)
+    repair_borrower_documents(_s)
     _s.commit()
     _s.close()
 except Exception:
@@ -3367,8 +3368,9 @@ def ensure_loan_file_folder(loan):
     items = db().execute(
         """SELECT d.* FROM doc_file_items i
            JOIN documents d ON d.id=i.document_id
-           WHERE i.file_id=? ORDER BY i.id DESC""",
-        (row["id"],),
+           WHERE i.file_id=? AND d.borrower_id=?
+           ORDER BY i.id DESC""",
+        (row["id"], bid),
     ).fetchall()
     return row, items
 
@@ -6145,6 +6147,7 @@ def dashboard():
         seed_crossley_tx(db())
         seed_dos_gringos_tx(db())
         cleanup_duplicate_loans(db())
+        repair_borrower_documents(db())
         db().commit()
     except Exception:
         pass
@@ -6356,6 +6359,7 @@ def borrower_new():
 def borrower_detail(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     try:
+        repair_borrower_documents(db())
         ensure_borrower_file_cabinets(bid)
     except sqlite3.Error:
         pass
@@ -6393,8 +6397,155 @@ def borrower_detail(bid):
         ),
         property_files=borrower_property_files(bid),
         named_files=borrower_named_files(bid),
+        all_borrowers=db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall(),
         delete_warn=session.pop("borrower_delete_warn", None),
     )
+
+
+def _doc_name_blob(doc):
+    parts = [
+        row_val(doc, "original_name") if not isinstance(doc, str) else doc,
+        "" if isinstance(doc, str) else (row_val(doc, "filename") or ""),
+        "" if isinstance(doc, str) else (row_val(doc, "kind") or ""),
+    ]
+    return " ".join(p or "" for p in parts).lower()
+
+
+def infer_doc_owner_bid(conn, doc):
+    blob = _doc_name_blob(doc)
+    if not blob.strip():
+        return None
+    if any(x in blob for x in ("10w96", "10-w-96", "10 w 96", "crossley", "ludwig", "katherine-crossley")):
+        row = conn.execute(
+            """SELECT id FROM borrowers
+               WHERE lower(name) LIKE '%crossley%' OR lower(email) LIKE '%crossley%'
+               ORDER BY id LIMIT 1"""
+        ).fetchone()
+        return row["id"] if row else None
+    if any(
+        x in blob
+        for x in (
+            "409sm",
+            "409-s-maple",
+            "409 s maple",
+            "dos-gringos",
+            "dos gringos",
+            "dosgringos",
+            "mccallon",
+            "walker eric",
+            "409_s",
+        )
+    ):
+        row = conn.execute(
+            """SELECT id FROM borrowers
+               WHERE lower(name) LIKE '%mccallon%'
+                  OR lower(email) LIKE '%dosgringos%'
+                  OR lower(email) LIKE '%mccallon%'
+                  OR lower(entity_name) LIKE '%gringo%'
+               ORDER BY id LIMIT 1"""
+        ).fetchone()
+        return row["id"] if row else None
+    return None
+
+
+def repair_borrower_documents(conn=None):
+    """Keep each document on one borrower. Drop seed duplicates. Unlink stray folder items."""
+    c = conn or db()
+    try:
+        docs = c.execute("SELECT * FROM documents").fetchall()
+    except sqlite3.Error:
+        return
+    for doc in docs:
+        name = (row_val(doc, "original_name") or row_val(doc, "filename") or "").lower()
+        if name.endswith(".textclipping") or name in ("seed_docs.textclipping",):
+            try:
+                c.execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+                c.execute("DELETE FROM documents WHERE id=?", (doc["id"],))
+            except sqlite3.Error:
+                pass
+            continue
+        owner = infer_doc_owner_bid(c, doc)
+        current = doc["borrower_id"]
+        blob = _doc_name_blob(doc)
+        mccallon_doc = any(
+            x in blob
+            for x in ("409sm", "409-s-maple", "dos-gringos", "dosgringos", "mccallon", "walker eric")
+        )
+        if not owner and mccallon_doc:
+            try:
+                c.execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+                c.execute("DELETE FROM documents WHERE id=?", (doc["id"],))
+            except sqlite3.Error:
+                pass
+            continue
+        if not owner:
+            continue
+        if current != owner:
+            deal = c.execute(
+                "SELECT id FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1",
+                (owner,),
+            ).fetchone()
+            did = deal["id"] if deal else None
+            if is_profile_document(row_val(doc, "original_name") or ""):
+                did = None
+            c.execute(
+                "UPDATE documents SET borrower_id=?, deal_id=? WHERE id=?",
+                (owner, did, doc["id"]),
+            )
+            try:
+                c.execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+            except sqlite3.Error:
+                pass
+    # Drop extra copies of the same file on the same borrower.
+    kept = {}
+    try:
+        rows = c.execute(
+            "SELECT id, borrower_id, original_name, filename FROM documents ORDER BY id"
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    drop_ids = []
+    for row in rows:
+        key = (
+            row["borrower_id"],
+            (row["original_name"] or row["filename"] or "").strip().lower(),
+        )
+        if not key[1]:
+            continue
+        if key in kept:
+            drop_ids.append(row["id"])
+        else:
+            kept[key] = row["id"]
+    for did in drop_ids:
+        try:
+            c.execute("DELETE FROM doc_file_items WHERE document_id=?", (did,))
+            c.execute("DELETE FROM documents WHERE id=?", (did,))
+        except sqlite3.Error:
+            pass
+    # Folder links may only point at that borrower's documents.
+    try:
+        c.execute(
+            """DELETE FROM doc_file_items
+               WHERE id IN (
+                 SELECT i.id FROM doc_file_items i
+                 JOIN doc_files f ON f.id=i.file_id
+                 JOIN documents d ON d.id=i.document_id
+                 WHERE d.borrower_id IS NOT NULL
+                   AND f.borrower_id IS NOT NULL
+                   AND d.borrower_id != f.borrower_id
+               )"""
+        )
+    except sqlite3.Error:
+        pass
+    try:
+        c.commit()
+    except Exception:
+        pass
+    for b in c.execute("SELECT id FROM borrowers").fetchall():
+        try:
+            ensure_borrower_file_cabinets(b["id"])
+        except Exception:
+            pass
 
 
 def is_profile_document(name):
@@ -6449,8 +6600,8 @@ def ensure_borrower_file_cabinets(bid):
             )
             db().commit()
     docs = db().execute(
-        "SELECT * FROM documents WHERE borrower_id=? OR deal_id IN (SELECT id FROM deals WHERE borrower_id=?)",
-        (bid, bid),
+        "SELECT * FROM documents WHERE borrower_id=?",
+        (bid,),
     ).fetchall()
     for doc in docs:
         already = db().execute(
@@ -6481,9 +6632,9 @@ def borrower_property_files(bid):
     deal_ids = [d["id"] for d in deals]
     docs = db().execute(
         """SELECT * FROM documents
-           WHERE borrower_id=? OR deal_id IN ({ids})
-           ORDER BY id DESC""".format(ids=",".join("?" * len(deal_ids)) if deal_ids else "0"),
-        ([bid] + deal_ids) if deal_ids else [bid],
+           WHERE borrower_id=?
+           ORDER BY id DESC""",
+        (bid,),
     ).fetchall()
     by_deal = {d["id"]: [] for d in deals}
     loose = []
@@ -6517,8 +6668,9 @@ def borrower_named_files(bid):
         items = db().execute(
             """SELECT d.* FROM doc_file_items i
                JOIN documents d ON d.id=i.document_id
-               WHERE i.file_id=? ORDER BY i.id""",
-            (row["id"],),
+               WHERE i.file_id=? AND d.borrower_id=?
+               ORDER BY i.id""",
+            (row["id"], bid),
         ).fetchall()
         out.append({"file": row, "docs": items})
     return out
@@ -9559,6 +9711,63 @@ def remove_document(doc_id):
     db().execute("DELETE FROM documents WHERE id=?", (doc_id,))
     db().commit()
     return doc
+
+
+@app.route("/borrowers/<int:bid>/documents/bulk", methods=["POST"])
+@staff_required
+def borrower_documents_bulk(bid):
+    ids = request.form.getlist("doc_ids")
+    action = request.form.get("bulk_action") or ""
+    dest_file = request.form.get("dest_file")
+    dest_borrower = request.form.get("dest_borrower")
+    for raw in ids:
+        try:
+            did = int(raw)
+        except (TypeError, ValueError):
+            continue
+        doc = db().execute("SELECT * FROM documents WHERE id=?", (did,)).fetchone()
+        if not doc:
+            continue
+        if action == "delete":
+            remove_document(did)
+            continue
+        if action == "move_file" and dest_file:
+            try:
+                fid = int(dest_file)
+            except (TypeError, ValueError):
+                continue
+            folder = db().execute(
+                "SELECT * FROM doc_files WHERE id=? AND borrower_id=?", (fid, bid)
+            ).fetchone()
+            if not folder:
+                continue
+            db().execute("DELETE FROM doc_file_items WHERE document_id=?", (did,))
+            db().execute(
+                "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+                (fid, did),
+            )
+            db().execute(
+                "UPDATE documents SET deal_id=?, borrower_id=? WHERE id=?",
+                (folder["deal_id"], bid, did),
+            )
+        if action == "move_borrower" and dest_borrower:
+            try:
+                other = int(dest_borrower)
+            except (TypeError, ValueError):
+                continue
+            if other == bid:
+                continue
+            deal = db().execute(
+                "SELECT id FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1",
+                (other,),
+            ).fetchone()
+            db().execute("DELETE FROM doc_file_items WHERE document_id=?", (did,))
+            db().execute(
+                "UPDATE documents SET borrower_id=?, deal_id=? WHERE id=?",
+                (other, deal["id"] if deal else None, did),
+            )
+    db().commit()
+    return redirect(url_for("borrower_detail", bid=bid))
 
 
 @app.route("/documents/<int:did>/delete", methods=["POST"])
