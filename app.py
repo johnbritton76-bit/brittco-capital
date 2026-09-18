@@ -2204,8 +2204,21 @@ def investor_books(iid):
             stored_nate = 0.0
         line = dict(d)
         if (d["kind"] or "") == "Principal":
-            slot["principal"] += amt
-            line["nate_amount"] = 0
+            room = max(0.0, (slot["capital"] or 0) - slot["principal"])
+            if slot["capital"] and amt > room + 0.5:
+                slot["principal"] += room
+                extra = amt - room
+                slot["interest"] += extra
+                when = str(d["created_at"] or "")
+                if when.startswith(year):
+                    slot["ytd_int"] += extra
+                if when.startswith(prior):
+                    slot["ye_int"] += extra
+                line["nate_amount"] = 0
+                line["kind"] = "Principal + profit"
+            else:
+                slot["principal"] += amt
+                line["nate_amount"] = 0
         else:
             profit_line = amt + stored_nate
             line["investor_amount"] = profit_line
@@ -2259,7 +2272,7 @@ def investor_books(iid):
         else:
             story = (
                 f"You invested ${cap:,.0f} in this loan. You have received ${gross:,.2f} in interest income so far "
-                f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital invested in this deal. "
+                f"and still have ${max(0.0, cap - s['principal']):,.0f} of capital invested in this loan. "
                 f"Nate Holland’s {fee:.1f}% fee (${accrued:,.2f}) is estimated only — it is not payable "
                 f"until your basis is paid off and a profit is realized."
             )
@@ -2313,7 +2326,7 @@ def investor_books(iid):
         "all_prin": all_prin,
         "ytd_int": net_ytd,
         "ytd_prin": ytd_prin,
-        "still_out": max(0.0, deployed - all_prin),
+        "still_out": sum(max(0.0, r["still_out"]) for r in rows),
         "all_profit": net_all,
         "ytd_profit": net_ytd,
         "ye_profit": net_ye,
@@ -2463,9 +2476,9 @@ def corporate_books(year=None):
         for p in parts:
             try:
                 f = p["mgmt_fee_pct"]
-                f = 25.0 if f is None else money(f)
+                f = 0.0 if f is None else money(f)
             except (KeyError, IndexError, TypeError):
-                f = 25.0
+                f = 0.0
             fees.append(f)
         fee = fees[0] if fees else 0.0
         if any(f > 0.001 for f in fees) and fee == 0:
@@ -2927,7 +2940,7 @@ def investor_statement_pdf(inv, books, include_carry=False):
         ["Net profit to investor", money_txt(books["ytd_profit"]), money_txt(books["ye_profit"]), money_txt(books["all_profit"])],
         ["Rate of return", f"{books['ytd_ror']:.1f}%", f"{books['ye_ror']:.1f}%", f"{books['all_ror']:.1f}%"],
         ["Nate Holland fee (realized)", money_txt(books["nate_ytd"]), money_txt(books.get("nate_ye") or 0), money_txt(books["nate_all"])],
-        ["Capital still in deals", money_txt(books["still_out"]), "—", money_txt(books["still_out"])],
+        ["Capital still in loans", money_txt(books["still_out"]), "—", money_txt(books["still_out"])],
         ["Annualized book rate", f"{books['ann_rate']:.1f}%", "—", f"{books['ann_rate']:.1f}%"],
     ]
     t = Table(summary, colWidths=[2.2 * inch, 1.6 * inch, 1.6 * inch, 1.6 * inch])
@@ -3839,9 +3852,9 @@ def participation_math(p):
     total_months = term + used
     try:
         fee = p["mgmt_fee_pct"]
-        fee = 25.0 if fee is None else money(fee)
+        fee = 0.0 if fee is None else money(fee)
     except (KeyError, IndexError):
-        fee = 25.0
+        fee = 0.0
     keep = max(0.0, 1.0 - fee / 100.0)
     net_base = base * keep
     net_total = total_return * keep
@@ -4726,9 +4739,9 @@ def split_payment(loan, amount, applied_to):
         else:
             inv_amt, brit_amt = share, 0.0
         try:
-            fee = 25.0 if p["mgmt_fee_pct"] is None else money(p["mgmt_fee_pct"])
+            fee = 0.0 if p["mgmt_fee_pct"] is None else money(p["mgmt_fee_pct"])
         except (KeyError, IndexError):
-            fee = 25.0
+            fee = 0.0
         rows.append(
             {
                 "investor_id": p["investor_id"],
@@ -5293,7 +5306,7 @@ def answer_investor_help(question, inv, books):
     if any(w in q for w in ("gross", "net", "profit")):
         return (
             f"All-time net profit on this account is ${money(books.get('all_profit') or 0):,.2f} after Nate’s realized fee. "
-            f"Gross is before that fee. Capital still in deals is ${money(books.get('still_out') or 0):,.0f}."
+            f"Gross is before that fee. Capital still in loans is ${money(books.get('still_out') or 0):,.0f}."
         )
     if any(w in q for w in ("pdf", "statement", "tax")):
         return (
@@ -9045,6 +9058,33 @@ def loan_payment(lid):
     amt = money(f.get("amount"))
     applied = f.get("applied_to") or "Interest"
     loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    bal = money(loan["current_balance"])
+    if applied != "Principal" and amt > bal + 0.5 and bal > 0:
+        applied = "Principal"
+    if applied == "Principal" and amt > bal + 0.5 and bal > 0:
+        extra = round(amt - bal, 2)
+        db().execute(
+            "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
+            (lid, f.get("paid_on") or date.today().isoformat(), extra, "Interest", f.get("note") or "Profit above principal"),
+        )
+        for row in split_payment(loan, extra, "Interest"):
+            db().execute(
+                """INSERT INTO distributions
+                (payment_id, loan_id, investor_id, investor_amount, brittco_amount, nate_amount, kind, created_at)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    None,
+                    lid,
+                    row["investor_id"],
+                    row["investor_amount"],
+                    row["brittco_amount"],
+                    row.get("nate_amount") or 0,
+                    "Interest",
+                    datetime.now().isoformat(timespec="minutes"),
+                ),
+            )
+        amt = bal
+        applied = "Principal"
     new_bal = money(loan["current_balance"])
     if applied == "Principal":
         new_bal = max(0.0, new_bal - amt)
@@ -10334,7 +10374,7 @@ def accounting_csv():
         header = ["Item", "Amount"]
         rows = [
             ["Notes receivable (borrowers still owe)", f'{bs["notes_receivable"]:.2f}'],
-            ["Due to investors (capital still in deals)", f'{bs["due_investors"]:.2f}'],
+            ["Due to investors (capital still in loans)", f'{bs["due_investors"]:.2f}'],
             ["Nate payable (realized, unpaid)", f'{bs["nate_payable"]:.2f}'],
             ["Nate estimated on open loans (not payable)", f'{bs["nate_accrued_open"]:.2f}'],
         ]
@@ -10411,7 +10451,7 @@ def accounting_csv():
             ["Item", "Amount"],
             [
                 ["Notes receivable (borrowers still owe)", f'{bs["notes_receivable"]:.2f}'],
-                ["Due to investors (capital still in deals)", f'{bs["due_investors"]:.2f}'],
+                ["Due to investors (capital still in loans)", f'{bs["due_investors"]:.2f}'],
                 ["Nate payable (realized, unpaid)", f'{bs["nate_payable"]:.2f}'],
                 ["Nate estimated on open loans (not payable)", f'{bs["nate_accrued_open"]:.2f}'],
             ],
