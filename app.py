@@ -6360,8 +6360,9 @@ def borrower_detail(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     try:
         repair_borrower_documents(db())
+        purge_wrong_docs_for_borrower(bid)
         ensure_borrower_file_cabinets(bid)
-    except sqlite3.Error:
+    except Exception:
         pass
     deals = deal_rows(
         db().execute("SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)).fetchall()
@@ -6551,6 +6552,82 @@ def repair_borrower_documents(conn=None):
             ensure_borrower_file_cabinets(b["id"])
         except Exception:
             pass
+
+
+def purge_wrong_docs_for_borrower(bid):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return
+    who = " ".join(
+        [
+            (b["name"] or ""),
+            row_val(b, "entity_name") or "",
+            (b["email"] or ""),
+        ]
+    ).lower()
+    docs = db().execute("SELECT * FROM documents WHERE borrower_id=?", (bid,)).fetchall()
+    drop = []
+    seen = {}
+    for doc in docs:
+        blob = _doc_name_blob(doc)
+        if "crossley" in who and any(
+            x in blob
+            for x in (
+                "409sm",
+                "409-s-maple",
+                "409 s maple",
+                "dos-gringos",
+                "dos gringos",
+                "dosgringos",
+                "mccallon",
+                "walker eric",
+            )
+        ):
+            owner = infer_doc_owner_bid(db(), doc)
+            if owner and owner != bid:
+                db().execute(
+                    "UPDATE documents SET borrower_id=? WHERE id=?", (owner, doc["id"])
+                )
+                try:
+                    db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+                except sqlite3.Error:
+                    pass
+            else:
+                drop.append(doc["id"])
+            continue
+        if ("mccallon" in who or "gringo" in who) and any(
+            x in blob for x in ("10w96", "10-w-96", "crossley", "ludwig", "katherine-crossley")
+        ):
+            owner = infer_doc_owner_bid(db(), doc)
+            if owner and owner != bid:
+                db().execute(
+                    "UPDATE documents SET borrower_id=? WHERE id=?", (owner, doc["id"])
+                )
+                try:
+                    db().execute("DELETE FROM doc_file_items WHERE document_id=?", (doc["id"],))
+                except sqlite3.Error:
+                    pass
+            else:
+                drop.append(doc["id"])
+            continue
+        key = _norm_doc_key(row_val(doc, "original_name") or row_val(doc, "filename") or "")
+        if key and key in seen:
+            drop.append(doc["id"])
+        elif key:
+            seen[key] = doc["id"]
+    for did in drop:
+        try:
+            db().execute("DELETE FROM doc_file_items WHERE document_id=?", (did,))
+        except sqlite3.Error:
+            pass
+        try:
+            db().execute("DELETE FROM documents WHERE id=?", (did,))
+        except sqlite3.Error:
+            pass
+    try:
+        db().commit()
+    except Exception:
+        pass
 
 
 def is_profile_document(name):
@@ -9734,6 +9811,22 @@ def borrower_clean_files():
 @app.route("/borrowers/<int:bid>/documents/bulk", methods=["POST"])
 @staff_required
 def borrower_documents_bulk(bid):
+    try:
+        return _borrower_documents_bulk(bid)
+    except Exception:
+        try:
+            db().rollback()
+        except Exception:
+            pass
+        session["last_invite_note"] = "Could not update those files. Cleanup ran instead."
+        try:
+            repair_borrower_documents(db())
+        except Exception:
+            pass
+        return redirect(url_for("borrower_detail", bid=bid))
+
+
+def _borrower_documents_bulk(bid):
     ids = request.form.getlist("doc_ids")
     action = request.form.get("bulk_action") or "delete"
     dest_file = request.form.get("dest_file")
