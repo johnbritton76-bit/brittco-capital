@@ -9,6 +9,7 @@ import smtplib
 import sqlite3
 import urllib.parse
 import urllib.request
+import calendar
 from datetime import datetime, date, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -10446,6 +10447,335 @@ def nate_fees():
     total = sum(b["nate_all"] for b in books)
     ytd = sum(b["nate_ytd"] for b in books)
     return render_template("nate.html", title="Nate Holland fee", nav="nate", books=books, total=total, ytd=ytd)
+
+
+def _month_range(year, month):
+    last = calendar.monthrange(int(year), int(month))[1]
+    start = date(int(year), int(month), 1)
+    end = date(int(year), int(month), last)
+    return start, end
+
+
+def _in_month(raw, start, end):
+    d = parse_date(raw)
+    return bool(d and start <= d <= end)
+
+
+def borrower_month_statement_pdf(borrower, year, month):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
+    )
+
+    start, end = _month_range(year, month)
+    label = start.strftime("%B %Y")
+    loans = db().execute(
+        """SELECT * FROM loans WHERE borrower_id=?
+           AND COALESCE(loan_number,'') != 'BC-TX-10W96'
+           ORDER BY id""",
+        (borrower["id"],),
+    ).fetchall()
+    rows = []
+    for ln in loans:
+        pays = db().execute(
+            "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on, id",
+            (ln["id"],),
+        ).fetchall()
+        month_pays = [p for p in pays if _in_month(p["paid_on"], start, end)]
+        active = (
+            _in_month(row_val(ln, "start_date"), start, end)
+            or _in_month(row_val(ln, "maturity_date"), start, end)
+            or month_pays
+            or (
+                parse_date(row_val(ln, "start_date"))
+                and parse_date(row_val(ln, "start_date")) <= end
+                and (row_val(ln, "status") or "")
+                not in ("Paid Off", "Closed", "Termed", "Sold", "Written Off")
+            )
+            or (
+                (row_val(ln, "status") or "") in ("Paid Off", "Closed", "Termed", "Sold")
+                and _in_month(row_val(ln, "maturity_date"), start, end)
+            )
+        )
+        if not active:
+            continue
+        rows.append((ln, month_pays))
+    if not rows:
+        return None
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.55 * inch,
+        rightMargin=0.55 * inch,
+        topMargin=0.45 * inch,
+        bottomMargin=0.45 * inch,
+        title=f"Brittco statement {label} — {borrower['name']}",
+        author="Brittco Capital Inc",
+    )
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("T", parent=styles["Heading1"], fontSize=15, textColor=colors.HexColor("#16324f"), spaceAfter=1)
+    sub = ParagraphStyle("S", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#5b6b7a"), spaceAfter=3)
+    body = ParagraphStyle("B", parent=styles["Normal"], fontSize=9, leading=12)
+    small = ParagraphStyle("SM", parent=styles["Normal"], fontSize=8, leading=10.5, textColor=colors.HexColor("#334"))
+    navy = colors.HexColor("#16324f")
+    line = colors.HexColor("#c5d3e0")
+    bg = colors.HexColor("#f4f7fa")
+    story = []
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    if os.path.exists(logo):
+        img = Image(logo, width=1.3 * inch, height=0.52 * inch)
+        story.append(Table([[img, Paragraph("Borrower monthly statement", title)]], colWidths=[1.55 * inch, 5.55 * inch]))
+    else:
+        story.append(Paragraph("Brittco Capital Inc", title))
+        story.append(Paragraph("Borrower monthly statement", sub))
+    story.append(Paragraph("Brittco Capital Inc · Your Bridge to Building Wealth", sub))
+    story.append(HRFlowable(width="100%", thickness=1, color=line, spaceAfter=7))
+    story.append(Paragraph(f"<b>{xml_esc(borrower['name'] or '')}</b>", body))
+    if row_val(borrower, "entity_name"):
+        story.append(Paragraph(xml_esc(row_val(borrower, "entity_name")), small))
+    story.append(Paragraph(
+        f"Statement period: {start.strftime('%B %d, %Y')} – {end.strftime('%B %d, %Y')} · "
+        f"Statement date: {date.today().strftime('%B %d, %Y')}",
+        small,
+    ))
+    story.append(Spacer(1, 8))
+
+    billed_all = 0.0
+    paid_all = 0.0
+    open_prin = 0.0
+    house = [["Loan", "Status", "Billed", "Paid", "Open principal"]]
+    detail_blocks = []
+    due_now = 0.0
+    for ln, month_pays in rows:
+        num = row_val(ln, "loan_number") or f"Loan {ln['id']}"
+        st = row_val(ln, "status") or "Current"
+        prin = money(row_val(ln, "original_principal")) or money(row_val(ln, "current_balance"))
+        paid = sum(money(p["amount"]) for p in month_pays)
+        billed = 0.0
+        acts = []
+        if _in_month(row_val(ln, "start_date"), start, end):
+            acts.append((row_val(ln, "start_date"), f"Funded — {row_val(ln,'property_address') or num}", "—", f"${prin:,.2f}"))
+        if is_standing_loan(ln):
+            monthly = money(row_val(ln, "payment_amount"))
+            first = money(row_val(ln, "first_payment_amount")) or monthly
+            sd = parse_date(row_val(ln, "start_date"))
+            if sd and start <= sd <= end:
+                days = (end - sd).days + 1
+                billed = round(monthly * min(days, 30) / 30.0, 2) if monthly else first
+                acts.append((sd.isoformat(), f"Interest accrued ({min(days,30)} days of 30-day month)", f"${billed:,.2f}", "—"))
+            elif monthly:
+                billed = monthly
+                acts.append((start.isoformat(), "Monthly interest", f"${billed:,.2f}", "—"))
+            if (st or "").lower() not in ("paid off", "closed"):
+                due_now += billed if not month_pays else max(0.0, billed - paid)
+                open_prin += money(row_val(ln, "current_balance")) or prin
+        else:
+            fee = 0.0
+            note = row_val(ln, "notes") or ""
+            if "2%" in note or "2% flat" in note:
+                fee = round(prin * 0.02, 2)
+            elif money(row_val(ln, "points")):
+                fee = round(prin * money(row_val(ln, "points")) / 100.0, 2)
+            elif money(row_val(ln, "payment_amount")) and money(row_val(ln, "payment_amount")) > prin:
+                fee = round(money(row_val(ln, "payment_amount")) - prin, 2)
+            if fee and (_in_month(row_val(ln, "start_date"), start, end) or _in_month(row_val(ln, "maturity_date"), start, end)):
+                billed += fee
+                acts.append((row_val(ln, "start_date") or start.isoformat(), "Loan fee / interest billed", f"${fee:,.2f}", "—"))
+            if (st or "").lower() not in ("paid off", "closed", "termed", "sold"):
+                open_prin += money(row_val(ln, "current_balance")) or 0
+        for p in month_pays:
+            acts.append((p["paid_on"], f"Payment received — {p['applied_to'] or 'applied'}", "—", f"${money(p['amount']):,.2f}"))
+        if (st or "").lower() in ("paid off", "closed", "termed", "sold") and (
+            _in_month(row_val(ln, "maturity_date"), start, end) or month_pays
+        ):
+            acts.append((row_val(ln, "maturity_date") or (month_pays[-1]["paid_on"] if month_pays else end.isoformat()), "Loan closed", "—", "—"))
+        billed_all += billed
+        paid_all += paid
+        house.append([num, st, f"${billed:,.2f}", f"${paid:,.2f}", f"${(0 if st.lower() in ('paid off','closed','termed','sold') else (money(row_val(ln,'current_balance')) or 0)):,.2f}"])
+        detail_blocks.append((num, row_val(ln, "property_address") or "", row_val(ln, "loan_type") or "", acts))
+
+    ht = Table(house, colWidths=[1.5 * inch, 1.2 * inch, 1.4 * inch, 1.4 * inch, 1.5 * inch])
+    ht.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), navy),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 1), (-1, -1), bg),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BOX", (0, 0), (-1, -1), 0.4, line),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, line),
+    ]))
+    story.append(ht)
+    story.append(Spacer(1, 10))
+    for num, addr, ltype, acts in detail_blocks:
+        story.append(Paragraph(f"<b>{xml_esc(num)}</b> — {xml_esc(ltype)} — {xml_esc(addr)}", body))
+        data = [["Date", "Description", "Billed", "Received"]]
+        if acts:
+            for a in acts:
+                data.append([a[0] or "—", a[1], a[2], a[3]])
+        else:
+            data.append(["—", "No line items this month", "—", "—"])
+        t = Table(data, colWidths=[1.1 * inch, 3.4 * inch, 1.25 * inch, 1.25 * inch])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), navy),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("BOX", (0, 0), (-1, -1), 0.4, line),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, line),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 8))
+
+    due = [
+        ["Interest / fees still to collect", f"${due_now:,.2f}"],
+        ["Open principal across all loans", f"${open_prin:,.2f}"],
+        ["Total shown as due now", f"${due_now:,.2f}"],
+    ]
+    dt = Table(due, colWidths=[5.2 * inch, 1.8 * inch])
+    dt.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("BACKGROUND", (0, -1), (-1, -1), navy),
+        ("TEXTCOLOR", (0, -1), (-1, -1), colors.white),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(dt)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "This statement lists every Brittco loan on this borrower that was funded, billed, paid, or still open in the month. "
+        "It is not a tax form and not a payoff quote.",
+        small,
+    ))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def attach_borrower_pdf(borrower, pdf_bytes, display_name, kind):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stored = f"stmt_{borrower['id']}_{int(datetime.now().timestamp())}.pdf"
+    path = os.path.join(UPLOAD_DIR, stored)
+    with open(path, "wb") as fh:
+        fh.write(pdf_bytes)
+    db().execute(
+        """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (None, borrower["id"], stored, display_name, kind, datetime.now().isoformat(timespec="minutes")),
+    )
+    db().commit()
+
+
+def ensure_statement_sends():
+    db().execute(
+        """CREATE TABLE IF NOT EXISTS statement_sends (
+            id INTEGER PRIMARY KEY,
+            borrower_id INTEGER,
+            year INTEGER,
+            month INTEGER,
+            sent_at TEXT
+        )"""
+    )
+    db().commit()
+
+
+def send_borrower_month_statements(year=None, month=None, force=False):
+    ensure_statement_sends()
+    today = date.today()
+    if year is None or month is None:
+        first = date(today.year, today.month, 1)
+        prior = first - timedelta(days=1)
+        year, month = prior.year, prior.month
+    sent = 0
+    skipped = 0
+    for b in db().execute("SELECT * FROM borrowers ORDER BY name").fetchall():
+        already = db().execute(
+            "SELECT id FROM statement_sends WHERE borrower_id=? AND year=? AND month=?",
+            (b["id"], year, month),
+        ).fetchone()
+        if already and not force:
+            skipped += 1
+            continue
+        try:
+            pdf = borrower_month_statement_pdf(b, year, month)
+        except Exception:
+            pdf = None
+        if not pdf:
+            continue
+        label = date(year, month, 1).strftime("%B %Y")
+        name = f"Monthly-statement-{b['name']}-{year}-{month:02d}.pdf"
+        try:
+            attach_borrower_pdf(b, pdf, name, "Monthly statement")
+        except Exception:
+            pass
+        email = (b["email"] or "").strip()
+        mailed = False
+        if email:
+            body = (
+                f"Hello {b['name']},\n\n"
+                f"Attached is your Brittco Capital borrower statement for {label}. "
+                "It lists every loan that was funded, billed, paid, or still open that month.\n\n"
+                "This is an account summary, not a tax form.\n\n"
+                "Brittco Capital Inc\n"
+            )
+            try:
+                mailed = send_mail(email, f"Brittco Capital statement — {label}", body, pdf, name)
+            except Exception:
+                mailed = False
+        db().execute(
+            "INSERT INTO statement_sends (borrower_id, year, month, sent_at) VALUES (?,?,?,?)",
+            (b["id"], year, month, datetime.now().isoformat(timespec="minutes")),
+        )
+        if mailed:
+            sent += 1
+    db().commit()
+    return sent, skipped
+
+
+@app.route("/cron/statements")
+def cron_statements():
+    expected = os.environ.get("CRON_SECRET", "brittco-cron")
+    if request.args.get("key") != expected:
+        return "Forbidden", 403
+    sent, skipped = send_borrower_month_statements()
+    return {"ok": True, "emailed": sent, "already_sent": skipped}
+
+
+@app.route("/borrowers/statements/send", methods=["POST"])
+@staff_required
+def borrowers_send_statements():
+    sent, skipped = send_borrower_month_statements(force=True)
+    session["last_invite_note"] = (
+        f"Monthly statements prepared. Emailed {sent}. Already on file this month: {skipped}."
+    )
+    return redirect(url_for("borrowers"))
+
+
+@app.route("/borrowers/<int:bid>/statement.pdf")
+@staff_required
+def borrower_statement_pdf_view(bid):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return redirect(url_for("borrowers"))
+    today = date.today()
+    year = int(request.args.get("year") or today.year)
+    month = int(request.args.get("month") or today.month)
+    data = borrower_month_statement_pdf(b, year, month)
+    if not data:
+        session["last_invite_note"] = "No loan activity in that month to put on a statement."
+        return redirect(url_for("borrower_detail", bid=bid))
+    name = f"statement-{b['name']}-{year}-{month:02d}.pdf"
+    return send_file(BytesIO(data), mimetype="application/pdf", as_attachment=False, download_name=name)
 
 
 @app.route("/cron/reminders")
