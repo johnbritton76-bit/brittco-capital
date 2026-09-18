@@ -35,8 +35,9 @@
     <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
     <td>
       {{ l.next_payment_due or "—" }}
-      {% if l.due_in is not none and l.due_in < 0 %}<span class="badge bad">late</span>
-      {% elif l.due_in is not none and l.due_in <= 7 %}<span class="badge warn">{{ l.due_in }}d</span>{% endif %}
+      {% if l.term_phase == 'late' %}<span class="badge bad">late</span>
+      {% elif l.term_phase == 'in_extension' %}<span class="badge warn">in extension</span>
+      {% elif l.matures_in is not none and l.matures_in <= 7 and l.matures_in >= 0 %}<span class="badge warn">{{ l.matures_in }}d</span>{% endif %}
     </td>
     <td>{{ l.maturity_date or "—" }}</td>
     <td><span class="badge">{{ l.status }}</span></td>
