@@ -6,6 +6,9 @@
     <a class="btn" href="{{ url_for('borrower_invite') }}">Invite borrower</a>
     <a class="btn ghost" href="{{ url_for('help_admin') }}">Ask Brittco answers</a>
     <a class="btn ghost" href="/borrowers/new">Staff add (rare)</a>
+    <form method="post" action="{{ url_for('borrowers_send_statements') }}" style="display:inline">
+      <button class="btn ghost" type="submit">Email last month’s statements</button>
+    </form>
   </div>
 </div>
 <p class="hint">Invite is the normal path: staff enters name and contact only. The borrower completes the rest.</p>
