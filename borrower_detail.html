@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Borrower profile</div>
+    <h2>{{ b.name }}</h2>
+  </div>
+  <div>
+    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
+    <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
+    <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
+  </div>
+</div>
+{% if complete %}
+<div class="card">
+  <h3>File completeness</h3>
+  <p>Score <strong>{{ complete.score }}</strong>/100.
+    {% if complete.ok %}<span class="badge good">Ready</span>{% else %}<span class="badge warn">Gaps</span>{% endif %}
+  </p>
+  {% if complete.missing %}<p>Still needed: {{ complete.missing|join(', ') }}</p>{% endif %}
+  {% if complete.warnings %}<p class="hint">{{ complete.warnings|join(' ') }}</p>{% endif %}
+</div>
+{% endif %}
+{% if session.get('last_form_note') %}
+<div class="card"><p>{{ session.pop('last_form_note') }}</p>
+{% if session.get('last_form_url') %}<p><a href="{{ session.get('last_form_url') }}">Open form link</a></p>{% endif %}
+</div>
+{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Notary forms</h3>
+  <p class="hint">Check every form you need. Profile name, address, phone, email, entity, and the latest deal property/amount are filled in automatically. The borrower can still edit before printing.</p>
+  <form method="post" action="{{ url_for('send_borrower_form', bid=b.id) }}">
+    {% for key, spec in form_defs.items() %}
+    <label style="display:block;margin:6px 0">
+      <input type="checkbox" name="form_key" value="{{ key }}"> {{ spec.title }}
+    </label>
+    {% endfor %}
+    <button class="btn" type="submit" style="margin-top:8px">Send selected forms</button>
+  </form>
+  <table class="table" style="margin-top:10px">
+    <tr><th>Form</th><th>Status</th><th>When</th><th></th></tr>
+    {% for p in packets %}
+    <tr>
+      <td>{{ form_defs[p.form_key].title if form_defs.get(p.form_key) else p.form_key }}</td>
+      <td>{{ p.status }}</td>
+      <td>{{ p.created_at }}</td>
+      <td>
+        <a href="{{ url_for('fill_form', token=p.token) }}">Open</a>
+        · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No forms sent yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="grid cards">
+  <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}{% if b.ein %}<br>EIN {{ b.ein }}{% endif %}</div></div>
+  <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>Mobile {{ b.phone or "—" }}<br>Work {{ b.work_phone or "—" }}</div></div>
+  <div class="card"><h3>Credit</h3><div class="n">{{ b.credit_score or "—" }}</div></div>
+  <div class="card"><h3>SSN</h3><div>{{ ssn_mask }}</div><div class="hint">Full number only on Profile</div></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Demographics</h3>
+  <p>
+    {{ b.address or "—" }}{% if b.city %}, {{ b.city }} {{ b.state }} {{ b.zip }}{% endif %}<br>
+    {{ b.own_or_rent or "Own/rent not set" }}
+    {% if b.years_at_address %} · {{ b.years_at_address }} years at this address{% endif %}
+    {% if b.dob %}<br>DOB {{ b.dob }}{% endif %}
+    {% if b.marital_status %}<br>{{ b.marital_status }}{% endif %}
+    {% if b.spouse_name %}<br>Spouse: {{ b.spouse_name }}{% endif %}
+  </p>
+  {% if b.years_at_address and b.years_at_address < 2 and b.prev_address %}
+  <p class="hint">Previous address (under 2 years): {{ b.prev_address }}, {{ b.prev_city }} {{ b.prev_state }} {{ b.prev_zip }}</p>
+  {% endif %}
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Employment</h3>
+  <p>
+    {{ b.occupation or "—" }} at {{ b.employer or "—" }}
+    {% if b.years_employed %} · {{ b.years_employed }} years{% endif %}<br>
+    {% if b.employer_address %}{{ b.employer_address }}, {{ b.employer_city }} {{ b.employer_state }}{% endif %}
+    {% if b.employer_phone %} · {{ b.employer_phone }}{% endif %}
+    {% if b.prev_employer %}<br>Previous employer: {{ b.prev_employer }}{% endif %}
+    {% if b.monthly_income %}<br>Gross monthly income ${{ "{:,.0f}".format(b.monthly_income) }}{% endif %}
+    {% if b.liquid_assets %}<br>Liquid assets ${{ "{:,.0f}".format(b.liquid_assets) }}{% endif %}
+    {% if b.credit_events %}<br>Credit events: {{ b.credit_events }}{% endif %}
+  </p>
+</div>
+{% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>ACH / bank for collections</h3>
+  <p class="hint">Save the bank details here, then open the processor to set the payment schedule.</p>
+  <form method="post" action="{{ url_for('borrower_ach', bid=b.id) }}" class="form-grid">
+    <div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name or '' }}"></div>
+    <div><label>Account type</label>
+      <select name="bank_account_type">
+        {% for t in ['Checking','Savings'] %}
+        <option value="{{ t }}" {% if b.bank_account_type==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Routing number</label><input name="bank_routing" value="{{ b.bank_routing or '' }}"></div>
+    <div><label>Account number</label><input name="bank_account" value="{{ b.bank_account or '' }}"></div>
+    <div class="span-2">
+      <label><input type="checkbox" name="ach_authorized" value="1" {% if b.ach_authorized %}checked{% endif %}> Borrower authorized ACH drafts</label>
+    </div>
+    <div class="span-2">
+      <button class="btn ghost" type="submit">Save bank details</button>
+      <button class="btn" type="submit" name="open_processor" value="1">Save and open ACH scheduler</button>
+    </div>
+  </form>
+  {% if ach_rows %}
+  <table class="table" style="margin-top:12px">
+    <tr><th>When</th><th>Loan</th><th>Amount</th><th>Status</th></tr>
+    {% for t in ach_rows %}
+    <tr>
+      <td>{{ t.created_at }}</td>
+      <td>{{ t.loan_number or "—" }}</td>
+      <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
+      <td>{{ t.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Credit pull history</h3>
+  <table class="table">
+    <tr><th>When</th><th>Type</th><th>Bureau</th><th>Score</th><th>Status</th></tr>
+    {% for p in pulls %}
+    <tr>
+      <td>{{ p.created_at }}</td>
+      <td>{{ p.pull_type }}</td>
+      <td>{{ p.bureau }}</td>
+      <td>{{ p.score or "—" }}</td>
+      <td>{{ p.status }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No pulls yet. Use Soft credit pull — you will be asked to confirm.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Documents</h3>
+  <form method="post" action="{{ url_for('borrower_clean_files') }}" style="margin:0 0 10px">
+    <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
+    <button class="btn" type="submit">Clean misplaced and duplicate files</button>
+  </form>
+  <p class="hint">Profile documents hold ID and company papers once. Each property file is named with that address and holds only that deal’s papers. Use the button above if a file from another borrower is still showing.</p>
+  <form method="post" action="{{ url_for('borrower_named_file_new', bid=b.id) }}" class="form-grid" style="margin-bottom:16px">
+    <div class="span-2"><label>Create a new file</label><input name="name" placeholder="Example: 10 W 96th Terrace closing" required></div>
+    <div>
+      <label>Tied to property (optional)</label>
+      <select name="deal_id">
+        <option value="">None</option>
+        {% for d in deals %}
+        <option value="{{ d.id }}">{{ d.address or ('Deal ' ~ d.id) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><button class="btn" type="submit">Create a new file</button></div>
+  </form>
+  <p class="hint">Click a file name to open it. Check several boxes to delete or move them at once. Drag papers between folders, or drop files from your computer onto a folder.</p>
+  <form method="post" action="{{ url_for('borrower_documents_bulk', bid=b.id) }}" id="bulk-docs">
+  <div class="form-grid" style="margin:8px 0">
+    <div>
+      <label>With selected</label>
+      <select name="bulk_action" form="bulk-docs">
+        <option value="delete">Delete</option>
+        <option value="move_file">Move to folder on this file</option>
+        <option value="move_borrower">Move to another borrower</option>
+      </select>
+    </div>
+    <div>
+      <label>Folder</label>
+      <select name="dest_file" form="bulk-docs">
+        <option value="">Choose folder</option>
+        {% for pack in named_files %}
+        <option value="{{ pack.file.id }}">{{ pack.file.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Borrower</label>
+      <select name="dest_borrower" form="bulk-docs">
+        <option value="">Choose borrower</option>
+        {% for p in all_borrowers %}
+        {% if p.id != b.id %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+    </div>
+    <div><button class="btn" type="submit" form="bulk-docs">Apply to checked files</button></div>
+  </div>
+  </form>
+  <script>
+  document.getElementById("bulk-docs").addEventListener("submit", function(e){
+    var boxes = document.querySelectorAll('input[name="doc_ids"]:checked');
+    if (!boxes.length){
+      e.preventDefault();
+      alert("Check the files first, then click Apply to checked files.");
+      return;
+    }
+    if (!confirm("Apply this to " + boxes.length + " file(s)?")){
+      e.preventDefault();
+    }
+  });
+  </script>
+  {% for pack in named_files %}
+  <details class="drop-file" data-add="{{ url_for('borrower_named_file_add', bid=b.id, fid=pack.file.id) }}" data-upload="{{ url_for('borrower_named_file_upload', bid=b.id, fid=pack.file.id) }}" style="margin:8px 0;border:1px solid #d5dee8;border-radius:10px;padding:8px 12px;background:#fff">
+    <summary style="cursor:pointer;font-weight:600">
+      {{ pack.file.name }}
+      <span class="hint">({{ pack.docs|length }})</span>
+    </summary>
+    <p style="margin:8px 0">
+      <a class="btn ghost" href="{{ url_for('borrower_named_file_zip', bid=b.id, fid=pack.file.id) }}">Download</a>
+      <form method="post" action="{{ url_for('borrower_named_file_delete', bid=b.id, fid=pack.file.id) }}" style="display:inline" onsubmit="return confirm('Remove this named file? Documents are not deleted.');">
+        <button class="btn ghost" type="submit">Remove file name</button>
+      </form>
+    </p>
+    <ul>
+      {% for doc in pack.docs %}
+      <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+        <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}" form="bulk-docs"></label>
+        <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+          <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
+        <form method="post" style="display:inline;margin-left:8px">
+          <input type="hidden" name="document_id" value="{{ doc.id }}">
+          <select onchange="if(this.value){ this.form.action=this.value; this.form.submit(); }">
+            <option value="">Move to…</option>
+            {% for other in named_files %}
+            {% if other.file.id != pack.file.id %}
+            <option value="{{ url_for('borrower_named_file_add', bid=b.id, fid=other.file.id) }}">{{ other.file.name }}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </form>
+      </li>
+      {% else %}
+      <li class="hint">Empty — drop documents here</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+  <form method="post" action="{{ url_for('borrower_upload', bid=b.id) }}" enctype="multipart/form-data" class="form-grid" style="margin-bottom:16px">
+    <div>
+      <label>Attach to property</label>
+      <select name="deal_id">
+        <option value="">Profile only</option>
+        {% for d in deals %}
+        <option value="{{ d.id }}">{{ d.address or ('Deal ' ~ d.id) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="span-2"><label>Files</label><input type="file" name="docs" multiple></div>
+    <div><button class="btn" type="submit">Upload</button></div>
+  </form>
+  <details style="margin-top:16px">
+    <summary style="cursor:pointer">All uploads</summary>
+    {% for group in property_files %}
+    <h4 style="margin:14px 0 6px">{{ group.label }}</h4>
+    <table class="table">
+      <tr><th>File</th><th>Kind</th><th>Added</th><th></th></tr>
+      {% for doc in group.docs %}
+      <tr class="drag-doc" draggable="true" data-doc="{{ doc.id }}">
+        <td>
+          <label style="display:inline"><input type="checkbox" name="doc_ids" value="{{ doc.id }}" form="bulk-docs"></label>
+          <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        </td>
+        <td>{{ doc.kind }}</td>
+        <td>{{ doc.created_at }}</td>
+        <td>
+          <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" onsubmit="return confirm('Delete this document?');">
+            <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
+            <button class="btn ghost" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">No files here yet.</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="hint">No files uploaded yet.</p>
+    {% endfor %}
+  </details>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>Deal history</h3>
+  <table class="table">
+    <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
+    {% for d in deals %}
+    <tr>
+      <td><a href="{{ url_for('deal_detail', did=d.id) }}">{{ d.loan_type }}</a></td>
+      <td>{{ d.address }}</td>
+      <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
+      <td>{{ d.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<script src="{{ url_for('static', filename='drop-files.js') }}"></script>
+<div class="card" style="margin-top:24px">
+  <h3>Remove borrower</h3>
+  {% if delete_warn %}
+  <p><strong>This borrower is assigned to a loan. Removing the borrower will remove the loan.</strong></p>
+  <ul>
+    {% for l in delete_warn %}
+    <li>{{ l.loan_number }} — {{ l.property }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('borrower_delete', bid=b.id) }}">
+    <input type="hidden" name="confirm" value="PROCEED">
+    <button class="btn" type="submit">Proceed</button>
+    <a class="btn ghost" href="{{ url_for('borrower_detail', bid=b.id) }}">Cancel</a>
+  </form>
+  {% else %}
+  <p class="hint">Type REMOVE then click the button. If they have a loan you will be asked to confirm.</p>
+  <form method="post" action="{{ url_for('borrower_delete', bid=b.id) }}">
+    <input name="confirm" placeholder="REMOVE" autocomplete="off">
+    <button class="btn ghost" type="submit">Remove borrower</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
