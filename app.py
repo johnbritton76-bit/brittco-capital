@@ -2045,7 +2045,6 @@ try:
     seed_crossley_tx(_s)
     seed_dos_gringos_tx(_s)
     cleanup_duplicate_loans(_s)
-    repair_borrower_documents(_s)
     _s.commit()
     _s.close()
 except Exception:
@@ -6147,7 +6146,6 @@ def dashboard():
         seed_crossley_tx(db())
         seed_dos_gringos_tx(db())
         cleanup_duplicate_loans(db())
-        repair_borrower_documents(db())
         db().commit()
     except Exception:
         pass
@@ -6358,8 +6356,9 @@ def borrower_new():
 @staff_required
 def borrower_detail(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return redirect(url_for("borrowers"))
     try:
-        repair_borrower_documents(db())
         purge_wrong_docs_for_borrower(bid)
         ensure_borrower_file_cabinets(bid)
     except Exception:
@@ -6547,11 +6546,6 @@ def repair_borrower_documents(conn=None):
         c.commit()
     except Exception:
         pass
-    for b in c.execute("SELECT id FROM borrowers").fetchall():
-        try:
-            ensure_borrower_file_cabinets(b["id"])
-        except Exception:
-            pass
 
 
 def purge_wrong_docs_for_borrower(bid):
