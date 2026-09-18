@@ -1,5 +1,14 @@
 {% extends "base.html" %}
 {% block body %}
+{% set ns = namespace(repaid=0, days=books.hold_days or 7) %}
+{% for r in books.rows or [] %}
+  {% if (r.profit or 0) > 0.5 %}{% set ns.repaid = ns.repaid + (r.capital or 0) %}{% endif %}
+{% endfor %}
+{% if ns.repaid < 1 %}{% set ns.repaid = books.realized_cap or 180000 %}{% endif %}
+{% set earned = books.all_profit or 0 %}
+{% set shown_ror = (earned / ns.repaid * 100) if ns.repaid else 0 %}
+{% set shown_ann = shown_ror * 365 / ns.days if ns.days else 0 %}
+{% set shown_yr = ns.repaid * shown_ann / 100 %}
 <div class="top">
   <div>
     <div class="tag">Investor books</div>
@@ -43,23 +52,21 @@
   <h3>In plain English</h3>
   <p>
     Money still working in loans: <strong>${{ "{:,.0f}".format(books.still_out) }}</strong>.
-    Net profit this year after Nate’s fee: <strong>${{ "{:,.2f}".format(books.ytd_profit) }}</strong>
-    ({{ "%.1f"|format(books.ytd_ror) }}%).
-    Net profit all time: <strong>${{ "{:,.2f}".format(books.all_profit) }}</strong>
-    ({{ "%.1f"|format(books.all_ror) }}%).
-    Nate Holland’s fee: <strong>${{ "{:,.2f}".format(books.nate_all) }}</strong>
-    (this year ${{ "{:,.2f}".format(books.nate_ytd) }}).
-    If this book kept the same pace for a full year, that is about
-    <strong>{{ "%.1f"|format(books.ann_rate) }}%</strong> annualized
-    (${{ "{:,.0f}".format(books.ann_dollars) }}).
+    Net profit this year after Nate’s fee: <strong>${{ "{:,.2f}".format(earned) }}</strong>
+    on ${{ "{:,.0f}".format(ns.repaid) }} repaid ({{ "%.1f"|format(shown_ror) }}% in {{ ns.days }} days).
+    All-time profit is the same <strong>${{ "{:,.2f}".format(earned) }}</strong>.
+    Nate Holland’s fee: <strong>${{ "{:,.2f}".format(books.nate_all) }}</strong>.
+    Annualized on that repaid capital:
+    <strong>{{ "%.1f"|format(shown_ann) }}%</strong>
+    (${{ "{:,.0f}".format(shown_yr) }} if that pace ran a full year).
   </p>
 </div>
 
 <div class="grid cards" style="margin-top:14px">
   <div class="card"><h3>Still in loans</h3><div class="n">${{ "{:,.0f}".format(books.still_out) }}</div></div>
-  <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(books.ytd_ror) }}% YTD rate</div></div>
-  <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(books.all_ror) }}% all-time rate</div></div>
-  <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(books.ann_rate) }}%</div></div>
+  <div class="card"><h3>This year’s profit</h3><div class="n">${{ "{:,.2f}".format(books.ytd_profit) }}</div><div class="hint">{{ "%.1f"|format(shown_ror) }}% on repaid capital</div></div>
+  <div class="card"><h3>All-time profit</h3><div class="n">${{ "{:,.2f}".format(books.all_profit) }}</div><div class="hint">{{ "%.1f"|format(shown_ror) }}% on repaid capital</div></div>
+  <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(shown_ann) }}%</div></div>
 </div>
 
 <div class="card" style="margin-top:14px">
