@@ -3157,6 +3157,32 @@ def compute_loan_total(purchase, rehab, points):
     return round(base + base * pts / 100.0, 2)
 
 
+def loan_term_phase(loan):
+    """late only after base term plus every scheduled extension. Else in_extension after base end."""
+    if loan is None:
+        return None
+    st = (row_val(loan, "status") or "").lower()
+    if st in ("paid off", "closed", "termed", "sold", "written off"):
+        return None
+    start = parse_date(row_val(loan, "start_date"))
+    if not start:
+        return None
+    lid = loan["id"]
+    base = int(_row_months(loan) or 0)
+    extra = int(option_months_total(lid) or 0)
+    today = date.today()
+    base_end = start + timedelta(days=30 * max(base, 0))
+    full_end = start + timedelta(days=30 * (max(base, 0) + max(extra, 0)))
+    stored = parse_date(row_val(loan, "maturity_date"))
+    if stored and stored > full_end:
+        full_end = stored
+    if today > full_end:
+        return "late"
+    if extra > 0 and today > base_end:
+        return "in_extension"
+    return None
+
+
 def option_months_total(lid):
     total = 0
     for opt in loan_ext_options(lid):
@@ -8080,6 +8106,7 @@ def loans():
         d = dict(r)
         d["due_in"] = days_until(r["next_payment_due"])
         d["matures_in"] = days_until(r["maturity_date"])
+        d["term_phase"] = loan_term_phase(r)
         enriched.append(d)
     counts = db().execute(
         """SELECT
