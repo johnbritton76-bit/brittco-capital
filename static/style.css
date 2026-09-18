@@ -38,9 +38,9 @@ img.logo { max-width: 100%; height: auto; display: block; }
 .auth-card .logo {
   width: 220px;
   margin: 0 auto 12px;
-  background: #000;
+  background: transparent;
   border-radius: 12px;
-  padding: 16px;
+  padding: 8px;
 }
 .tag { letter-spacing: .16em; font-size: 11px; color: var(--blue); text-transform: uppercase; }
 .auth-card h1 { font-weight: 500; font-size: 22px; margin: 14px 0 6px; }
@@ -70,7 +70,7 @@ textarea { min-height: 88px; resize: vertical; }
   border-right: 1px solid #1b2838;
   padding: 18px 14px;
 }
-.side .logo { width: 180px; margin: 0 auto 18px; }
+.side .logo { width: 180px; margin: 0 auto 18px; background: #fff; border-radius: 12px; padding: 10px 8px; }
 .nav a {
   display: block; color: #9aacbf; padding: 10px 12px; border-radius: 10px; margin-bottom: 4px;
 }
