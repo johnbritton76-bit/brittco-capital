@@ -9735,9 +9735,13 @@ def borrower_clean_files():
 @staff_required
 def borrower_documents_bulk(bid):
     ids = request.form.getlist("doc_ids")
-    action = request.form.get("bulk_action") or ""
+    action = request.form.get("bulk_action") or "delete"
     dest_file = request.form.get("dest_file")
     dest_borrower = request.form.get("dest_borrower")
+    done = 0
+    if not ids:
+        session["last_invite_note"] = "No files were checked."
+        return redirect(url_for("borrower_detail", bid=bid))
     for raw in ids:
         try:
             did = int(raw)
@@ -9747,7 +9751,20 @@ def borrower_documents_bulk(bid):
         if not doc:
             continue
         if action == "delete":
-            remove_document(did)
+            try:
+                db().execute("DELETE FROM doc_file_items WHERE document_id=?", (did,))
+            except sqlite3.Error:
+                pass
+            row = db().execute("SELECT filename FROM documents WHERE id=?", (did,)).fetchone()
+            if row and row["filename"]:
+                path = os.path.join(UPLOAD_DIR, row["filename"])
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            db().execute("DELETE FROM documents WHERE id=?", (did,))
+            done += 1
             continue
         if action == "move_file" and dest_file:
             try:
@@ -9768,6 +9785,7 @@ def borrower_documents_bulk(bid):
                 "UPDATE documents SET deal_id=?, borrower_id=? WHERE id=?",
                 (folder["deal_id"], bid, did),
             )
+            done += 1
         if action == "move_borrower" and dest_borrower:
             try:
                 other = int(dest_borrower)
@@ -9784,7 +9802,9 @@ def borrower_documents_bulk(bid):
                 "UPDATE documents SET borrower_id=?, deal_id=? WHERE id=?",
                 (other, deal["id"] if deal else None, did),
             )
+            done += 1
     db().commit()
+    session["last_invite_note"] = f"Updated {done} file(s)."
     return redirect(url_for("borrower_detail", bid=bid))
 
 
