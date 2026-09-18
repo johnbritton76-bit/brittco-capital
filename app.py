@@ -6373,6 +6373,7 @@ def borrower_detail(bid):
         "borrower_detail.html",
         title=b["name"],
         nav="borrowers",
+        flash=session.pop("last_invite_note", None),
         b=b,
         deals=deals,
         pulls=pulls,
@@ -6448,6 +6449,13 @@ def infer_doc_owner_bid(conn, doc):
     return None
 
 
+def _norm_doc_key(name):
+    n = (name or "").strip().lower()
+    n = re.sub(r"^\d+_(crossley|dosgringos)_", "", n)
+    n = os.path.basename(n)
+    return n
+
+
 def repair_borrower_documents(conn=None):
     """Keep each document on one borrower. Drop seed duplicates. Unlink stray folder items."""
     c = conn or db()
@@ -6508,7 +6516,7 @@ def repair_borrower_documents(conn=None):
     for row in rows:
         key = (
             row["borrower_id"],
-            (row["original_name"] or row["filename"] or "").strip().lower(),
+            _norm_doc_key(row["original_name"] or row["filename"] or ""),
         )
         if not key[1]:
             continue
@@ -6522,19 +6530,16 @@ def repair_borrower_documents(conn=None):
             c.execute("DELETE FROM documents WHERE id=?", (did,))
         except sqlite3.Error:
             pass
-    # Folder links may only point at that borrower's documents.
     try:
-        c.execute(
-            """DELETE FROM doc_file_items
-               WHERE id IN (
-                 SELECT i.id FROM doc_file_items i
-                 JOIN doc_files f ON f.id=i.file_id
-                 JOIN documents d ON d.id=i.document_id
-                 WHERE d.borrower_id IS NOT NULL
-                   AND f.borrower_id IS NOT NULL
-                   AND d.borrower_id != f.borrower_id
-               )"""
-        )
+        items = c.execute(
+            """SELECT i.id AS item_id, f.borrower_id AS folder_bid, d.borrower_id AS doc_bid
+               FROM doc_file_items i
+               JOIN doc_files f ON f.id=i.file_id
+               JOIN documents d ON d.id=i.document_id"""
+        ).fetchall()
+        for it in items:
+            if it["folder_bid"] and it["doc_bid"] and it["folder_bid"] != it["doc_bid"]:
+                c.execute("DELETE FROM doc_file_items WHERE id=?", (it["item_id"],))
     except sqlite3.Error:
         pass
     try:
@@ -6610,6 +6615,9 @@ def ensure_borrower_file_cabinets(bid):
         if already:
             continue
         name = doc["original_name"] or doc["filename"] or ""
+        owner = infer_doc_owner_bid(db(), doc)
+        if owner and owner != bid:
+            continue
         if is_profile_document(name) or not doc["deal_id"]:
             target = prof["id"]
         else:
@@ -9711,6 +9719,16 @@ def remove_document(doc_id):
     db().execute("DELETE FROM documents WHERE id=?", (doc_id,))
     db().commit()
     return doc
+
+
+@app.route("/borrowers/clean-files", methods=["POST"])
+@staff_required
+def borrower_clean_files():
+    repair_borrower_documents(db())
+    db().commit()
+    session["last_invite_note"] = "Files cleaned. Duplicates and papers that belong to another borrower were removed."
+    nxt = request.form.get("next") or url_for("borrowers")
+    return redirect(nxt)
 
 
 @app.route("/borrowers/<int:bid>/documents/bulk", methods=["POST"])
