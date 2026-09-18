@@ -9,7 +9,7 @@
 {% endif %}
 <div class="card">
 <table class="table">
-  <tr><th>Name</th><th>Entity</th><th>Deals</th><th>In deals</th><th>Capital available to deploy</th><th>Returns paid</th></tr>
+  <tr><th>Name</th><th>Entity</th><th>Loans</th><th>In loans</th><th>Capital available to deploy</th><th>Returns paid</th></tr>
   {% for i in investors %}
   <tr>
     <td><a href="{{ url_for('investor_detail', iid=i.id) }}">{{ i.name }}</a></td>

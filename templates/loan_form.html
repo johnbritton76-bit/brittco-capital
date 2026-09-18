@@ -7,7 +7,7 @@
       {% for b in borrowers %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}
     </select>
   </div>
-  <div><label>Related deal (optional)</label>
+  <div><label>Related application (optional)</label>
     <select name="deal_id">
       <option value="">None</option>
       {% for d in deals %}<option value="{{ d.id }}">#{{ d.id }} {{ d.address }}</option>{% endfor %}
@@ -43,7 +43,7 @@
   <div><label>Late fee</label><input name="late_fee" type="number" step="0.01"></div>
   <div><label>Status</label>
     <select name="status">
-      <option>Current</option><option>Default</option><option>Paid Off</option>
+      <option>Current</option><option>Closed</option><option>Default</option><option>Paid Off</option>
     </select>
   </div>
   <div class="span-2"><label>Notes</label><textarea name="notes"></textarea></div>
@@ -115,13 +115,15 @@
     var amts = document.querySelectorAll('[name="ext_upfront_amt"]');
     for (var i=0;i<whens.length;i++){
       var box = amts[i];
+      var wrap = box ? box.closest(".upfront-wrap") : null;
       if (!box) continue;
       if (whens[i].value === "upfront"){
         var r = parseFloat((rates[i]&&rates[i].value)||"0")||0;
         box.value = moneyTxt(prin * r / 100);
+        if (wrap) wrap.style.display = "";
       } else {
         box.value = "";
-        box.placeholder = "Select Up front";
+        if (wrap) wrap.style.display = "none";
       }
     }
   }
@@ -150,7 +152,7 @@
       '<div><label>Extension ' + n + ' term (months)</label><input name="ext_months" type="number" min="1" step="1" value="'+(months||1)+'"></div>' +
       '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>' +
       '<div><label>Collect</label><select name="ext_when"><option value="deferred">Deferred</option><option value="upfront">Up front</option></select></div>' +
-      '<div><label>Up-front payment</label><input class="upfront-amt" name="ext_upfront_amt" type="text" readonly placeholder="Select Up front"></div>';
+      '<div class="upfront-wrap" style="display:none"><label>Up-front payment</label><input class="upfront-amt" name="ext_upfront_amt" type="text" readonly></div>';
     list.appendChild(wrap);
     wrap.querySelectorAll("input,select").forEach(function(el){
       el.addEventListener("input", function(){ syncMaturity(); syncPayoff(); });

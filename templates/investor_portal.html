@@ -62,7 +62,7 @@
     <div style="overflow-x:auto">
     <table class="table">
       <tr>
-        <th>Deal</th><th>Your capital</th>
+        <th>Loan</th><th>Your capital</th>
         <th>Gross profit</th><th>Nate’s fee</th>
         <th>Your net $</th><th>Your net rate</th>
         <th>Your carry cost</th><th>Net after carry</th>
@@ -131,10 +131,10 @@
     </form>
     {% endfor %}
     {% else %}
-    <p class="hint"><a href="{{ url_for('investor_accounts') }}">Add a bank / HELOC account</a> to tag this deal.</p>
+    <p class="hint"><a href="{{ url_for('investor_accounts') }}">Add a bank / HELOC account</a> to tag this loan.</p>
     {% endif %}
     {% if r.carry %}
-    <p>Brittco net on this deal ${{ "{:,.2f}".format(r.profit) }}. Your estimated carry ${{ "{:,.2f}".format(r.carry) }}. Personal net after carry ${{ "{:,.2f}".format(r.net_after_carry) }} ({{ "%.1f"|format(r.net_after_carry_ror) }}%).</p>
+    <p>Brittco net on this loan ${{ "{:,.2f}".format(r.profit) }}. Your estimated carry ${{ "{:,.2f}".format(r.carry) }}. Personal net after carry ${{ "{:,.2f}".format(r.net_after_carry) }} ({{ "%.1f"|format(r.net_after_carry_ror) }}%).</p>
     {% endif %}
     <table class="table">
       <tr><th>Date</th><th>Type</th><th>Paid to you</th></tr>
@@ -148,10 +148,10 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="3">No payments posted yet on this deal.</td></tr>
+      <tr><td colspan="3">No payments posted yet on this loan.</td></tr>
       {% endfor %}
       <tr class="total">
-        <td colspan="2">Profit on this deal (not including returned capital)</td>
+        <td colspan="2">Profit on this loan (not including returned capital)</td>
         <td>${{ "{:,.2f}".format(r.profit) }}</td>
       </tr>
     </table>

@@ -68,7 +68,7 @@
   <div style="overflow-x:auto">
   <table class="table">
     <tr>
-      <th>Deal</th><th>Your capital</th>
+      <th>Loan</th><th>Your capital</th>
       <th>Gross profit</th><th>Nate fee</th>
       <th>Your net $</th><th>Your net rate</th>
       <th>YTD net $</th><th>Annualized net</th>
@@ -116,10 +116,10 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="3">No payments posted on this deal yet.</td></tr>
+    <tr><td colspan="3">No payments posted on this loan yet.</td></tr>
     {% endfor %}
     <tr class="total">
-      <td colspan="2">Profit on this deal</td>
+      <td colspan="2">Profit on this loan</td>
       <td>${{ "{:,.2f}".format(r.profit) }}</td>
     </tr>
   </table>

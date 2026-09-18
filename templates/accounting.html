@@ -24,7 +24,7 @@
 </p>
 <p>
   <a class="btn" href="{{ url_for('accounting_csv', year=year, kind='pl') }}">Download P&L</a>
-  <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='deals') }}">Download deal worksheet</a>
+  <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='deals') }}">Download loan worksheet</a>
   <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='1099') }}">Download 1099 worksheet</a>
   <a class="btn ghost" href="{{ url_for('accounting_csv', year=year, kind='all') }}">Download all (zip)</a>
 </p>
@@ -65,7 +65,7 @@
 </div>
 
 <div class="card" style="margin-top:16px">
-  <h3>Deal-by-deal worksheet</h3>
+  <h3>Loan-by-loan worksheet</h3>
   <p class="hint">Set Brittco’s % on the loan page only when you are actually taking a capital fee on that file (leave 0 if not).</p>
   <table class="table">
     <tr>
