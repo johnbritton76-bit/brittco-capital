@@ -18,14 +18,14 @@
   {% if show=='archived' %}
   Archived loans stay in investor accounting. Open one and click Restore to put it back on this list.
   {% else %}
-  Track funded loans, payments, and upcoming due dates. Archive a termed loan to hide it here without losing the books. Delete is for test loans only.
+  Track funded loans, base term, and full maturity including extensions. Archive a termed loan to hide it here without losing the books. Delete is for test loans only.
   {% endif %}
 </p>
 <div class="card">
 <table class="table">
   <tr>
     <th>Loan #</th><th>Borrower</th><th>Property / file</th><th>Balance</th>
-    <th>Next payment</th><th>Matures</th><th>Status</th><th></th>
+    <th>Base term maturity</th><th>Maturity</th><th>Status</th><th></th>
   </tr>
   {% for l in loans %}
   <tr>
@@ -33,14 +33,20 @@
     <td>{{ l.borrower_name }}</td>
     <td><a href="{{ url_for('loan_detail', lid=l.id) }}#loan-file">{{ l.property_address or "File" }}</a></td>
     <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
+    <td>{{ l.base_maturity or "—" }}</td>
     <td>
-      {{ l.next_payment_due or "—" }}
+      {% if l.full_maturity %}{{ l.full_maturity }}
+      {% elif l.term_kind == 'Perpetual' or l.loan_type == 'Other' %}Open
+      {% else %}{{ l.maturity_date or "—" }}{% endif %}
       {% if l.term_phase == 'late' %}<span class="badge bad">late</span>
       {% elif l.term_phase == 'in_extension' %}<span class="badge warn">in extension</span>
       {% elif l.matures_in is not none and l.matures_in <= 7 and l.matures_in >= 0 %}<span class="badge warn">{{ l.matures_in }}d</span>{% endif %}
     </td>
-    <td>{{ l.maturity_date or "—" }}</td>
-    <td><span class="badge">{{ l.status }}</span></td>
+    <td>
+      <span class="badge">{{ l.status }}</span>
+      {% if l.term_phase == 'in_extension' %}<span class="badge warn">in extension</span>{% endif %}
+      {% if l.term_phase == 'late' %}<span class="badge bad">late</span>{% endif %}
+    </td>
     <td>
       {% if show=='archived' %}
       <form method="post" action="{{ url_for('loan_restore', lid=l.id) }}">
