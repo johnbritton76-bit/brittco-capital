@@ -2182,6 +2182,9 @@ def investor_books(iid):
         slot["capital"] += money(p["amount"])
         if slot["math"] is None:
             slot["math"] = participation_math(p)
+        fo = row_val(p, "funded_on") or ""
+        if fo and (not slot.get("funded_on") or fo < slot.get("funded_on")):
+            slot["funded_on"] = fo
     for d in dists:
         slot = by_loan.setdefault(
             d["loan_id"],
@@ -2234,14 +2237,17 @@ def investor_books(iid):
     w_ann = 0.0
     w_cap = 0.0
     for lid, s in by_loan.items():
-        loan = db().execute("SELECT loan_number, property_address, status FROM loans WHERE id=?", (lid,)).fetchone()
+        loan = db().execute(
+            "SELECT loan_number, property_address, status, start_date, maturity_date FROM loans WHERE id=?",
+            (lid,),
+        ).fetchone()
         if not loan:
             continue
         cap = s["capital"] or 0
         gross = s["interest"]
         ytd_gross = s["ytd_int"]
         m = s["math"] or {}
-        fee = m.get("fee", 25.0)
+        fee = m.get("fee") or 0.0
         status = (loan["status"] or "")
         basis_back = s["principal"] >= cap - 0.5 or status in ("Paid Off", "Termed", "Closed")
         accrued = round(gross * fee / 100.0, 2) if fee else 0.0
@@ -2255,14 +2261,42 @@ def investor_books(iid):
         ror = (net / cap * 100) if cap else 0
         ytd_ror = (ytd_net / cap * 100) if cap else 0
         gross_ror = (gross / cap * 100) if cap else 0
-        if basis_back:
-            ann_rate = m.get("annualized_net") or 0
-        else:
-            ann_rate = m.get("annualized_actual") or m.get("annualized_initial") or 0
-        ann_gross = m.get("annualized_actual") or m.get("annualized_initial") or 0
+        pay_span = db().execute(
+            "SELECT MIN(paid_on) AS first_pay, MAX(paid_on) AS last_pay FROM payments WHERE loan_id=?",
+            (lid,),
+        ).fetchone()
+        part_span = db().execute(
+            "SELECT MIN(funded_on) AS funded FROM participations WHERE loan_id=?",
+            (lid,),
+        ).fetchone()
+        start_raw = (
+            s.get("funded_on")
+            or (part_span["funded"] if part_span else "")
+            or row_val(loan, "start_date")
+            or (pay_span["first_pay"] if pay_span else "")
+        )
+        last_line = None
+        for ln in s.get("lines") or []:
+            last_line = row_val(ln, "created_at") or row_val(ln, "paid_on") or last_line
+        end_raw = (
+            (str(last_line)[:10] if last_line else "")
+            or (pay_span["last_pay"] if pay_span else "")
+            or row_val(loan, "maturity_date")
+            or date.today().isoformat()
+        )
+        a = parse_date(start_raw)
+        b = parse_date(end_raw) or date.today()
+        hold = (b - a).days if a else 0
+        if hold < 1:
+            hold = 7 if basis_back else 1
+        day_ann = annualized_days(ror, hold) or 0
+        term_ann = m.get("annualized_net") or m.get("annualized_actual") or m.get("annualized_initial") or 0
+        ann_rate = day_ann if ror else (term_ann or 0)
+        ann_gross = annualized_days(gross_ror, hold) if hold and gross_ror else term_ann or 0
         ann_dollars = cap * (ann_rate or 0) / 100
-        w_ann += (ann_rate or 0) * cap
-        w_cap += cap
+        if cap and (net or basis_back):
+            w_ann += (ann_rate or 0) * cap
+            w_cap += cap
         if basis_back:
             story = (
                 f"You invested ${cap:,.0f} in this loan and have your basis back. "
@@ -2316,10 +2350,37 @@ def investor_books(iid):
     nate_all = sum(r["nate_fee"] for r in rows)
     nate_ytd = sum(r["ytd_nate"] for r in rows)
     nate_ye = sum(r.get("ye_nate") or 0 for r in rows)
-    all_ror = (net_all / deployed * 100) if deployed else 0
-    ytd_ror = (net_ytd / deployed * 100) if deployed else 0
+    realized = [r for r in rows if (r.get("profit") or 0) > 0.5 or (r.get("principal_back") or 0) > 0.5]
+    realized_cap = sum(r["capital"] for r in realized) or 0
+    rate_base = realized_cap or deployed
+    all_ror = (net_all / rate_base * 100) if rate_base else 0
+    ytd_ror = (net_ytd / rate_base * 100) if rate_base else 0
     ye_ror = (net_ye / deployed * 100) if deployed else 0
     ann_rate = (w_ann / w_cap) if w_cap else 0
+    if (ann_rate or 0) < 0.05 and net_all > 0 and rate_base:
+        hold_days = 7
+        lids = [r["loan_id"] for r in realized] or [r["loan_id"] for r in rows]
+        if lids:
+            marks = []
+            for lid in lids:
+                span = db().execute(
+                    """SELECT
+                       MIN(COALESCE(p.funded_on, l.start_date, pay.paid_on)) AS a,
+                       MAX(COALESCE(pay.paid_on, l.maturity_date)) AS b
+                       FROM loans l
+                       LEFT JOIN participations p ON p.loan_id=l.id
+                       LEFT JOIN payments pay ON pay.loan_id=l.id
+                       WHERE l.id=?""",
+                    (lid,),
+                ).fetchone()
+                a = parse_date(span["a"] if span else None)
+                b = parse_date(span["b"] if span else None) or date.today()
+                if a:
+                    marks.append(max(1, (b - a).days))
+            if marks:
+                hold_days = max(1, min(marks))
+        ann_rate = (net_all / rate_base) * 100.0 * (365.0 / hold_days)
+        w_ann = ann_rate * rate_base
     return {
         "deployed": deployed,
         "all_int": net_all,
@@ -2338,7 +2399,9 @@ def investor_books(iid):
         "ytd_ror": ytd_ror,
         "ye_year": prior,
         "ann_rate": ann_rate,
-        "ann_dollars": deployed * ann_rate / 100 if deployed else 0,
+        "ann_dollars": (ann_rate * (rate_base or w_cap or deployed) / 100.0) if (ann_rate and (rate_base or w_cap or deployed)) else 0,
+        "realized_cap": realized_cap or rate_base,
+        "hold_days": hold_days if "hold_days" in dir() else 7,
         "rows": rows,
         "year": year,
     }
