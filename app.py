@@ -2789,25 +2789,29 @@ def investor_product_terms(kind):
             "base": 15.0,
             "days": 90,
             "months": 3,
-            "max_ext": 2,
+            "max_ext": 6,
             "ext_rate": 3.0,
-            "label": "15% flat for 3 months, two extensions at 3% each",
+            "label": "15% flat for 3 months. Each extension adds 3% and 30 days.",
         }
     return {
         "base": 10.0,
-        "days": 120,
-        "months": 4,
-        "max_ext": 2,
+        "days": 90,
+        "months": 3,
+        "max_ext": 6,
         "ext_rate": 2.0,
-        "label": "10% for 4 months, two 1-month extensions at 2% each",
+        "label": "10% for 3 months. Each extension adds 2% and 30 days.",
     }
 
 
 def investor_return_math(kind, capital, extensions=0, gross_pct=None, brittco_pct=None, nate_pct=None, days=None):
     spec = investor_product_terms(kind)
-    ext = max(0, min(int(extensions or 0), spec["max_ext"]))
+    try:
+        ext = max(0, min(int(extensions or 0), spec["max_ext"]))
+    except (TypeError, ValueError):
+        ext = 0
+    stated = spec["base"] + ext * spec["ext_rate"]
     if gross_pct in (None, ""):
-        gross_pct = spec["base"] + ext * spec["ext_rate"]
+        gross_pct = stated
     else:
         gross_pct = money(gross_pct)
     if days in (None, ""):
@@ -10437,7 +10441,8 @@ def investor_returns():
         ext = int(request.values.get("extensions") or 0)
     except (TypeError, ValueError):
         ext = 0
-    custom = request.values.get("gross_pct") not in (None, "")
+    reset = request.values.get("reset_terms") == "1"
+    custom = (not reset) and request.values.get("gross_pct") not in (None, "")
     result = investor_return_math(
         kind,
         capital,
@@ -10445,7 +10450,7 @@ def investor_returns():
         gross_pct=request.values.get("gross_pct") if custom else None,
         brittco_pct=request.values.get("brittco_pct"),
         nate_pct=request.values.get("nate_pct"),
-        days=request.values.get("days"),
+        days=None if reset else request.values.get("days"),
     )
     return render_template(
         "investor_returns.html",
