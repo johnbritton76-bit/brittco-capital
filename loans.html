@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <h2>Loan management</h2>
+  <form method="post" action="{{ url_for('loans_dedupe') }}" style="display:inline">
+    <button class="btn ghost" type="submit">Remove duplicate loans</button>
+  </form>
+  <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
+</div>
+{% if session.get('last_invite_note') %}
+<p class="flash">{{ session.pop('last_invite_note') }}</p>
+{% endif %}
+<p>
+  <a class="btn {% if show!='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans') }}">Working loans ({{ active_n }})</a>
+  <a class="btn {% if show=='archived' %}{% else %}ghost{% endif %}" href="{{ url_for('loans', show='archived') }}">Archive ({{ archived_n }})</a>
+</p>
+<p class="hint">
+  {% if show=='archived' %}
+  Archived loans stay in investor accounting. Open one and click Restore to put it back on this list.
+  {% else %}
+  One line per loan. Open the loan number for the full file.
+  {% endif %}
+</p>
+<div class="card">
+<table class="table">
+  <tr>
+    <th>Loan #</th><th>Borrower</th><th>Property / file</th><th>Balance</th>
+    <th>Base term maturity</th><th>Maturity</th><th>Status</th><th></th>
+  </tr>
+  {% for l in loans %}
+  <tr>
+    <td><a href="{{ url_for('loan_detail', lid=l.id) }}">{{ l.loan_number or l.id }}</a></td>
+    <td>{{ l.borrower_name }}</td>
+    <td><a href="{{ url_for('loan_detail', lid=l.id) }}#loan-file">{{ l.property_address or "File" }}</a></td>
+    <td>${{ "{:,.0f}".format(l.current_balance or 0) }}</td>
+    <td>{{ l.base_maturity or "—" }}</td>
+    <td>
+      {% if l.term_kind == 'Perpetual' or l.loan_type == 'Other' %}Open
+      {% else %}{{ l.full_maturity or l.maturity_date or "—" }}{% endif %}
+    </td>
+    <td>
+      {% if l.term_phase == 'late' %}<span class="badge bad">late</span>
+      {% elif l.term_phase == 'in_extension' %}<span class="badge warn">in extension</span>
+      {% else %}<span class="badge">{{ l.status }}</span>{% endif %}
+    </td>
+    <td>
+      {% if show=='archived' %}
+      <form method="post" action="{{ url_for('loan_restore', lid=l.id) }}">
+        <button class="btn" type="submit">Restore</button>
+      </form>
+      {% else %}
+      <a class="btn ghost" href="{{ url_for('loan_edit', lid=l.id) }}">Edit</a>
+      <form method="post" action="{{ url_for('loan_archive', lid=l.id) }}">
+        <button class="btn ghost" type="submit">Archive</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8">{% if show=='archived' %}No archived loans.{% else %}No working loans.{% endif %}</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

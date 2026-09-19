@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>{{ 'Edit loan' if loan else 'Enter current loan' }}</h2></div>
+<form method="post" class="card form-grid">
+  <div><label>Borrower</label>
+    <select name="borrower_id" required>
+      {% for b in borrowers %}<option value="{{ b.id }}" {% if loan and loan.borrower_id==b.id %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div><label>Related application (optional)</label>
+    <select name="deal_id">
+      <option value="">None</option>
+      {% for d in deals %}<option value="{{ d.id }}" {% if loan and loan.deal_id==d.id %}selected{% endif %}>#{{ d.id }} {{ d.address }}</option>{% endfor %}
+    </select>
+  </div>
+  <div><label>Loan number</label><input name="loan_number" placeholder="BC-1002" value="{{ loan.loan_number if loan else '' }}"></div>
+  <div><label>Loan type</label>
+    <select name="loan_type" id="loan_type">
+      {% for t in ['Fix and Flip','Transactional Loan','Gap Loan','Other'] %}
+      <option {% if loan and loan.loan_type==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div><label>Term</label>
+    <select name="term_kind" id="term_kind">
+      <option value="Fixed" {% if loan and loan.term_kind!='Perpetual' %}selected{% endif %}>Fixed term</option>
+      <option value="Perpetual" {% if loan and loan.term_kind=='Perpetual' %}selected{% endif %}>Perpetual</option>
+    </select>
+  </div>
+  <div class="span-2"><label>Property / file name</label>
+    <input name="property_address" id="property_address" placeholder="Address, or Unsecured standing loan" required value="{{ loan.property_address if loan else '' }}">
+    <button class="btn ghost" type="button" id="lookup-prop" style="margin-top:8px">Look up value & photos</button>
+    <div id="prop-snap" class="hint" style="margin-top:8px"></div>
+  </div>
+  <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01" value="{{ loan.purchase_price if loan else '' }}"></div>
+  <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01" value="{{ loan.rehab_cost if loan else '' }}"></div>
+  <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered" value="{{ loan.points if loan else '' }}"></div>
+  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}"></div>
+  <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10" value="{{ loan.rate if loan else '' }}"></div>
+  <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3" value="{{ loan.base_term_months if loan else '' }}"></div>
+  <div class="standing-only span-2"><h3>Standing / other loan</h3>
+    <p class="hint">Interest only until you send a payoff notice. No flip fields and no extensions.</p>
+  </div>
+  <div class="standing-only"><label>Principal</label><input name="standing_principal" id="standing_principal" type="number" step="0.01" placeholder="50000" value="{{ loan.original_principal if loan else '' }}"></div>
+  <div class="standing-only"><label>Flat monthly interest</label><input name="monthly_interest" type="number" step="0.01" placeholder="833.33" value="{{ loan.payment_amount if loan else '' }}"></div>
+  <div class="standing-only"><label>First payment amount</label><input name="first_payment_amount" type="number" step="0.01" placeholder="361.11" value="{{ loan.first_payment_amount if loan else '' }}"></div>
+  <div class="standing-only"><label>First payment due</label><input name="first_due" type="date" value="{{ loan.next_payment_due if loan else '' }}"></div>
+  <div class="standing-only"><label>Due day each month</label><input name="due_day" type="number" min="1" max="28" value="1"></div>
+  <div class="standing-only"><label>Call notice (days)</label><input name="call_notice_days" type="number" value="{{ loan.call_notice_days if loan and loan.call_notice_days else 90 }}"></div>
+  <div class="standing-only"><label>Secured?</label>
+    <select name="unsecured">
+      <option value="1" {% if not loan or loan.unsecured %}selected{% endif %}>Unsecured</option>
+      <option value="0" {% if loan and loan.unsecured==0 %}selected{% endif %}>Secured</option>
+    </select>
+  </div>
+  <div class="standing-only"><label>Payoff notice sent (optional)</label><input name="payoff_notice_on" type="date" value="{{ loan.payoff_notice_on if loan else '' }}"></div>
+  <div><label>Start date</label><input name="start_date" id="start_date" type="date" value="{{ loan.start_date if loan else '' }}"></div>
+  <div class="flip-only"><label>Maturity date</label><input name="maturity_date" id="maturity_date" type="date" readonly>
+    <p class="hint">Filled from start date + base term + every extension.</p>
+  </div>
+  <div class="flip-only"><label>Payment type</label>
+    <select name="payment_type" id="payment_type">
+      {% for t in ['Interest only','Amortizing','Balloon'] %}
+      <option {% if loan and loan.payment_type==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div><label id="pay-label">Payment amount</label><input name="payment_amount" id="payment_amount" type="number" step="0.01" value="{{ loan.payment_amount if loan else '' }}"></div>
+  <div><label>Frequency</label>
+    <select name="payment_frequency">
+      <option {% if loan and loan.payment_frequency=='Monthly' %}selected{% endif %}>Monthly</option>
+      <option {% if not loan or loan.payment_frequency!='Monthly' %}selected{% endif %}>Interest due at maturity</option>
+    </select>
+  </div>
+  <div><label>Next payment due</label><input name="next_payment_due" type="date" value="{{ loan.next_payment_due if loan else '' }}"></div>
+  <div><label>Late fee</label><input name="late_fee" type="number" step="0.01" value="{{ loan.late_fee if loan else '' }}"></div>
+  <div><label>Status</label>
+    <select name="status">
+      {% for s in ['Current','Closed','Default','Paid Off'] %}
+      <option {% if loan and loan.status==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="span-2"><label>Notes</label><textarea name="notes">{{ loan.notes if loan else '' }}</textarea></div>
+  <div class="span-2 flip-only">
+    <h3>Extensions</h3>
+    <p class="hint">Deferred extensions roll into the balloon / payoff. Up front extensions are collected when applied and stay off the payoff.</p>
+    <div id="ext-list"></div>
+    <button class="btn ghost" type="button" id="add-ext">Add extension</button>
+  </div>
+  <div class="span-2"><button class="btn" type="submit">{{ 'Save changes' if loan else 'Save loan' }}</button>
+    {% if loan %}<a class="btn ghost" href="{{ url_for('loan_detail', lid=loan.id) }}">Cancel</a>{% endif %}
+  </div>
+</form>
+{% if loan %}
+<div class="card" style="margin-top:16px">
+  <h3>Delete this loan</h3>
+  <p class="hint">This removes the loan and its payments. Type DELETE to confirm.</p>
+  <form method="post" action="{{ url_for('loan_delete', lid=loan.id) }}" onsubmit="return confirm('This permanently deletes the loan and its payments.');">
+    <input name="confirm" placeholder="Type DELETE" style="width:140px">
+    <button class="btn ghost" type="submit">Delete loan</button>
+  </form>
+</div>
+{% endif %}
+<script>
+(function(){
+  var list = document.getElementById("ext-list");
+  var n = 0;
+  function num(id){
+    var el = document.getElementById(id);
+    return el && el.value ? parseFloat(el.value) : 0;
+  }
+  function syncPayLabel(){
+    var t = (document.getElementById("payment_type")||{}).value;
+    var lab = document.getElementById("pay-label");
+    if (lab) lab.textContent = t === "Balloon" ? "Payoff" : "Payment amount";
+    syncPayoff();
+  }
+  function syncTotal(){
+    var purchase = num("purchase_price");
+    var rehab = num("rehab_cost");
+    var pts = num("points");
+    var base = purchase + rehab;
+    var total = base + base * pts / 100;
+    var out = document.getElementById("total_loan_amount");
+    if (out) out.value = total ? total.toFixed(2) : "";
+    syncPayoff();
+  }
+  function principal(){
+    var t = num("total_loan_amount");
+    if (t) return t;
+    var purchase = num("purchase_price");
+    var rehab = num("rehab_cost");
+    var pts = num("points");
+    var base = purchase + rehab;
+    return base + base * pts / 100;
+  }
+  function syncPayoff(){
+    syncUpfrontAmts();
+    var t = (document.getElementById("payment_type")||{}).value;
+    var out = document.getElementById("payment_amount");
+    if (!out || t !== "Balloon") return;
+    var prin = principal();
+    var rate = num("rate");
+    var deferred = 0;
+    var rates = document.querySelectorAll('[name="ext_rate"]');
+    var whens = document.querySelectorAll('[name="ext_when"]');
+    for (var i=0;i<rates.length;i++){
+      var when = (whens[i] && whens[i].value) || "deferred";
+      if (when === "deferred") deferred += parseFloat(rates[i].value || "0") || 0;
+    }
+    var payoff = prin + prin * rate / 100 + prin * deferred / 100;
+    if (payoff) out.value = payoff.toFixed(2);
+  }
+  function moneyTxt(n){
+    return "$" + (n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+  function syncUpfrontAmts(){
+    var prin = principal();
+    var rates = document.querySelectorAll('[name="ext_rate"]');
+    var whens = document.querySelectorAll('[name="ext_when"]');
+    var amts = document.querySelectorAll('[name="ext_upfront_amt"]');
+    for (var i=0;i<whens.length;i++){
+      var box = amts[i];
+      var wrap = box ? box.closest(".upfront-wrap") : null;
+      if (!box) continue;
+      if (whens[i].value === "upfront"){
+        var r = parseFloat((rates[i]&&rates[i].value)||"0")||0;
+        box.value = moneyTxt(prin * r / 100);
+        if (wrap) wrap.style.display = "";
+      } else {
+        box.value = "";
+        if (wrap) wrap.style.display = "none";
+      }
+    }
+  }
+  function addDays(iso, days){
+    if (!iso) return "";
+    var d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0,10);
+  }
+  function syncMaturity(){
+    var start = (document.getElementById("start_date")||{}).value;
+    var base = parseInt((document.getElementById("base_term")||{}).value || "0", 10) || 0;
+    var extra = 0;
+    document.querySelectorAll('[name="ext_months"]').forEach(function(el){
+      extra += parseInt(el.value || "0", 10) || 0;
+    });
+    var out = document.getElementById("maturity_date");
+    if (out) out.value = start ? addDays(start, (base + extra) * 30) : "";
+  }
+  function row(months, rate){
+    n += 1;
+    var wrap = document.createElement("div");
+    wrap.className = "form-grid";
+    wrap.style.marginBottom = "8px";
+    wrap.innerHTML =
+      '<div><label>Extension ' + n + ' term (months)</label><input name="ext_months" type="number" min="1" step="1" value="'+(months||1)+'"></div>' +
+      '<div><label>Extension ' + n + ' rate (%)</label><input name="ext_rate" type="number" step="0.01" value="'+(rate||2)+'"></div>' +
+      '<div><label>Collect</label><select name="ext_when"><option value="deferred">Deferred</option><option value="upfront">Up front</option></select></div>' +
+      '<div class="upfront-wrap" style="display:none"><label>Up-front payment</label><input class="upfront-amt" name="ext_upfront_amt" type="text" readonly></div>';
+    list.appendChild(wrap);
+    wrap.querySelectorAll("input,select").forEach(function(el){
+      el.addEventListener("input", function(){ syncMaturity(); syncPayoff(); });
+      el.addEventListener("change", function(){ syncMaturity(); syncPayoff(); });
+    });
+    syncMaturity();
+    syncPayoff();
+  }
+  ["purchase_price","rehab_cost","points"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("input", syncTotal);
+  });
+  ["start_date","base_term"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("input", syncMaturity);
+  });
+  var ptype = document.getElementById("payment_type");
+  if (ptype) ptype.addEventListener("change", syncPayLabel);
+  var rateEl = document.querySelector('[name="rate"]');
+  if (rateEl) rateEl.addEventListener("input", syncPayoff);
+  var addExt = document.getElementById("add-ext");
+  if (addExt) addExt.addEventListener("click", function(){ row(1, 2); });
+  function standingOn(){
+    var t = (document.getElementById("loan_type")||{}).value;
+    var k = (document.getElementById("term_kind")||{}).value;
+    return t === "Other" || k === "Perpetual";
+  }
+  function isGap(){
+    return (document.getElementById("loan_type")||{}).value === "Gap Loan";
+  }
+  function applyGapDefaults(){
+    if (!isGap()) return;
+    var rate = document.getElementById("rate");
+    if (rate) rate.value = "15";
+    var term = document.getElementById("base_term");
+    if (term) term.value = "3";
+    var ptype = document.getElementById("payment_type");
+    if (ptype) ptype.value = "Balloon";
+    var freq = document.querySelector('[name="payment_frequency"]');
+    if (freq) freq.value = "Interest due at maturity";
+    if (list) list.innerHTML = "";
+    n = 0;
+    row(1, 3);
+    row(1, 3);
+  }
+  function syncStanding(){
+    var on = standingOn();
+    var gap = isGap();
+    document.querySelectorAll(".flip-only").forEach(function(el){ el.style.display = on ? "none" : ""; });
+    document.querySelectorAll(".standing-only").forEach(function(el){ el.style.display = on ? "" : "none"; });
+    var pp = document.getElementById("purchase_price");
+    if (pp){
+      pp.required = !on && !gap;
+      var wrap = pp.closest("div");
+      if (wrap) wrap.style.display = (on || gap) ? "none" : "";
+    }
+    var rehab = document.getElementById("rehab_cost");
+    if (rehab){
+      var rw = rehab.closest("div");
+      if (rw) rw.style.display = (on || gap) ? "none" : "";
+    }
+    var tot = document.getElementById("total_loan_amount");
+    if (tot) tot.readOnly = !gap;
+  }
+  ["loan_type","term_kind"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("change", function(){
+      if (id === "loan_type" && el.value === "Other"){
+        var k = document.getElementById("term_kind");
+        if (k) k.value = "Perpetual";
+      }
+      if (id === "loan_type" && el.value === "Gap Loan") applyGapDefaults();
+      syncStanding();
+      syncPayLabel();
+      syncMaturity();
+    });
+  });
+  syncStanding();
+  syncTotal();
+  syncMaturity();
+  syncPayLabel();
+  var existing = {{ ext_options|default([])|tojson }};
+  if (existing && existing.length){
+    existing.forEach(function(x){
+      row(x.months || x.ext_months || 1, x.rate || x.ext_rate || 0);
+    });
+  }
+  var look = document.getElementById("lookup-prop");
+  if (look) look.addEventListener("click", function(){
+    var addr = (document.getElementById("property_address")||{}).value || "";
+    var box = document.getElementById("prop-snap");
+    if (box) box.textContent = "Looking up…";
+    fetch("/tools/property-snapshot?json=1&address=" + encodeURIComponent(addr))
+      .then(function(r){ return r.json(); })
+      .then(function(s){
+        if (!box) return;
+        if (!s.ready){ box.textContent = s.reason || "Add RENTCAST_API_KEY in Render."; return; }
+        var txt = s.estimate ? ("Estimated value $" + Math.round(s.estimate).toLocaleString()) : "No estimate";
+        if (s.low && s.high) txt += " (range $" + Math.round(s.low).toLocaleString() + " – $" + Math.round(s.high).toLocaleString() + ")";
+        box.innerHTML = txt;
+        (s.photos||[]).slice(0,4).forEach(function(u){
+          var img = document.createElement("img");
+          img.src = u; img.style = "width:120px;height:90px;object-fit:cover;border-radius:8px;margin:6px 6px 0 0";
+          box.appendChild(img);
+        });
+      })
+      .catch(function(){ if (box) box.textContent = "Lookup failed."; });
+  });
+})();
+</script>
+{% endblock %}
