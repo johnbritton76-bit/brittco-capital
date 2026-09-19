@@ -52,7 +52,7 @@
       {% if spec.max_ext %}
       <div>
         <label>Extension months (0–{{ spec.max_ext }})</label>
-        <select name="extensions" onchange="this.form.submit()">
+        <select name="extensions" onchange="resetTerms(this.form)">
           {% for n in range(0, spec.max_ext + 1) %}
           <option value="{{ n }}" {% if extensions==n %}selected{% endif %}>{{ n }}</option>
           {% endfor %}
@@ -110,6 +110,23 @@
     </div>
     {% endif %}
   </form>
+<script>
+function resetTerms(form){
+  var box = form.querySelector('[name="reset_terms"]');
+  if (!box){
+    box = document.createElement("input");
+    box.type = "hidden";
+    box.name = "reset_terms";
+    form.appendChild(box);
+  }
+  box.value = "1";
+  ["gross_pct","days"].forEach(function(n){
+    var el = form.querySelector('[name="'+n+'"]');
+    if (el) el.disabled = true;
+  });
+  form.submit();
+}
+</script>
 </main>
 </body>
 </html>
