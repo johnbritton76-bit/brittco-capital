@@ -24,6 +24,42 @@
   </div>
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Property snapshot</h3>
+  {% if not snap or not snap.ready %}
+  <p class="hint">{{ (snap and snap.reason) or "Add RENTCAST_API_KEY in Render to pull estimated value and listing photos." }}</p>
+  {% elif snap.ok %}
+  <p>
+    Estimated value:
+    <strong>{% if snap.estimate %}${{ "{:,.0f}".format(snap.estimate) }}{% else %}—{% endif %}</strong>
+    {% if snap.low and snap.high %}
+    (range ${{ "{:,.0f}".format(snap.low) }} – ${{ "{:,.0f}".format(snap.high) }})
+    {% endif %}
+  </p>
+  <p class="hint">
+    {{ snap.property_type or "" }}
+    {% if snap.beds %} · {{ snap.beds }} bd{% endif %}
+    {% if snap.baths %} · {{ snap.baths }} ba{% endif %}
+    {% if snap.sqft %} · {{ snap.sqft }} sf{% endif %}
+    {% if snap.year %} · built {{ snap.year }}{% endif %}
+    · RentCast{% if snap.cached %} · cached{% endif %}
+  </p>
+  {% if snap.photos %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+    {% for u in snap.photos %}
+    <img src="{{ u }}" alt="Property photo" style="width:160px;height:120px;object-fit:cover;border-radius:8px">
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="hint">No listing photos on file for this address.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_property_refresh', lid=loan.id) }}" style="margin-top:10px">
+    <button class="btn ghost" type="submit">Refresh snapshot</button>
+  </form>
+  {% else %}
+  <p class="hint">{{ snap.reason or "No snapshot yet." }}</p>
+  {% endif %}
+</div>
 {% if standing %}
 <div class="card" style="margin-top:14px">
   <h3>Standing loan</h3>

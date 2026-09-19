@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top"><h2>Property snapshot</h2></div>
+<div class="card">
+  <form method="get" class="form-grid">
+    <div class="span-2"><label>Address</label><input name="address" value="{{ address or '' }}" required></div>
+    <div><button class="btn" type="submit">Look up</button></div>
+  </form>
+  {% if snap %}
+  <p style="margin-top:12px">
+    {% if snap.estimate %}<strong>${{ "{:,.0f}".format(snap.estimate) }}</strong> estimated value{% else %}No estimate{% endif %}
+    {% if snap.reason %}<span class="hint">{{ snap.reason }}</span>{% endif %}
+  </p>
+  {% if snap.photos %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    {% for u in snap.photos %}
+    <img src="{{ u }}" alt="" style="width:160px;height:120px;object-fit:cover;border-radius:8px">
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

@@ -25,7 +25,11 @@
       <option value="Perpetual">Perpetual</option>
     </select>
   </div>
-  <div class="span-2"><label>Property / file name</label><input name="property_address" placeholder="Address, or Unsecured standing loan" required></div>
+  <div class="span-2"><label>Property / file name</label>
+    <input name="property_address" id="property_address" placeholder="Address, or Unsecured standing loan" required>
+    <button class="btn ghost" type="button" id="lookup-prop" style="margin-top:8px">Look up value & photos</button>
+    <div id="prop-snap" class="hint" style="margin-top:8px"></div>
+  </div>
   <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01"></div>
   <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01"></div>
   <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered"></div>
@@ -256,6 +260,27 @@
   syncTotal();
   syncMaturity();
   syncPayLabel();
+  var look = document.getElementById("lookup-prop");
+  if (look) look.addEventListener("click", function(){
+    var addr = (document.getElementById("property_address")||{}).value || "";
+    var box = document.getElementById("prop-snap");
+    if (box) box.textContent = "Looking up…";
+    fetch("/tools/property-snapshot?json=1&address=" + encodeURIComponent(addr))
+      .then(function(r){ return r.json(); })
+      .then(function(s){
+        if (!box) return;
+        if (!s.ready){ box.textContent = s.reason || "Add RENTCAST_API_KEY in Render."; return; }
+        var txt = s.estimate ? ("Estimated value $" + Math.round(s.estimate).toLocaleString()) : "No estimate";
+        if (s.low && s.high) txt += " (range $" + Math.round(s.low).toLocaleString() + " – $" + Math.round(s.high).toLocaleString() + ")";
+        box.innerHTML = txt;
+        (s.photos||[]).slice(0,4).forEach(function(u){
+          var img = document.createElement("img");
+          img.src = u; img.style = "width:120px;height:90px;object-fit:cover;border-radius:8px;margin:6px 6px 0 0";
+          box.appendChild(img);
+        });
+      })
+      .catch(function(){ if (box) box.textContent = "Lookup failed."; });
+  });
 })();
 </script>
 {% endblock %}
