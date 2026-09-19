@@ -3,7 +3,14 @@
 <div class="top">
   <div>
     <div class="tag">Desk</div>
-    <h2>Lead</h2>
+    <h2>{{ 'Archived leads' if show=='archived' else 'Lead' }}</h2>
+  </div>
+  <div>
+    {% if show=='archived' %}
+    <a class="btn" href="{{ url_for('marketing_leads') }}">Working leads</a>
+    {% else %}
+    <a class="btn ghost" href="{{ url_for('marketing_leads', show='archived') }}">Archived leads</a>
+    {% endif %}
   </div>
 </div>
 <p class="hint">Public link to publish: <strong>{{ request.url_root.rstrip('/') }}/tx</strong></p>
@@ -41,10 +48,21 @@
         <button class="btn ghost" type="submit">Mark reviewed</button>
       </form>
       {% else %}<div class="hint">{{ l.status }}</div>{% endif %}
+      {% if show=='archived' %}
+      <form method="post" action="{{ url_for('marketing_lead_restore', lid=l.id) }}" style="margin-top:6px">
+        <button class="btn" type="submit">Restore</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('marketing_lead_archive', lid=l.id) }}" style="margin-top:6px">
+        <button class="btn ghost" type="submit">Archive</button>
+      </form>
+      {% endif %}
     </td>
   </tr>
   {% endfor %}
 </table>
-{% if not leads %}<p class="hint">No leads yet. Share /tx on social posts.</p>{% endif %}
+{% if not leads %}
+<p class="hint">{% if show=='archived' %}No archived leads.{% else %}No working leads. Share /tx on social posts.{% endif %}</p>
+{% endif %}
 </div>
 {% endblock %}

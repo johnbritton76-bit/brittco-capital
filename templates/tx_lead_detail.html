@@ -9,6 +9,16 @@
   <div>
     <a class="btn ghost" href="{{ url_for('marketing_leads') }}">All leads</a>
     <a class="btn" href="{{ url_for('marketing_lead_rate_sheet', lid=lead.id) }}" target="_blank">Open rate sheet</a>
+    {% if lead.archived %}
+    <form method="post" action="{{ url_for('marketing_lead_restore', lid=lead.id) }}" style="display:inline">
+      <input type="hidden" name="next" value="{{ url_for('marketing_lead_detail', lid=lead.id) }}">
+      <button class="btn" type="submit">Restore lead</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('marketing_lead_archive', lid=lead.id) }}" style="display:inline">
+      <button class="btn ghost" type="submit">Archive lead</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 {% if note %}<p class="flash">{{ note }}</p>{% endif %}
