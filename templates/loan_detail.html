@@ -58,6 +58,7 @@
   </form>
   {% else %}
   <p class="hint">{{ snap.reason or "No snapshot yet." }}</p>
+  {% if snap and snap.error %}<p class="hint">RentCast said: {{ snap.error }}</p>{% endif %}
   {% endif %}
 </div>
 {% if standing %}
