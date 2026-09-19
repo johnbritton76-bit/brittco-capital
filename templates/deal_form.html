@@ -11,11 +11,11 @@
   </div>
   <div><label>Loan type</label>
     <select name="loan_type">
-      {% for t in ['Fix and Flip','Transactional Loan'] %}
+      {% for t in ['Fix and Flip','Transactional Loan','Gap Loan'] %}
       <option value="{{ t }}" {% if d and d.loan_type==t %}selected{% endif %}>{{ t }}</option>
       {% endfor %}
     </select>
-    <p class="hint">Transactional Loan: 3% flat fee for up to 7 days. Extensions after 7 days are negotiable.</p>
+    <p class="hint">Gap Loan fills 15% for 3 months and two 3% extensions. Transactional: short flat fee. Edit any field.</p>
   </div>
   <div class="span-2"><label>Property address</label><input name="address" value="{{ d.address if d else '' }}" required></div>
   <div><label>Purchase price</label><input name="purchase_price" type="number" step="0.01" value="{{ d.purchase_price if d else '' }}"></div>
@@ -39,4 +39,30 @@
     <textarea name="ltv_override_reason">{{ d.ltv_override_reason if d else '' }}</textarea></div>
   <div class="span-2"><button class="btn" type="submit">Save and run underwriting</button></div>
 </form>
+<script>
+(function(){
+  var type = document.querySelector('[name="loan_type"]');
+  var rate = document.querySelector('[name="rate"]');
+  var points = document.querySelector('[name="points"]');
+  var term = document.querySelector('[name="term_months"]');
+  var purchase = document.querySelector('[name="purchase_price"]');
+  function sync(){
+    if (!type) return;
+    if (type.value === "Gap Loan"){
+      if (rate && !rate.dataset.touched) rate.value = "15";
+      if (points && !points.dataset.touched) points.value = "0";
+      if (term && !term.dataset.touched) term.value = "3";
+      if (purchase){ purchase.required = false; purchase.closest("div").style.display = "none"; }
+    } else {
+      if (purchase){ purchase.closest("div").style.display = ""; }
+    }
+  }
+  ["rate","points","term_months"].forEach(function(n){
+    var el = document.querySelector('[name="'+n+'"]');
+    if (el) el.addEventListener("input", function(){ el.dataset.touched = "1"; });
+  });
+  if (type) type.addEventListener("change", sync);
+  sync();
+})();
+</script>
 {% endblock %}

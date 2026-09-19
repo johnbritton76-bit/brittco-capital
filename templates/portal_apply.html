@@ -21,7 +21,7 @@
   <div class="card">
     <h3>Select loan type</h3>
     <p class="hint">Your profile is already on this file. Next you will enter only the property, rate, and term.</p>
-    {% for t in ['Fix and Flip','Transactional Loan'] %}
+    {% for t in ['Fix and Flip','Transactional Loan','Gap Loan'] %}
     <p><a class="btn" href="{{ url_for('portal_apply_new', loan_type=t) }}">{{ t }}</a></p>
     {% endfor %}
   </div>
@@ -44,7 +44,12 @@
       <div><label>ZIP</label><input name="zip" required value="{{ form.get('zip','') if form else '' }}"><label><input type="checkbox" class="na" data-for="zip"> N/A</label></div>
       <div><label>County</label><input name="county" required value="{{ form.get('county','') if form else '' }}"><label><input type="checkbox" class="na" data-for="county"> N/A</label></div>
       <div class="span-2"><label>Legal description</label><textarea name="legal_description">{{ form.get('legal_description','') if form else '' }}</textarea><label><input type="checkbox" class="na" data-for="legal_description"> N/A</label></div>
+      {% if loan_type != "Gap Loan" %}
       <div><label>Purchase price</label><input name="purchase_price" type="number" step="0.01" required><label><input type="checkbox" class="na" data-for="purchase_price"> N/A</label></div>
+      {% endif %}
+      {% if loan_type == "Gap Loan" %}
+      <p class="hint span-2">Gap loan: no purchase price. Standard terms are 15% flat for 3 months with two extensions at 3% each. Edit if needed.</p>
+      {% endif %}
       <div><label>Requested loan amount</label><input name="loan_amount" type="number" step="0.01" required><label><input type="checkbox" class="na" data-for="loan_amount"> N/A</label></div>
       {% if loan_type == "Fix and Flip" %}
       <div><label>As-is value</label><input name="as_is_value" type="number" step="0.01"><label><input type="checkbox" class="na" data-for="as_is_value"> N/A</label></div>

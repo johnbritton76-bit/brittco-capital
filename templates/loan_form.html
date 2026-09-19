@@ -16,7 +16,7 @@
   <div><label>Loan number</label><input name="loan_number" placeholder="BC-1002"></div>
   <div><label>Loan type</label>
     <select name="loan_type" id="loan_type">
-      <option>Fix and Flip</option><option>Transactional Loan</option><option>Other</option>
+      <option>Fix and Flip</option><option>Transactional Loan</option><option>Gap Loan</option><option>Other</option>
     </select>
   </div>
   <div><label>Term</label>
@@ -29,7 +29,7 @@
   <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01"></div>
   <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01"></div>
   <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered"></div>
-  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" readonly></div>
+  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01"></div>
   <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10"></div>
   <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3"></div>
   <div class="standing-only span-2"><h3>Standing / other loan</h3>
@@ -202,12 +202,42 @@
     var k = (document.getElementById("term_kind")||{}).value;
     return t === "Other" || k === "Perpetual";
   }
+  function isGap(){
+    return (document.getElementById("loan_type")||{}).value === "Gap Loan";
+  }
+  function applyGapDefaults(){
+    if (!isGap()) return;
+    var rate = document.getElementById("rate");
+    if (rate) rate.value = "15";
+    var term = document.getElementById("base_term");
+    if (term) term.value = "3";
+    var ptype = document.getElementById("payment_type");
+    if (ptype) ptype.value = "Balloon";
+    var freq = document.querySelector('[name="payment_frequency"]');
+    if (freq) freq.value = "Interest due at maturity";
+    if (list) list.innerHTML = "";
+    n = 0;
+    row(1, 3);
+    row(1, 3);
+  }
   function syncStanding(){
     var on = standingOn();
+    var gap = isGap();
     document.querySelectorAll(".flip-only").forEach(function(el){ el.style.display = on ? "none" : ""; });
     document.querySelectorAll(".standing-only").forEach(function(el){ el.style.display = on ? "" : "none"; });
     var pp = document.getElementById("purchase_price");
-    if (pp) pp.required = !on;
+    if (pp){
+      pp.required = !on && !gap;
+      var wrap = pp.closest("div");
+      if (wrap) wrap.style.display = (on || gap) ? "none" : "";
+    }
+    var rehab = document.getElementById("rehab_cost");
+    if (rehab){
+      var rw = rehab.closest("div");
+      if (rw) rw.style.display = (on || gap) ? "none" : "";
+    }
+    var tot = document.getElementById("total_loan_amount");
+    if (tot) tot.readOnly = !gap;
   }
   ["loan_type","term_kind"].forEach(function(id){
     var el = document.getElementById(id);
@@ -216,7 +246,10 @@
         var k = document.getElementById("term_kind");
         if (k) k.value = "Perpetual";
       }
+      if (id === "loan_type" && el.value === "Gap Loan") applyGapDefaults();
       syncStanding();
+      syncPayLabel();
+      syncMaturity();
     });
   });
   syncStanding();
