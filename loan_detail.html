@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+{% block body %}
+<style>
+details.box{margin-top:14px;border:1px solid #d5dee8;border-radius:12px;background:#fff;padding:0 14px 12px}
+details.box>summary{cursor:pointer;padding:12px 0 8px;font-weight:650}
+details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-left:8px}
+.loan-strip{display:flex;flex-wrap:wrap;gap:12px;margin-top:14px}
+.loan-strip .card{min-width:140px;flex:1}
+</style>
+<div class="top">
+  <div>
+    <div class="tag">{{ loan.loan_type }}{% if standing %} · Perpetual{% endif %} · {{ loan.status }}</div>
+    <h2>{{ loan.loan_number or ("Loan " ~ loan.id) }}</h2>
+    <p class="hint">{{ loan.borrower_name }} · {{ loan.property_address }}</p>
+    {% if loan.archived %}<p class="hint">This loan is archived. Accounting is unchanged.</p>{% endif %}
+  </div>
+  <div>
+    {% if loan.archived %}
+    <form method="post" action="{{ url_for('loan_restore', lid=loan.id) }}">
+      <button class="btn" type="submit">Restore to working list</button>
+    </form>
+    {% else %}
+    <a class="btn" href="{{ url_for('loan_edit', lid=loan.id) }}">Edit loan</a>
+    <form method="post" action="{{ url_for('loan_archive', lid=loan.id) }}">
+      <button class="btn ghost" type="submit">Archive</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{{ url_for('loan_delete', lid=loan.id) }}" style="margin-top:8px" onsubmit="return confirm('This permanently deletes the loan and its payments.');">
+      <input name="confirm" placeholder="Type DELETE" style="width:120px">
+      <button class="btn ghost" type="submit">Delete loan</button>
+    </form>
+  </div>
+</div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+<details class="box">
+  <summary>Property snapshot <span class="peek">{% if snap and snap.estimate %}${{ "{:,.0f}".format(snap.estimate) }} estimated{% else %}value and photos{% endif %}</span></summary>
+
+  {% if not snap or not snap.ready %}
+  <p class="hint">{{ (snap and snap.reason) or "Add RENTCAST_API_KEY in Render to pull estimated value and listing photos." }}</p>
+  {% elif snap.ok %}
+  <p>
+    Estimated value:
+    <strong>{% if snap.estimate %}${{ "{:,.0f}".format(snap.estimate) }}{% else %}—{% endif %}</strong>
+    {% if snap.low and snap.high %}
+    (range ${{ "{:,.0f}".format(snap.low) }} – ${{ "{:,.0f}".format(snap.high) }})
+    {% endif %}
+  </p>
+  <p class="hint">
+    {{ snap.property_type or "" }}
+    {% if snap.beds %} · {{ snap.beds }} bd{% endif %}
+    {% if snap.baths %} · {{ snap.baths }} ba{% endif %}
+    {% if snap.sqft %} · {{ snap.sqft }} sf{% endif %}
+    {% if snap.year %} · built {{ snap.year }}{% endif %}
+    · RentCast{% if snap.cached %} · cached{% endif %}
+  </p>
+  {% if snap.photos %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+    {% for u in snap.photos %}
+    <img src="{{ u }}" alt="Property photo" style="width:160px;height:120px;object-fit:cover;border-radius:8px">
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="hint">No listing photos on file for this address.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_property_refresh', lid=loan.id) }}" style="margin-top:10px">
+    <button class="btn ghost" type="submit">Refresh snapshot</button>
+  </form>
+  {% else %}
+  <p class="hint">{{ snap.reason or "No snapshot yet." }}</p>
+  {% if snap and snap.error %}<p class="hint">RentCast said: {{ snap.error }}</p>{% endif %}
+  {% endif %}
+</details>
+{% if standing %}
+<details class="box">
+  <summary>Standing loan <span class="peek">${{ "{:,.2f}".format(loan.payment_amount or 0) }}/mo · no fixed maturity</span></summary>
+
+  <p>Interest only ${{ "{:,.2f}".format(loan.payment_amount or 0) }} per month. No fixed maturity.</p>
+  {% if payoff_due %}
+  <p>Payoff notice on file. Balance due {{ payoff_due }}.</p>
+  {% else %}
+  <p class="hint">Log a 90-day payoff notice when you call the loan.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_payoff_notice', lid=loan.id) }}" class="form-grid">
+    <div><label>Payoff notice sent</label><input name="payoff_notice_on" type="date" value="{{ loan.payoff_notice_on or '' }}"></div>
+    <div><label>Notice days</label><input name="call_notice_days" type="number" value="{{ loan.call_notice_days or 90 }}"></div>
+    <div><button class="btn" type="submit">Save notice</button></div>
+  </form>
+</details>
+{% endif %}
+<div class="loan-strip">
+  <div class="card"><h3>Balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
+  <div class="card"><h3>Payoff</h3><div class="n">${{ "{:,.0f}".format(perf.payoff) }}</div></div>
+  <div class="card"><h3>Matures</h3><div>{{ loan.maturity_date or "—" }}</div></div>
+  <div class="card"><h3>Funded</h3><div>${{ "{:,.0f}".format(perf.funded) }}</div></div>
+</div>
+<details class="box" style="margin-top:14px">
+  <summary>Loan figures <span class="peek">balance, rate, payoff, investors paid</span></summary>
+  <div class="grid cards">
+  <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
+  <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
+  <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
+  <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
+  <div class="card"><h3>Amount due at maturity</h3>
+    <div class="n">${{ "{:,.0f}".format(perf.payoff) }}</div>
+    <div class="hint">{{ loan.maturity_date or loan.next_payment_due or "—" }}
+      {% if perf.matures_in is not none %} · {{ perf.matures_in }} days{% endif %}
+    </div>
+  </div>
+  <div class="card"><h3>Maturity</h3>
+    <div>{{ loan.maturity_date or "—" }}
+      {% if perf.matures_in is not none %}<span class="badge">{{ perf.matures_in }} days</span>{% endif %}
+    </div>
+  </div>
+  <div class="card"><h3>Investor capital in</h3><div class="n">${{ "{:,.0f}".format(perf.funded) }}</div></div>
+  <div class="card"><h3>Still to raise</h3><div>${{ "{:,.0f}".format(perf.gap) }}</div></div>
+  <div class="card"><h3>Investor returns paid</h3><div>${{ "{:,.2f}".format(perf.investor_paid) }}</div></div>
+  <div class="card"><h3>Brittco share paid</h3><div>${{ "{:,.2f}".format(perf.brittco_paid) }}</div></div>
+</div>
+</details>
+
+<details class="box" id="loan-file">
+  <summary>Loan file <span class="peek">{{ folder.name if folder else loan.property_address }} · {{ folder_docs|length }} paper(s)</span></summary>
+
+  <p class="hint">Named for the property. Papers are pulled from this borrower’s file. Drag a computer file onto the folder, or drag a document from the list below into the folder.</p>
+  <div class="drop-file drop-upload" data-add="{{ url_for('loan_files_move', lid=loan.id, fid=folder.id) }}" data-upload="{{ url_for('loan_files_upload', lid=loan.id) }}" style="margin:8px 0;border:1px dashed #9bb4c9;border-radius:10px;padding:12px;background:#fff">
+    <p style="margin:0 0 8px">
+      <strong>{{ folder.name }}</strong>
+      <span class="hint">({{ folder_docs|length }})</span>
+      <a class="btn ghost" href="{{ url_for('loan_files_zip', lid=loan.id) }}">Download folder</a>
+    </p>
+    <ul>
+      {% for doc in folder_docs %}
+      <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+        <a href="{{ url_for('serve_upload', name=doc.filename) }}" target="_blank">{{ doc.original_name or doc.filename }}</a>
+        <span class="hint">{{ doc.kind }} · {{ doc.created_at }}</span>
+        <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+          <input type="hidden" name="next" value="{{ url_for('loan_detail', lid=loan.id) }}#loan-file">
+          <button class="btn ghost" type="submit">Delete</button>
+        </form>
+      </li>
+      {% else %}
+      <li class="hint">Empty — drop files here</li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="{{ url_for('loan_files_upload', lid=loan.id) }}" enctype="multipart/form-data" style="margin-top:8px">
+      <input type="file" name="docs" multiple>
+      <button class="btn ghost" type="submit">Upload</button>
+    </form>
+  </div>
+  {% if source_docs %}
+  <p class="hint">Other papers in this borrower’s file (drag into the folder above):</p>
+  <ul>
+    {% for doc in source_docs %}
+    <li class="drag-doc" draggable="true" data-doc="{{ doc.id }}" style="cursor:grab">
+      {{ doc.original_name or doc.filename }}
+      <span class="hint">{{ doc.kind }}</span>
+      <form method="post" action="{{ url_for('document_delete', did=doc.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Delete this document?');">
+        <input type="hidden" name="next" value="{{ url_for('loan_detail', lid=loan.id) }}#loan-file">
+        <button class="btn ghost" type="submit">Delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</details>
+
+<details class="box">
+  <summary>Term and extensions <span class="peek">{{ loan.base_term_months or "—" }} mo at {{ loan.rate or "—" }}% · matures {{ loan.maturity_date or "—" }}</span></summary>
+
+  <p>Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.</p>
+  {% if ext_options %}
+  <table class="table">
+    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Collect</th><th>Status</th><th></th></tr>
+    {% for opt in ext_options %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ opt.months }} months</td>
+      <td>{{ opt.rate }}%</td>
+      <td>{{ opt.pay_when or "deferred" }}{% if (opt.pay_when or '') == 'upfront' %} · ${{ "{:,.2f}".format((loan.original_principal or 0) * (opt.rate or 0) / 100) }}{% endif %}</td>
+      <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('remove_loan_ext_option', lid=loan.id, oid=opt.id) }}" onsubmit="return confirm('Remove this extension? Maturity and payoff will update.');">
+          <button class="btn ghost" type="submit">Remove extension</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('use_loan_extension', lid=loan.id) }}" style="margin-top:8px;display:inline">
+    <button class="btn" type="submit">Apply next extension</button>
+  </form>
+  <form method="post" action="{{ url_for('remove_unused_loan_extensions', lid=loan.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Remove every unused extension? Maturity goes back to base term plus any extensions already applied.');">
+    <button class="btn ghost" type="submit">Remove unused extensions</button>
+  </form>
+  {% else %}
+  <p class="hint">No unused extension rows on this file. If the maturity date still includes extra months, use the button below to cut it back to base term.</p>
+  <form method="post" action="{{ url_for('remove_unused_loan_extensions', lid=loan.id) }}" onsubmit="return confirm('Set maturity to base term only?');">
+    <button class="btn ghost" type="submit">Remove unused extensions</button>
+  </form>
+  {% endif %}
+  <form method="post" action="{{ url_for('add_loan_ext_option', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div><label>Add extension term (months)</label><input name="ext_months" type="number" min="1" value="1"></div>
+    <div><label>Add extension rate (%)</label><input name="ext_rate" type="number" step="0.01" value="2"></div>
+    <div><label>Collect</label>
+      <select name="ext_when" id="add-ext-when">
+        <option value="deferred">Deferred</option>
+        <option value="upfront">Up front</option>
+      </select>
+    </div>
+    <div id="add-ext-wrap" style="display:none"><label>Up-front payment</label><input id="add-ext-amt" type="text" readonly></div>
+    <div class="span-2"><button class="btn ghost" type="submit">Add extension</button></div>
+  </form>
+  <script>
+  (function(){
+    var when = document.getElementById("add-ext-when");
+    var rate = document.querySelector('[name="ext_rate"]');
+    var out = document.getElementById("add-ext-amt");
+    var prin = {{ loan.original_principal or 0 }};
+    function sync(){
+      if (!out || !when) return;
+      var wrap = document.getElementById("add-ext-wrap");
+      if (when.value === "upfront"){
+        var r = parseFloat((rate && rate.value) || "0") || 0;
+        out.value = "$" + (prin * r / 100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+        if (wrap) wrap.style.display = "";
+      } else {
+        out.value = "";
+        if (wrap) wrap.style.display = "none";
+      }
+    }
+    if (when) when.addEventListener("change", sync);
+    if (rate) rate.addEventListener("input", sync);
+    sync();
+  })();
+  </script>
+</details>
+
+<details class="box">
+  <summary>Payoff letter <span class="peek">{% if latest_letter %}{{ latest_letter.status }} · ${{ "{:,.2f}".format(latest_letter.total or 0) }}{% else %}create or send a letter{% endif %}</span></summary>
+
+  <p class="hint">Figures fill from this loan’s rate, term, balance, and maturity. Staff must approve before it can be emailed to the borrower. Signature on the PDF is John Britton, electronically signed.</p>
+  {% if latest_letter %}
+  <p>
+    Latest: <span class="badge">{{ latest_letter.status }}</span>
+    · {{ latest_letter.letter_date }}
+    · {{ money_txt(latest_letter.total) if false else "" }}
+    ${{ "{:,.2f}".format(latest_letter.total or 0) }}
+    good through {{ latest_letter.good_through }}
+    · <a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=latest_letter.id) }}" target="_blank" rel="noopener">View PDF</a>
+  </p>
+  {% if latest_letter.status == 'pending' %}
+  <form method="post" action="{{ url_for('loan_payoff_approve', lid=loan.id, pid=latest_letter.id) }}" style="display:inline">
+    <button class="btn" type="submit">Approve</button>
+  </form>
+  {% elif latest_letter.status == 'approved' %}
+  <form method="post" action="{{ url_for('loan_payoff_send', lid=loan.id, pid=latest_letter.id) }}" style="display:inline">
+    <button class="btn" type="submit">Send to borrower</button>
+  </form>
+  {% elif latest_letter.status == 'sent' %}
+  <p class="hint">Sent {{ latest_letter.sent_at }}. Approved by {{ latest_letter.approved_by }}.</p>
+  {% endif %}
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_payoff_create', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div><label>Letter date</label><input name="letter_date" type="date" value="{{ payoff_defaults.letter_date }}"></div>
+    <div><label>Good through</label><input name="good_through" type="date" value="{{ payoff_defaults.good_through }}"></div>
+    <div><label>Unpaid principal</label><input name="principal" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.principal) }}"></div>
+    <div><label>Interest / flat fee</label><input name="interest_fee" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.interest_fee) }}"></div>
+    <div><label>Other fees</label><input name="other_fees" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.other_fees) }}"></div>
+    <div><label>Per diem after good-through</label><input name="per_diem" type="number" step="0.01" value="{{ '%.2f'|format(payoff_defaults.per_diem) }}"></div>
+    <div class="span-2"><p class="hint">Total payoff will be principal + interest/fee + other fees ({{ "%.2f"|format(payoff_defaults.total) }} from current loan terms).</p></div>
+    <div><label>Receiving bank</label><input name="wire_bank" value="{{ payoff_defaults.wire_bank }}"></div>
+    <div><label>Bank address</label><input name="wire_bank_address" value="{{ payoff_defaults.wire_bank_address }}"></div>
+    <div><label>Name on account</label><input name="wire_name" value="{{ payoff_defaults.wire_name }}"></div>
+    <div><label>Routing (ABA)</label><input name="wire_routing" value="{{ payoff_defaults.wire_routing }}"></div>
+    <div><label>Account</label><input name="wire_account" value="{{ payoff_defaults.wire_account }}"></div>
+    <div class="span-2"><label>Wire reference</label><input name="wire_further" value="{{ payoff_defaults.wire_further or loan.property_address }}"></div>
+    <div class="span-2"><label>Notes on the letter</label><textarea name="notes" rows="3">{{ payoff_defaults.notes }}</textarea></div>
+    <div class="span-2"><button class="btn" type="submit">Create payoff letter (sends to approval)</button></div>
+  </form>
+  {% if letters|length > 1 %}
+  <p class="hint" style="margin-top:10px">History</p>
+  <table class="table">
+    <tr><th>Date</th><th>Status</th><th>Total</th><th>Good through</th><th></th></tr>
+    {% for p in letters %}
+    <tr>
+      <td>{{ p.letter_date }}</td>
+      <td>{{ p.status }}</td>
+      <td>${{ "{:,.2f}".format(p.total or 0) }}</td>
+      <td>{{ p.good_through }}</td>
+      <td><a href="{{ url_for('loan_payoff_pdf', lid=loan.id, pid=p.id) }}" target="_blank">PDF</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</details>
+
+<details class="box">
+  <summary>Staff notes and reminder <span class="peek">copy a borrower reminder</span></summary>
+
+  <p>{{ staff_assist }}</p>
+  <label>Reminder draft (copy into email or text)</label>
+  <textarea rows="4" style="width:100%">{{ reminder_draft }}</textarea>
+</details>
+
+<details class="box">
+  {% if perf.closed %}
+  <summary>Realized return <span class="peek">${{ "{:,.2f}".format(perf.actual_net) }} net to investors</span></summary>
+
+  <p>
+    This loan is closed.
+    Gross interest income <strong>${{ "{:,.2f}".format(perf.actual_gross) }}</strong>.
+    Nate’s fee <strong>${{ "{:,.2f}".format(perf.actual_nate) }}</strong>.
+    Net to investors <strong>${{ "{:,.2f}".format(perf.actual_net) }}</strong>.
+  </p>
+  {% else %}
+  <summary>Estimated return <span class="peek">${{ "{:,.2f}".format(perf.payoff) }} at maturity</span></summary>
+
+  <p>
+    Planned term is <strong>{{ perf.days }} days</strong>
+    {% if loan.start_date and loan.maturity_date %}
+    ({{ loan.start_date }} through {{ loan.maturity_date }}).
+    {% elif parts and parts[0].term %}({{ parts[0].term }} months).{% else %}.{% endif %}
+    Amount due at maturity <strong>${{ "{:,.2f}".format(perf.payoff) }}</strong>.
+    Estimated interest / fee income <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>
+    (<strong>{{ "%.0f"|format(perf.est_ann or 0) }}%</strong> annualized).
+    {% if perf.nate_on %}
+    Nate’s {{ parts[0].fee if parts else 25 }}% fee is estimated at
+    <strong>${{ "{:,.2f}".format(perf.est_nate) }}</strong> and is not payable until basis is paid off and a profit is realized.
+    Investor net after that fee would be
+    <strong>${{ "{:,.2f}".format(perf.est_net) }}</strong>
+    (<strong>{{ "%.0f"|format(perf.est_ann_net or 0) }}%</strong> annualized).
+    {% else %}
+    Nate’s fee is <strong>off</strong> on this loan. The investor keeps the full return
+    <strong>${{ "{:,.2f}".format(perf.est_gross) }}</strong>.
+    {% endif %}
+  </p>
+  {% endif %}
+</details>
+
+<details class="box">
+  <summary>Investors on this loan <span class="peek">${{ "{:,.0f}".format(perf.funded) }} in · ${{ "{:,.0f}".format(perf.gap) }} still to raise</span></summary>
+
+  {% if perf.need %}
+  <p>
+    Loan amount <strong>${{ "{:,.0f}".format(perf.need) }}</strong>.
+    Funded <strong>${{ "{:,.0f}".format(perf.funded) }}</strong>
+    (<strong>{{ "%.1f"|format(perf.funded_pct) }}%</strong>).
+    {% if perf.gap > 0.5 %}
+    Still needed <strong>${{ "{:,.0f}".format(perf.gap) }}</strong>
+    ({{ "%.1f"|format(100 - perf.funded_pct) }}%).
+    {% else %}
+    This loan is <strong>100% funded</strong>.
+    {% endif %}
+  </p>
+  {% endif %}
+  <p class="hint">Open loans show estimates. Term follows the loan start and maturity dates.</p>
+  {% if perf.nate_on %}
+  <form method="post" action="{{ url_for('nate_fee_off_loan', lid=loan.id) }}" style="margin:8px 0">
+    <button class="btn ghost" type="submit">Remove Nate fee from this loan</button>
+  </form>
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_brittco_pct', lid=loan.id) }}" style="margin:8px 0">
+    <label>Brittco capital fee %
+      <input name="brittco_pct" type="number" step="0.01" value="{{ loan.brittco_pct or 0 }}" style="width:80px">
+    </label>
+    <button class="btn ghost" type="submit">Save</button>
+    <span class="hint">0 = Brittco is not taking a capital fee on this loan. Use 1 for a 1% fee.</span>
+  </form>
+  <table class="table">
+    <tr><th>Investor</th><th>Amount</th><th>% of loan</th><th>Rate %</th><th>Term</th><th>Nate fee %</th><th>Return</th><th>Ext</th><th></th></tr>
+    {% for p in parts %}
+    <tr>
+      <td>
+        <form id="edit-p-{{ p.id }}" method="post" action="{{ url_for('update_participation', lid=loan.id, pid=p.id) }}"></form>
+        <select form="edit-p-{{ p.id }}" name="investor_id">
+          {% for i in investors %}
+          <option value="{{ i.id }}" {% if i.id==p.investor_id %}selected{% endif %}>{{ i.name }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td><input form="edit-p-{{ p.id }}" name="amount" type="number" step="0.01" value="{{ p.amount }}" style="width:110px"></td>
+      <td>{{ "%.1f"|format(p.funded_pct or 0) }}%</td>
+      <td><input form="edit-p-{{ p.id }}" name="investor_rate" type="number" step="0.01" value="{{ p.rate or p.base }}" style="width:80px"></td>
+      <td>
+        {% if loan.start_date and loan.maturity_date %}
+        {{ p.days }} days<br><span class="hint">{{ loan.start_date }} → {{ loan.maturity_date }}</span>
+        <input form="edit-p-{{ p.id }}" type="hidden" name="term_months" value="{{ p.term or 0 }}">
+        {% else %}
+        <input form="edit-p-{{ p.id }}" name="term_months" type="number" value="{{ p.term }}" style="width:70px">
+        {% endif %}
+      </td>
+      <td>
+        <input form="edit-p-{{ p.id }}" name="mgmt_fee_pct" type="number" step="0.01" value="{{ p.fee }}" style="width:70px">
+        {% if p.fee %}
+        <form method="post" action="{{ url_for('nate_fee_off', lid=loan.id, pid=p.id) }}" style="margin-top:4px">
+          <button class="btn ghost" type="submit">Remove Nate fee</button>
+        </form>
+        {% endif %}
+      </td>
+      <td>
+        {% if p.show_actual %}
+        Actual net ${{ "{:,.2f}".format(p.actual_net) }} · {{ "%.0f"|format(p.actual_ann_net or 0) }}% ann.
+        <div class="hint">Gross ${{ "{:,.2f}".format(p.actual_gross) }} · Nate ${{ "{:,.2f}".format(p.actual_nate) }}</div>
+        {% else %}
+        Est. ${{ "{:,.2f}".format(p.est_gross) }} · {{ "%.0f"|format(p.est_ann or 0) }}% ann. over {{ p.days }} days
+        <div class="hint">After Nate {{ "%.0f"|format(p.est_ann_net or 0) }}% ann. (${{ "{:,.2f}".format(p.est_net) }}). Fee payable when profit is realized.</div>
+        {% endif %}
+      </td>
+      <td>{{ p.used }} / {{ p.max_ext }}</td>
+      <td>
+        <button form="edit-p-{{ p.id }}" class="btn ghost" type="submit">Save</button>
+        <form method="post" action="{{ url_for('add_extension', lid=loan.id, pid=p.id) }}" style="display:inline">
+          <button class="btn ghost" type="submit">+1 mo</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9">No investors on this loan yet.</td></tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('term_loan', lid=loan.id) }}" style="margin-top:8px">
+    <button class="btn ghost" type="submit">Term this loan now</button>
+  </form>
+  {% if perf.gap > 0.5 or not parts %}
+  <p style="margin-top:12px">
+    <button class="btn" type="button" id="show-add-investor">Add investor</button>
+    <span class="hint">Needed to finish funding: ${{ "{:,.0f}".format(perf.gap) }}</span>
+  </p>
+  <form method="post" action="{{ url_for('add_participation', lid=loan.id) }}" class="form-grid" id="add-investor-form" style="margin-top:12px;display:none">
+    <div><label>Investor</label>
+      <select name="investor_id" required>
+        {% for i in investors %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Amount in this loan</label><input name="amount" type="number" step="0.01" required value="{{ '%.2f'|format(perf.gap) }}"></div>
+    <div><label>Rate paid to investor % (for the term)</label><input name="investor_rate" type="number" step="0.01" required placeholder="10"></div>
+    <div><label>Term (months)</label><input name="term_months" type="number" value="3" required></div>
+    <div><label>Extension rate % per month</label><input name="extension_rate" type="number" step="0.01" value="2"></div>
+    <div><label>Term after how many extension months</label>
+      <select name="max_extensions">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+      </select>
+    </div>
+    <div><label>Nate Holland fee % of profit</label><input name="mgmt_fee_pct" type="number" step="0.01" value="25"></div>
+    <div><label>Funded on</label><input name="funded_on" type="date"></div>
+    <div class="span-2"><button class="btn" type="submit">Add investor to this loan</button></div>
+  </form>
+  <script>
+    (function () {
+      var btn = document.getElementById("show-add-investor");
+      var form = document.getElementById("add-investor-form");
+      if (btn && form) {
+        btn.addEventListener("click", function () {
+          form.style.display = "grid";
+          btn.style.display = "none";
+        });
+      }
+    })();
+  </script>
+  {% endif %}
+</details>
+
+<details class="box" open>
+  <summary>Record a payment</summary>
+
+  <form method="post" action="{{ url_for('loan_payment', lid=loan.id) }}" class="form-grid">
+    <div><label>Date</label><input name="paid_on" type="date"></div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
+    <div><label>Applied to</label>
+      <select name="applied_to"><option>Interest</option><option>Principal</option><option>Fees</option><option>Brittco fee</option></select>
+    </div>
+    <div><label>Next payment due after this</label><input name="next_payment_due" type="date"></div>
+    <div class="span-2"><label>Note</label><input name="note"></div>
+    <div class="span-2"><button class="btn" type="submit">Save payment</button></div>
+  </form>
+</details>
+<details class="box">
+  <summary>Payment history <span class="peek">{{ payments|length }} payment(s) · ${{ "{:,.0f}".format(perf.paid) }} recorded</span></summary>
+
+  <table class="table">
+    <tr><th>Date</th><th>Amount</th><th>Applied</th><th>Note</th></tr>
+    {% for p in payments %}
+    <tr>
+      <td>{{ p.paid_on }}</td>
+      <td>${{ "{:,.2f}".format(p.amount or 0) }}</td>
+      <td>{{ p.applied_to }}</td>
+      <td>{{ p.note or "" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No payments yet.</td></tr>
+    {% endfor %}
+  </table>
+</details>
+<details class="box">
+  <summary>How payments were split <span class="peek">{{ dists|length }} distribution(s)</span></summary>
+
+  <table class="table">
+    <tr><th>When</th><th>Investor</th><th>Investor received</th><th>Brittco kept</th><th>Type</th></tr>
+    {% for d in dists %}
+    <tr>
+      <td>{{ d.created_at }}</td>
+      <td>{{ d.investor_name or "Brittco book" }}</td>
+      <td>${{ "{:,.2f}".format(d.investor_amount or 0) }}</td>
+      <td>${{ "{:,.2f}".format(d.brittco_amount or 0) }}</td>
+      <td>{{ d.kind }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">Splits appear after you record a borrower payment.</td></tr>
+    {% endfor %}
+  </table>
+</details>
+<script src="{{ url_for('static', filename='drop-files.js') }}"></script>
+{% endblock %}
