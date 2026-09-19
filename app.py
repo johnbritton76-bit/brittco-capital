@@ -4997,22 +4997,52 @@ def loan_alerts():
         if mark in seen:
             continue
         seen.add(mark)
-        mat_date = scheduled_maturity_date(
-            row_val(r, "start_date"),
-            _row_months(r),
-            option_months_total(lid),
-        ) or row_val(r, "maturity_date")
-        mat = days_until(mat_date)
+        base_iso, full_iso = loan_term_dates(r)
+        dates = []
+        for raw in (full_iso, row_val(r, "maturity_date")):
+            d = parse_date(raw)
+            if d:
+                dates.append(d)
+        if not dates:
+            continue
+        mat_d = max(dates)
+        mat = (mat_d - date.today()).days
+        if mat > 14:
+            continue
         name = r["borrower_name"]
         label = num or f"Loan {lid}"
         items = []
-        if mat is not None and mat < 0:
-            items.append({"level": "bad", "kind": "matured", "text": f"Base term and extensions exhausted {abs(mat)} day(s) ago ({mat_date})."})
-        elif mat is not None and mat <= 14:
-            items.append({"level": "warn", "kind": "maturity", "text": f"Matures {mat_date} ({mat} day(s)) after base term and extensions."})
+        mat_date = mat_d.isoformat()
+        if 0 <= mat <= 14:
+            items.append({
+                "level": "warn",
+                "kind": "maturity",
+                "text": f"Matures {mat_date} ({mat} day(s)). Date is base term plus all extensions.",
+            })
+        elif mat < 0:
+            items.append({
+                "level": "bad",
+                "kind": "matured",
+                "text": f"Base term plus all extensions ended {abs(mat)} day(s) ago ({mat_date}).",
+            })
         if items:
             alerts.append({"loan": r, "name": name, "label": label, "items": items, "count": len(items)})
     return alerts
+
+
+def reset_stale_maturity_reminders():
+    try:
+        db().execute(
+            "DELETE FROM reminder_log WHERE kind IN ('maturity','matured','due')"
+        )
+        db().execute(
+            """DELETE FROM messages WHERE sender='Brittco System'
+               AND (body LIKE '%Matures %' OR body LIKE '%exhausted%'
+                    OR body LIKE '%matures %' OR body LIKE '%Base term%')"""
+        )
+        db().commit()
+    except sqlite3.Error:
+        pass
 
 
 def post_reminders(alerts):
@@ -6499,6 +6529,7 @@ def dashboard():
     funded = sum(money(d["loan_amount"]) for d in deals if d["status"] == "Funded")
     book = live_servicing_book(db())
     try:
+        reset_stale_maturity_reminders()
         alerts = loan_alerts()
     except Exception:
         alerts = []
@@ -10116,8 +10147,14 @@ def remove_loan_ext_option(lid, oid):
         return redirect(url_for("loan_detail", lid=lid))
     idx, opt = target
     if idx < used_n:
-        session["last_invite_note"] = "That extension was already applied. It cannot be removed from here."
-        return redirect(url_for("loan_detail", lid=lid))
+        last = db().execute(
+            """SELECT id FROM extensions
+               WHERE loan_id=? AND (participation_id IS NULL OR participation_id=0)
+               ORDER BY id DESC LIMIT 1""",
+            (lid,),
+        ).fetchone()
+        if last:
+            db().execute("DELETE FROM extensions WHERE id=?", (last["id"],))
     db().execute("DELETE FROM loan_ext_options WHERE id=? AND loan_id=?", (oid, lid))
     mat = refresh_loan_maturity(lid)
     saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
@@ -10127,6 +10164,40 @@ def remove_loan_ext_option(lid, oid):
     session["last_invite_note"] = (
         f"Removed unused {opt['months']} month extension at {money(opt['rate']):g}%. "
         f"Maturity is now {mat or row_val(saved, 'maturity_date') or 'updated'}."
+    )
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/remove-unused-extensions", methods=["POST"])
+@staff_required
+def remove_unused_loan_extensions(lid):
+    loan = _loan_or_404(lid)
+    if not loan:
+        return redirect(url_for("loans"))
+    used_n = db().execute(
+        "SELECT COUNT(*) AS n FROM extensions WHERE loan_id=? AND (participation_id IS NULL OR participation_id=0)",
+        (lid,),
+    ).fetchone()["n"]
+    opts = loan_ext_options(lid)
+    removed = 0
+    for i, opt in enumerate(opts):
+        if i >= used_n:
+            db().execute("DELETE FROM loan_ext_options WHERE id=? AND loan_id=?", (opt["id"], lid))
+            removed += 1
+    if not opts:
+        base_iso, _full = loan_term_dates(loan)
+        if base_iso:
+            db().execute(
+                "UPDATE loans SET maturity_date=?, next_payment_due=? WHERE id=?",
+                (base_iso, base_iso, lid),
+            )
+    mat = refresh_loan_maturity(lid)
+    saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if saved and (row_val(saved, "payment_type") or "") == "Balloon":
+        db().execute("UPDATE loans SET payment_amount=? WHERE id=?", (payoff_amount(saved), lid))
+    db().commit()
+    session["last_invite_note"] = (
+        f"Removed {removed} unused extension(s). Maturity is now {mat or row_val(saved, 'maturity_date') or 'the base term date'}."
     )
     return redirect(url_for("loan_detail", lid=lid))
 
