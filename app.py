@@ -4666,7 +4666,7 @@ def save_borrower_from_form(f, bid=None, existing=None):
         (f.get("email") or "").strip().lower(),
         f.get("phone"),
         int(f["credit_score"]) if f.get("credit_score") else None,
-        f.get("password") or (existing["password"] if existing else "borrower"),
+        f.get("password") or row_val(existing, "password") or "borrower",
         f.get("notes"),
         f.get("address"),
         f.get("city"),
@@ -7600,13 +7600,40 @@ def borrower_ach(bid):
     return redirect(url_for("borrower_detail", bid=bid))
 
 
+@app.route("/borrowers/<int:bid>/portal-password", methods=["POST"])
+@staff_required
+def borrower_portal_password(bid):
+    pw = (request.form.get("password") or "").strip()
+    if not pw:
+        session["last_invite_note"] = "Enter a portal password first."
+        return redirect(url_for("borrower_detail", bid=bid))
+    try:
+        db().execute("UPDATE borrowers SET password=? WHERE id=?", (pw, bid))
+        db().commit()
+        session["last_invite_note"] = "Borrower portal password saved. They log in at /portal/login with their email."
+    except Exception:
+        session["last_invite_note"] = "Could not save the portal password."
+    return redirect(url_for("borrower_detail", bid=bid))
+
+
 @app.route("/borrowers/<int:bid>/edit", methods=["GET", "POST"])
 @staff_required
 def borrower_edit(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     if request.method == "POST":
-        save_borrower_from_form(request.form, bid=bid, existing=b)
-        db().commit()
+        pw = (request.form.get("password") or "").strip()
+        if pw:
+            try:
+                db().execute("UPDATE borrowers SET password=? WHERE id=?", (pw, bid))
+                db().commit()
+            except sqlite3.Error:
+                pass
+        try:
+            save_borrower_from_form(request.form, bid=bid, existing=b)
+            db().commit()
+        except Exception:
+            session["last_invite_note"] = "Profile saved the password, but another field on the form failed."
+            return redirect(url_for("borrower_detail", bid=bid))
         return redirect(url_for("borrower_detail", bid=bid))
     return render_template(
         "borrower_form.html", title="Edit borrower", nav="borrowers", b=b
