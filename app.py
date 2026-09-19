@@ -8700,7 +8700,158 @@ def loan_new():
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
     return render_template(
-        "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None
+        "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None, ext_options=[]
+    )
+
+
+def _loan_values_from_form(f):
+    standing = (f.get("term_kind") or "") == "Perpetual" or (f.get("loan_type") or "") == "Other"
+    purchase = money(f.get("purchase_price"))
+    rehab = money(f.get("rehab_cost"))
+    points = money(f.get("points"))
+    if standing:
+        principal = money(f.get("standing_principal")) or money(f.get("total_loan_amount"))
+        base_term = 0
+        start = f.get("start_date")
+        maturity = None
+        pay_amt = money(f.get("monthly_interest")) or money(f.get("payment_amount"))
+        pay_type = "Interest only"
+        pay_freq = "Monthly"
+        next_due = f.get("first_due") or f.get("next_payment_due")
+        late_fee = money(f.get("late_fee")) or (round(pay_amt * 0.05, 2) if pay_amt else 0)
+    else:
+        principal = compute_loan_total(purchase, rehab, points)
+        if f.get("total_loan_amount"):
+            principal = money(f.get("total_loan_amount")) or principal
+        base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else 0
+        start = f.get("start_date")
+        extra = 0
+        for m in f.getlist("ext_months"):
+            try:
+                extra += int(float(m)) if m else 0
+            except (TypeError, ValueError):
+                pass
+        maturity = scheduled_maturity_date(start, base_term, extra) or f.get("maturity_date")
+        pay_amt = money(f.get("payment_amount")) or None
+        pay_type = f.get("payment_type")
+        pay_freq = f.get("payment_frequency") or "Interest due at maturity"
+        next_due = f.get("next_payment_due") or maturity
+        late_fee = money(f.get("late_fee")) or 0
+    status = f.get("status") or "Current"
+    if status == "Late":
+        status = "Current"
+    return {
+        "standing": standing,
+        "purchase": purchase,
+        "rehab": rehab,
+        "points": points,
+        "principal": principal,
+        "base_term": base_term,
+        "start": start,
+        "maturity": maturity,
+        "pay_amt": pay_amt,
+        "pay_type": pay_type,
+        "pay_freq": pay_freq,
+        "next_due": next_due,
+        "late_fee": late_fee,
+        "status": status,
+    }
+
+
+@app.route("/loans/<int:lid>/edit", methods=["GET", "POST"])
+@staff_required
+def loan_edit(lid):
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return redirect(url_for("loans"))
+    borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    deals = db().execute("SELECT id, address, loan_type FROM deals ORDER BY id DESC").fetchall()
+    if request.method == "POST":
+        f = request.form
+        v = _loan_values_from_form(f)
+        old_prin = money(loan["original_principal"])
+        paid = db().execute(
+            "SELECT COALESCE(SUM(amount),0) FROM payments WHERE loan_id=?", (lid,)
+        ).fetchone()[0]
+        if paid:
+            balance = max(0.0, (money(loan["current_balance"]) or 0) + ((v["principal"] or 0) - (old_prin or 0)))
+        else:
+            balance = v["principal"]
+        db().execute(
+            """UPDATE loans SET
+               borrower_id=?, deal_id=?, loan_number=?, loan_type=?, property_address=?,
+               original_principal=?, current_balance=?, rate=?, points=?, start_date=?, maturity_date=?,
+               payment_type=?, payment_amount=?, payment_frequency=?, next_payment_due=?, late_fee=?,
+               status=?, notes=?, base_term_months=?, purchase_price=?, rehab_cost=?
+               WHERE id=?""",
+            (
+                int(f["borrower_id"]),
+                int(f["deal_id"]) if f.get("deal_id") else None,
+                f.get("loan_number"),
+                f.get("loan_type"),
+                f.get("property_address"),
+                v["principal"],
+                balance,
+                money(f.get("rate")) or None,
+                v["points"] or None,
+                v["start"],
+                v["maturity"],
+                v["pay_type"],
+                v["pay_amt"],
+                v["pay_freq"],
+                v["next_due"],
+                v["late_fee"],
+                v["status"],
+                f.get("notes"),
+                v["base_term"],
+                v["purchase"],
+                v["rehab"],
+                lid,
+            ),
+        )
+        if v["standing"]:
+            try:
+                db().execute(
+                    """UPDATE loans SET term_kind=?, call_notice_days=?, payoff_notice_on=?,
+                       unsecured=?, first_payment_amount=?, payment_frequency=? WHERE id=?""",
+                    (
+                        "Perpetual",
+                        int(f.get("call_notice_days") or 90),
+                        f.get("payoff_notice_on") or None,
+                        1 if f.get("unsecured") == "1" else 0,
+                        money(f.get("first_payment_amount")) or None,
+                        "Monthly",
+                        lid,
+                    ),
+                )
+            except sqlite3.Error:
+                pass
+        else:
+            try:
+                db().execute("UPDATE loans SET term_kind=? WHERE id=?", ("Fixed", lid))
+            except sqlite3.Error:
+                pass
+            save_loan_ext_options(lid, f)
+            refresh_loan_maturity(lid, start=v["start"], base_term=v["base_term"])
+        saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+        if saved and (row_val(saved, "payment_type") or "") == "Balloon":
+            db().execute(
+                "UPDATE loans SET payment_amount=? WHERE id=?",
+                (payoff_amount(saved), lid),
+            )
+        db().commit()
+        return redirect(url_for("loan_detail", lid=lid))
+    return render_template(
+        "loan_form.html",
+        title="Edit loan",
+        nav="loans",
+        borrowers=borrowers,
+        deals=deals,
+        loan=loan,
+        ext_options=[
+            {"months": r["months"], "rate": r["rate"], "when": r["pay_when"]}
+            for r in loan_ext_options(lid)
+        ],
     )
     
 @app.route("/loans/<int:lid>")
