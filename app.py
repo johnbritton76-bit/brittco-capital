@@ -2097,7 +2097,9 @@ def inject_new_apps():
         try:
             leads = db().execute(
                 """SELECT id, first_name, last_name, immediate_need
-                   FROM marketing_leads WHERE COALESCE(acked,0)=0 AND status!='Closed'
+                   FROM marketing_leads
+                   WHERE COALESCE(acked,0)=0 AND status!='Closed'
+                     AND COALESCE(archived,0)=0
                    ORDER BY id DESC"""
             ).fetchall()
         except sqlite3.Error:
@@ -5626,10 +5628,11 @@ def ensure_leads_table():
             acked INTEGER
         )"""
     )
-    try:
-        db().execute("ALTER TABLE marketing_leads ADD COLUMN product TEXT")
-    except sqlite3.Error:
-        pass
+    for col, typ in (("product", "TEXT"), ("archived", "INTEGER"), ("archived_at", "TEXT")):
+        try:
+            db().execute(f"ALTER TABLE marketing_leads ADD COLUMN {col} {typ}")
+        except sqlite3.Error:
+            pass
     db().commit()
 
 
@@ -6393,7 +6396,15 @@ def transactional_lead():
 @staff_required
 def marketing_leads():
     ensure_leads_table()
-    rows = db().execute("SELECT * FROM marketing_leads ORDER BY id DESC").fetchall()
+    show = request.args.get("show") or "active"
+    if show == "archived":
+        rows = db().execute(
+            "SELECT * FROM marketing_leads WHERE COALESCE(archived,0)=1 ORDER BY id DESC"
+        ).fetchall()
+    else:
+        rows = db().execute(
+            "SELECT * FROM marketing_leads WHERE COALESCE(archived,0)=0 ORDER BY id DESC"
+        ).fetchall()
     leads = []
     for r in rows:
         d = dict(r)
@@ -6402,7 +6413,14 @@ def marketing_leads():
         except (TypeError, ValueError):
             d["file_list"] = []
         leads.append(d)
-    return render_template("tx_leads.html", title="Lead", nav="leads", leads=leads, products=LOAN_TYPES)
+    return render_template(
+        "tx_leads.html",
+        title="Lead",
+        nav="leads",
+        leads=leads,
+        products=LOAN_TYPES,
+        show=show,
+    )
 
 
 @app.route("/leads/<int:lid>/product", methods=["POST"])
@@ -6423,6 +6441,31 @@ def marketing_lead_ack(lid):
     db().execute("UPDATE marketing_leads SET acked=1, status=? WHERE id=?", ("Reviewed", lid))
     db().commit()
     return redirect(url_for("marketing_lead_detail", lid=lid))
+
+
+@app.route("/leads/<int:lid>/archive", methods=["POST"])
+@staff_required
+def marketing_lead_archive(lid):
+    ensure_leads_table()
+    db().execute(
+        "UPDATE marketing_leads SET archived=1, archived_at=?, acked=1, status=? WHERE id=?",
+        (datetime.now().isoformat(timespec="minutes"), "Archived", lid),
+    )
+    db().commit()
+    return redirect(url_for("marketing_leads"))
+
+
+@app.route("/leads/<int:lid>/restore", methods=["POST"])
+@staff_required
+def marketing_lead_restore(lid):
+    ensure_leads_table()
+    db().execute(
+        "UPDATE marketing_leads SET archived=0, archived_at=NULL, status=? WHERE id=?",
+        ("Reviewed", lid),
+    )
+    db().commit()
+    nxt = request.form.get("next") or url_for("marketing_leads", show="archived")
+    return redirect(nxt)
 
 
 def _lead_or_404(lid):
