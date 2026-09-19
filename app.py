@@ -22,7 +22,7 @@ from xml.sax.saxutils import escape as xml_esc
 
 from flask import (
     Flask, g, redirect, render_template, request, session, url_for, flash,
-    send_from_directory, send_file, make_response,
+    send_from_directory, send_file, make_response, jsonify,
 )
 from werkzeug.utils import secure_filename
 
@@ -1820,6 +1820,14 @@ try:
         _c.execute("ALTER TABLE loans ADD COLUMN purchase_price REAL")
     if loan_cols and "rehab_cost" not in loan_cols:
         _c.execute("ALTER TABLE loans ADD COLUMN rehab_cost REAL")
+    _c.execute(
+        """CREATE TABLE IF NOT EXISTS property_snapshots (
+            addr_key TEXT PRIMARY KEY,
+            address TEXT,
+            payload TEXT,
+            fetched_at TEXT
+        )"""
+    )
     for col, typ in (
         ("term_kind", "TEXT"),
         ("call_notice_days", "INTEGER"),
@@ -4769,6 +4777,123 @@ def days_until(s):
     if not d:
         return None
     return (d - date.today()).days
+
+
+def rentcast_key():
+    return (os.environ.get("RENTCAST_API_KEY") or os.environ.get("RENTCAST_KEY") or "").strip()
+
+
+def rentcast_get(path, params):
+    key = rentcast_key()
+    if not key:
+        return None, "missing key"
+    q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    req = urllib.request.Request(
+        f"https://api.rentcast.io/v1{path}?{q}",
+        headers={"Accept": "application/json", "X-Api-Key": key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw), None
+    except Exception as exc:
+        return None, str(exc)[:240]
+
+
+def _first_list(data):
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("listings", "properties", "results", "data"):
+            if isinstance(data.get(k), list):
+                return data[k]
+    return []
+
+
+def property_snapshot(address, force=False):
+    addr = " ".join((address or "").split())
+    if len(addr) < 8:
+        return {"ok": False, "ready": bool(rentcast_key()), "reason": "Enter a full street address."}
+    key = re.sub(r"[^a-z0-9]+", "-", addr.lower()).strip("-")
+    if not force:
+        row = db().execute(
+            "SELECT payload, fetched_at FROM property_snapshots WHERE addr_key=?", (key,)
+        ).fetchone()
+        if row and row["payload"]:
+            try:
+                cached = json.loads(row["payload"])
+                age = date.today() - (parse_date(row["fetched_at"]) or date.today())
+                if age.days <= 30:
+                    cached["cached"] = True
+                    cached["ready"] = True
+                    return cached
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    if not rentcast_key():
+        return {
+            "ok": False,
+            "ready": False,
+            "reason": "Add RENTCAST_API_KEY in Render to pull estimated value and listing photos.",
+        }
+    recs, rec_err = rentcast_get("/properties", {"address": addr})
+    rec = _first_list(recs)[0] if _first_list(recs) else (recs if isinstance(recs, dict) else {})
+    val, _ = rentcast_get("/avm/value", {"address": addr})
+    if not isinstance(val, dict):
+        val = {}
+    listed, _ = rentcast_get("/listings/sale", {"address": addr, "limit": "5"})
+    photos = []
+    for item in [rec] + _first_list(listed):
+        if not isinstance(item, dict):
+            continue
+        for field in ("photos", "images", "listingPhotos", "media"):
+            block = item.get(field) or []
+            if isinstance(block, str) and block.startswith("http"):
+                photos.append(block)
+            elif isinstance(block, list):
+                for p in block:
+                    if isinstance(p, str) and p.startswith("http"):
+                        photos.append(p)
+                    elif isinstance(p, dict):
+                        u = p.get("url") or p.get("href") or p.get("src")
+                        if u:
+                            photos.append(u)
+    seen = set()
+    clean_photos = []
+    for u in photos:
+        if u not in seen:
+            seen.add(u)
+            clean_photos.append(u)
+        if len(clean_photos) >= 6:
+            break
+    estimate = money(val.get("price") or rec.get("estimatedValue") or rec.get("lastSalePrice"))
+    snap = {
+        "ok": True,
+        "ready": True,
+        "address": addr,
+        "estimate": estimate,
+        "low": money(val.get("priceRangeLow")),
+        "high": money(val.get("priceRangeHigh")),
+        "beds": rec.get("bedrooms") or rec.get("beds"),
+        "baths": rec.get("bathrooms") or rec.get("baths"),
+        "sqft": rec.get("squareFootage") or rec.get("livingArea"),
+        "year": rec.get("yearBuilt"),
+        "property_type": rec.get("propertyType") or rec.get("type"),
+        "last_sale": rec.get("lastSaleDate") or rec.get("lastSalePrice"),
+        "photos": clean_photos,
+        "source": "RentCast",
+        "error": rec_err,
+        "cached": False,
+        "fetched_at": date.today().isoformat(),
+    }
+    try:
+        db().execute(
+            "INSERT OR REPLACE INTO property_snapshots (addr_key, address, payload, fetched_at) VALUES (?,?,?,?)",
+            (key, addr, json.dumps(snap), datetime.now().isoformat(timespec="minutes")),
+        )
+        db().commit()
+    except sqlite3.Error:
+        pass
+    return snap
 
 
 def loan_stack(lid):
@@ -8530,7 +8655,28 @@ def loan_detail(lid):
         used_exts=db().execute(
             "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
         ).fetchall(),
+        snap=property_snapshot(loan["property_address"]),
     )
+
+
+@app.route("/tools/property-snapshot")
+@staff_required
+def property_snapshot_lookup():
+    addr = request.args.get("address") or ""
+    force = request.args.get("refresh") == "1"
+    snap = property_snapshot(addr, force=force)
+    if request.args.get("json") == "1" or request.headers.get("X-Requested-With") == "fetch":
+        return jsonify(snap)
+    return render_template("property_snapshot.html", title="Property snapshot", nav="loans", snap=snap, address=addr)
+
+
+@app.route("/loans/<int:lid>/property-snapshot", methods=["POST"])
+@staff_required
+def loan_property_refresh(lid):
+    loan = db().execute("SELECT property_address FROM loans WHERE id=?", (lid,)).fetchone()
+    if loan:
+        property_snapshot(loan["property_address"], force=True)
+    return redirect(url_for("loan_detail", lid=lid))
 
 
 def _loan_or_404(lid):
