@@ -2419,6 +2419,7 @@ ACCOUNT_KINDS = [
 LOAN_TYPES = [
     "Fix and Flip",
     "Transactional Loan",
+    "Gap Loan",
 ]
 
 BOOK_EXPENSE = [
@@ -2721,7 +2722,7 @@ def corporate_books(year=None):
     }
 
 
-APPLY_TYPES = ["Fix and Flip", "Bridge", "Transactional Loan"]
+APPLY_TYPES = ["Fix and Flip", "Transactional Loan", "Gap Loan"]
 
 LOAN_DEFAULTS = {
     "Fix and Flip": {
@@ -2751,6 +2752,15 @@ LOAN_DEFAULTS = {
         "ext_rate": 0.0,
         "blurb": "Standard: 2.75% flat for 4 business days. No automatic extensions.",
     },
+    "Gap Loan": {
+        "rate": 15.0,
+        "points": 0.0,
+        "term_months": 3,
+        "term_days": 0,
+        "ext": 2,
+        "ext_rate": 3.0,
+        "blurb": "Standard: 15% flat for 3 months. Two extensions at 3% each. No purchase price required.",
+    },
 }
 
 def investor_product_terms(kind):
@@ -2769,8 +2779,8 @@ def investor_product_terms(kind):
             "days": 90,
             "months": 3,
             "max_ext": 2,
-            "ext_rate": 2.0,
-            "label": "15% for 3 months, two 1-month extensions at 2% each",
+            "ext_rate": 3.0,
+            "label": "15% flat for 3 months, two extensions at 3% each",
         }
     return {
         "base": 10.0,
