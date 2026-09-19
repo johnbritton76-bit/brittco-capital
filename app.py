@@ -7,6 +7,7 @@ import csv
 import secrets
 import smtplib
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
 import calendar
@@ -4790,12 +4791,23 @@ def rentcast_get(path, params):
     q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
     req = urllib.request.Request(
         f"https://api.rentcast.io/v1{path}?{q}",
-        headers={"Accept": "application/json", "X-Api-Key": key},
+        headers={
+            "Accept": "application/json",
+            "X-Api-Key": key,
+            "User-Agent": "BrittcoCapital/1.0",
+        },
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw), None
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8")[:300]
+        except Exception:
+            body = str(exc.reason)
+        return None, f"HTTP {exc.code}: {body or exc.reason}"
     except Exception as exc:
         return None, str(exc)[:240]
 
@@ -4823,7 +4835,7 @@ def property_snapshot(address, force=False):
             try:
                 cached = json.loads(row["payload"])
                 age = date.today() - (parse_date(row["fetched_at"]) or date.today())
-                if age.days <= 30:
+                if age.days <= 30 and (cached.get("estimate") or cached.get("photos")):
                     cached["cached"] = True
                     cached["ready"] = True
                     return cached
@@ -4837,12 +4849,16 @@ def property_snapshot(address, force=False):
         }
     recs, rec_err = rentcast_get("/properties", {"address": addr})
     rec = _first_list(recs)[0] if _first_list(recs) else (recs if isinstance(recs, dict) else {})
-    val, _ = rentcast_get("/avm/value", {"address": addr})
+    if not isinstance(rec, dict):
+        rec = {}
+    val, val_err = rentcast_get("/avm/value", {"address": addr})
     if not isinstance(val, dict):
         val = {}
-    listed, _ = rentcast_get("/listings/sale", {"address": addr, "limit": "5"})
+    listed, list_err = rentcast_get("/listings/sale", {"address": addr, "limit": "5"})
     photos = []
-    for item in [rec] + _first_list(listed):
+    comps = val.get("comparables") or val.get("listings") or []
+    subject = val.get("subjectProperty") if isinstance(val.get("subjectProperty"), dict) else {}
+    for item in [rec, subject] + _first_list(listed) + (comps if isinstance(comps, list) else []):
         if not isinstance(item, dict):
             continue
         for field in ("photos", "images", "listingPhotos", "media"):
@@ -4866,6 +4882,10 @@ def property_snapshot(address, force=False):
         if len(clean_photos) >= 6:
             break
     estimate = money(val.get("price") or rec.get("estimatedValue") or rec.get("lastSalePrice"))
+    err = val_err or rec_err or list_err
+    if not estimate and not clean_photos:
+        hint = err or "RentCast found no value for this address. Use Street, City, State ZIP."
+        return {"ok": False, "ready": True, "reason": hint, "error": err, "address": addr}
     snap = {
         "ok": True,
         "ready": True,
@@ -4873,15 +4893,15 @@ def property_snapshot(address, force=False):
         "estimate": estimate,
         "low": money(val.get("priceRangeLow")),
         "high": money(val.get("priceRangeHigh")),
-        "beds": rec.get("bedrooms") or rec.get("beds"),
-        "baths": rec.get("bathrooms") or rec.get("baths"),
-        "sqft": rec.get("squareFootage") or rec.get("livingArea"),
-        "year": rec.get("yearBuilt"),
-        "property_type": rec.get("propertyType") or rec.get("type"),
+        "beds": rec.get("bedrooms") or subject.get("bedrooms") or rec.get("beds"),
+        "baths": rec.get("bathrooms") or subject.get("bathrooms") or rec.get("baths"),
+        "sqft": rec.get("squareFootage") or subject.get("squareFootage") or rec.get("livingArea"),
+        "year": rec.get("yearBuilt") or subject.get("yearBuilt"),
+        "property_type": rec.get("propertyType") or subject.get("propertyType") or rec.get("type"),
         "last_sale": rec.get("lastSaleDate") or rec.get("lastSalePrice"),
         "photos": clean_photos,
         "source": "RentCast",
-        "error": rec_err,
+        "error": err,
         "cached": False,
         "fetched_at": date.today().isoformat(),
     }
