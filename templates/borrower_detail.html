@@ -9,7 +9,7 @@
     <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
     <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
     <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
-    <a class="btn ghost" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View monthly statement</a>
+    <a class="btn ghost" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
   </div>
 </div>
 {% if complete %}
