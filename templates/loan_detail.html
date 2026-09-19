@@ -150,7 +150,7 @@
   <p>Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.</p>
   {% if ext_options %}
   <table class="table">
-    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Collect</th><th>Status</th></tr>
+    <tr><th>#</th><th>Option term</th><th>Rate</th><th>Collect</th><th>Status</th><th></th></tr>
     {% for opt in ext_options %}
     <tr>
       <td>{{ loop.index }}</td>
@@ -158,6 +158,13 @@
       <td>{{ opt.rate }}%</td>
       <td>{{ opt.pay_when or "deferred" }}{% if (opt.pay_when or '') == 'upfront' %} · ${{ "{:,.2f}".format((loan.original_principal or 0) * (opt.rate or 0) / 100) }}{% endif %}</td>
       <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
+      <td>
+        {% if loop.index > used_exts|length %}
+        <form method="post" action="{{ url_for('remove_loan_ext_option', lid=loan.id, oid=opt.id) }}" onsubmit="return confirm('Remove this unused extension? Maturity and payoff will update.');">
+          <button class="btn ghost" type="submit">Remove extension</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
