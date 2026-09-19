@@ -159,20 +159,24 @@
       <td>{{ opt.pay_when or "deferred" }}{% if (opt.pay_when or '') == 'upfront' %} · ${{ "{:,.2f}".format((loan.original_principal or 0) * (opt.rate or 0) / 100) }}{% endif %}</td>
       <td>{% if loop.index <= used_exts|length %}Applied{% else %}Available{% endif %}</td>
       <td>
-        {% if loop.index > used_exts|length %}
-        <form method="post" action="{{ url_for('remove_loan_ext_option', lid=loan.id, oid=opt.id) }}" onsubmit="return confirm('Remove this unused extension? Maturity and payoff will update.');">
+        <form method="post" action="{{ url_for('remove_loan_ext_option', lid=loan.id, oid=opt.id) }}" onsubmit="return confirm('Remove this extension? Maturity and payoff will update.');">
           <button class="btn ghost" type="submit">Remove extension</button>
         </form>
-        {% endif %}
       </td>
     </tr>
     {% endfor %}
   </table>
-  <form method="post" action="{{ url_for('use_loan_extension', lid=loan.id) }}" style="margin-top:8px">
+  <form method="post" action="{{ url_for('use_loan_extension', lid=loan.id) }}" style="margin-top:8px;display:inline">
     <button class="btn" type="submit">Apply next extension</button>
   </form>
+  <form method="post" action="{{ url_for('remove_unused_loan_extensions', lid=loan.id) }}" style="display:inline;margin-left:8px" onsubmit="return confirm('Remove every unused extension? Maturity goes back to base term plus any extensions already applied.');">
+    <button class="btn ghost" type="submit">Remove unused extensions</button>
+  </form>
   {% else %}
-  <p class="hint">No extension options yet. Add one below. Maturity moves with every option.</p>
+  <p class="hint">No unused extension rows on this file. If the maturity date still includes extra months, use the button below to cut it back to base term.</p>
+  <form method="post" action="{{ url_for('remove_unused_loan_extensions', lid=loan.id) }}" onsubmit="return confirm('Set maturity to base term only?');">
+    <button class="btn ghost" type="submit">Remove unused extensions</button>
+  </form>
   {% endif %}
   <form method="post" action="{{ url_for('add_loan_ext_option', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
     <div><label>Add extension term (months)</label><input name="ext_months" type="number" min="1" value="1"></div>
