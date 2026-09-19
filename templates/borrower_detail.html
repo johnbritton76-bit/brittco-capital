@@ -12,6 +12,14 @@
     <a class="btn ghost" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
   </div>
 </div>
+<div class="card" style="margin-top:14px">
+  <h3>Borrower portal password</h3>
+  <p class="hint">They sign in at {{ request.url_root.rstrip('/') }}/portal/login with the email on this file.</p>
+  <form method="post" action="{{ url_for('borrower_portal_password', bid=b.id) }}" class="form-grid">
+    <div><label>Set or replace password</label><input name="password" type="password" required></div>
+    <div><button class="btn" type="submit">Save portal password</button></div>
+  </form>
+</div>
 {% if complete %}
 <div class="card">
   <h3>File completeness</h3>
