@@ -13,6 +13,7 @@
       <button class="btn" type="submit">Restore to working list</button>
     </form>
     {% else %}
+    <a class="btn" href="{{ url_for('loan_edit', lid=loan.id) }}">Edit loan</a>
     <form method="post" action="{{ url_for('loan_archive', lid=loan.id) }}">
       <button class="btn ghost" type="submit">Archive</button>
     </form>

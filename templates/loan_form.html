@@ -1,85 +1,96 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="top"><h2>Enter current loan</h2></div>
+<div class="top"><h2>{{ 'Edit loan' if loan else 'Enter current loan' }}</h2></div>
 <form method="post" class="card form-grid">
   <div><label>Borrower</label>
     <select name="borrower_id" required>
-      {% for b in borrowers %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}
+      {% for b in borrowers %}<option value="{{ b.id }}" {% if loan and loan.borrower_id==b.id %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
     </select>
   </div>
   <div><label>Related application (optional)</label>
     <select name="deal_id">
       <option value="">None</option>
-      {% for d in deals %}<option value="{{ d.id }}">#{{ d.id }} {{ d.address }}</option>{% endfor %}
+      {% for d in deals %}<option value="{{ d.id }}" {% if loan and loan.deal_id==d.id %}selected{% endif %}>#{{ d.id }} {{ d.address }}</option>{% endfor %}
     </select>
   </div>
-  <div><label>Loan number</label><input name="loan_number" placeholder="BC-1002"></div>
+  <div><label>Loan number</label><input name="loan_number" placeholder="BC-1002" value="{{ loan.loan_number if loan else '' }}"></div>
   <div><label>Loan type</label>
     <select name="loan_type" id="loan_type">
-      <option>Fix and Flip</option><option>Transactional Loan</option><option>Gap Loan</option><option>Other</option>
+      {% for t in ['Fix and Flip','Transactional Loan','Gap Loan','Other'] %}
+      <option {% if loan and loan.loan_type==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
     </select>
   </div>
   <div><label>Term</label>
     <select name="term_kind" id="term_kind">
-      <option value="Fixed">Fixed term</option>
-      <option value="Perpetual">Perpetual</option>
+      <option value="Fixed" {% if loan and loan.term_kind!='Perpetual' %}selected{% endif %}>Fixed term</option>
+      <option value="Perpetual" {% if loan and loan.term_kind=='Perpetual' %}selected{% endif %}>Perpetual</option>
     </select>
   </div>
   <div class="span-2"><label>Property / file name</label>
-    <input name="property_address" id="property_address" placeholder="Address, or Unsecured standing loan" required>
+    <input name="property_address" id="property_address" placeholder="Address, or Unsecured standing loan" required value="{{ loan.property_address if loan else '' }}">
     <button class="btn ghost" type="button" id="lookup-prop" style="margin-top:8px">Look up value & photos</button>
     <div id="prop-snap" class="hint" style="margin-top:8px"></div>
   </div>
-  <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01"></div>
-  <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01"></div>
-  <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered"></div>
-  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01"></div>
-  <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10"></div>
-  <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3"></div>
+  <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01" value="{{ loan.purchase_price if loan else '' }}"></div>
+  <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01" value="{{ loan.rehab_cost if loan else '' }}"></div>
+  <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered" value="{{ loan.points if loan else '' }}"></div>
+  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}"></div>
+  <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10" value="{{ loan.rate if loan else '' }}"></div>
+  <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3" value="{{ loan.base_term_months if loan else '' }}"></div>
   <div class="standing-only span-2"><h3>Standing / other loan</h3>
     <p class="hint">Interest only until you send a payoff notice. No flip fields and no extensions.</p>
   </div>
-  <div class="standing-only"><label>Principal</label><input name="standing_principal" id="standing_principal" type="number" step="0.01" placeholder="50000"></div>
-  <div class="standing-only"><label>Flat monthly interest</label><input name="monthly_interest" type="number" step="0.01" placeholder="833.33"></div>
-  <div class="standing-only"><label>First payment amount</label><input name="first_payment_amount" type="number" step="0.01" placeholder="361.11"></div>
-  <div class="standing-only"><label>First payment due</label><input name="first_due" type="date"></div>
+  <div class="standing-only"><label>Principal</label><input name="standing_principal" id="standing_principal" type="number" step="0.01" placeholder="50000" value="{{ loan.original_principal if loan else '' }}"></div>
+  <div class="standing-only"><label>Flat monthly interest</label><input name="monthly_interest" type="number" step="0.01" placeholder="833.33" value="{{ loan.payment_amount if loan else '' }}"></div>
+  <div class="standing-only"><label>First payment amount</label><input name="first_payment_amount" type="number" step="0.01" placeholder="361.11" value="{{ loan.first_payment_amount if loan else '' }}"></div>
+  <div class="standing-only"><label>First payment due</label><input name="first_due" type="date" value="{{ loan.next_payment_due if loan else '' }}"></div>
   <div class="standing-only"><label>Due day each month</label><input name="due_day" type="number" min="1" max="28" value="1"></div>
-  <div class="standing-only"><label>Call notice (days)</label><input name="call_notice_days" type="number" value="90"></div>
+  <div class="standing-only"><label>Call notice (days)</label><input name="call_notice_days" type="number" value="{{ loan.call_notice_days if loan and loan.call_notice_days else 90 }}"></div>
   <div class="standing-only"><label>Secured?</label>
     <select name="unsecured">
-      <option value="1">Unsecured</option>
-      <option value="0">Secured</option>
+      <option value="1" {% if not loan or loan.unsecured %}selected{% endif %}>Unsecured</option>
+      <option value="0" {% if loan and loan.unsecured==0 %}selected{% endif %}>Secured</option>
     </select>
   </div>
-  <div class="standing-only"><label>Payoff notice sent (optional)</label><input name="payoff_notice_on" type="date"></div>
-  <div><label>Start date</label><input name="start_date" id="start_date" type="date"></div>
+  <div class="standing-only"><label>Payoff notice sent (optional)</label><input name="payoff_notice_on" type="date" value="{{ loan.payoff_notice_on if loan else '' }}"></div>
+  <div><label>Start date</label><input name="start_date" id="start_date" type="date" value="{{ loan.start_date if loan else '' }}"></div>
   <div class="flip-only"><label>Maturity date</label><input name="maturity_date" id="maturity_date" type="date" readonly>
     <p class="hint">Filled from start date + base term + every extension.</p>
   </div>
   <div class="flip-only"><label>Payment type</label>
     <select name="payment_type" id="payment_type">
-      <option>Interest only</option><option>Amortizing</option><option>Balloon</option>
+      {% for t in ['Interest only','Amortizing','Balloon'] %}
+      <option {% if loan and loan.payment_type==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
     </select>
   </div>
-  <div><label id="pay-label">Payment amount</label><input name="payment_amount" id="payment_amount" type="number" step="0.01"></div>
+  <div><label id="pay-label">Payment amount</label><input name="payment_amount" id="payment_amount" type="number" step="0.01" value="{{ loan.payment_amount if loan else '' }}"></div>
   <div><label>Frequency</label>
-    <select name="payment_frequency"><option>Monthly</option><option>Interest due at maturity</option></select>
+    <select name="payment_frequency">
+      <option {% if loan and loan.payment_frequency=='Monthly' %}selected{% endif %}>Monthly</option>
+      <option {% if not loan or loan.payment_frequency!='Monthly' %}selected{% endif %}>Interest due at maturity</option>
+    </select>
   </div>
-  <div><label>Next payment due</label><input name="next_payment_due" type="date"></div>
-  <div><label>Late fee</label><input name="late_fee" type="number" step="0.01"></div>
+  <div><label>Next payment due</label><input name="next_payment_due" type="date" value="{{ loan.next_payment_due if loan else '' }}"></div>
+  <div><label>Late fee</label><input name="late_fee" type="number" step="0.01" value="{{ loan.late_fee if loan else '' }}"></div>
   <div><label>Status</label>
     <select name="status">
-      <option>Current</option><option>Closed</option><option>Default</option><option>Paid Off</option>
+      {% for s in ['Current','Closed','Default','Paid Off'] %}
+      <option {% if loan and loan.status==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
     </select>
   </div>
-  <div class="span-2"><label>Notes</label><textarea name="notes"></textarea></div>
+  <div class="span-2"><label>Notes</label><textarea name="notes">{{ loan.notes if loan else '' }}</textarea></div>
   <div class="span-2 flip-only">
     <h3>Extensions</h3>
     <p class="hint">Deferred extensions roll into the balloon / payoff. Up front extensions are collected when applied and stay off the payoff.</p>
     <div id="ext-list"></div>
     <button class="btn ghost" type="button" id="add-ext">Add extension</button>
   </div>
-  <div class="span-2"><button class="btn" type="submit">Save loan</button></div>
+  <div class="span-2"><button class="btn" type="submit">{{ 'Save changes' if loan else 'Save loan' }}</button>
+    {% if loan %}<a class="btn ghost" href="{{ url_for('loan_detail', lid=loan.id) }}">Cancel</a>{% endif %}
+  </div>
 </form>
 <script>
 (function(){
@@ -260,6 +271,12 @@
   syncTotal();
   syncMaturity();
   syncPayLabel();
+  var existing = {{ ext_options|default([])|tojson }};
+  if (existing && existing.length){
+    existing.forEach(function(x){
+      row(x.months || x.ext_months || 1, x.rate || x.ext_rate || 0);
+    });
+  }
   var look = document.getElementById("lookup-prop");
   if (look) look.addEventListener("click", function(){
     var addr = (document.getElementById("property_address")||{}).value || "";
