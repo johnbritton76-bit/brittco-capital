@@ -10095,6 +10095,42 @@ def add_loan_ext_option(lid):
     return redirect(url_for("loan_detail", lid=lid))
 
 
+@app.route("/loans/<int:lid>/remove-option/<int:oid>", methods=["POST"])
+@staff_required
+def remove_loan_ext_option(lid, oid):
+    loan = _loan_or_404(lid)
+    if not loan:
+        return redirect(url_for("loans"))
+    opts = loan_ext_options(lid)
+    used_n = db().execute(
+        "SELECT COUNT(*) AS n FROM extensions WHERE loan_id=? AND (participation_id IS NULL OR participation_id=0)",
+        (lid,),
+    ).fetchone()["n"]
+    target = None
+    for i, opt in enumerate(opts):
+        if opt["id"] == oid:
+            target = (i, opt)
+            break
+    if not target:
+        session["last_invite_note"] = "That extension is not on this loan."
+        return redirect(url_for("loan_detail", lid=lid))
+    idx, opt = target
+    if idx < used_n:
+        session["last_invite_note"] = "That extension was already applied. It cannot be removed from here."
+        return redirect(url_for("loan_detail", lid=lid))
+    db().execute("DELETE FROM loan_ext_options WHERE id=? AND loan_id=?", (oid, lid))
+    mat = refresh_loan_maturity(lid)
+    saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if saved and (row_val(saved, "payment_type") or "") == "Balloon":
+        db().execute("UPDATE loans SET payment_amount=? WHERE id=?", (payoff_amount(saved), lid))
+    db().commit()
+    session["last_invite_note"] = (
+        f"Removed unused {opt['months']} month extension at {money(opt['rate']):g}%. "
+        f"Maturity is now {mat or row_val(saved, 'maturity_date') or 'updated'}."
+    )
+    return redirect(url_for("loan_detail", lid=lid))
+
+
 @app.route("/loans/<int:lid>/extend/<int:pid>", methods=["POST"])
 @staff_required
 def add_extension(lid, pid):
