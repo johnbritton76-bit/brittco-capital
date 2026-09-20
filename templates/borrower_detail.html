@@ -32,6 +32,10 @@
   white-space:normal !important;
 }
 .profile-actions form{margin:0 !important;display:block !important;width:100%}
+
+details.box{margin-top:14px;border:1px solid #d5dee8;border-radius:12px;background:#fff;padding:0 14px 12px}
+details.box>summary{cursor:pointer;padding:12px 0 8px;font-weight:650}
+details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-left:8px}
 @media (max-width:900px){
   .profile-actions{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
 }
@@ -53,31 +57,36 @@
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 {% if invite_url %}<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>{% endif %}
-<div class="card" style="margin-top:14px">
-  <h3>Borrower portal password</h3>
+<details class="box">
+  <summary>Portal password <span class="peek">set login for /portal/login</span></summary>
+
   <p class="hint">They sign in at {{ request.url_root.rstrip('/') }}/portal/login with the email on this file.</p>
   <form method="post" action="{{ url_for('borrower_portal_password', bid=b.id) }}" class="form-grid">
     <div><label>Set or replace password</label><input name="password" type="password" required></div>
     <div><button class="btn" type="submit">Save portal password</button></div>
   </form>
-</div>
+</details>
 {% if complete %}
-<div class="card">
-  <h3>File completeness</h3>
+<details class="box">
+  <summary>File completeness <span class="peek">{{ complete.score }}/100 {% if complete.ok %}ready{% else %}gaps{% endif %}</span></summary>
+
   <p>Score <strong>{{ complete.score }}</strong>/100.
     {% if complete.ok %}<span class="badge good">Ready</span>{% else %}<span class="badge warn">Gaps</span>{% endif %}
   </p>
   {% if complete.missing %}<p>Still needed: {{ complete.missing|join(', ') }}</p>{% endif %}
   {% if complete.warnings %}<p class="hint">{{ complete.warnings|join(' ') }}</p>{% endif %}
-</div>
+</details>
 {% endif %}
 {% if session.get('last_form_note') %}
-<div class="card"><p>{{ session.pop('last_form_note') }}</p>
+<details class="box" open>
+  <summary>Form just sent</summary>
+  <p>{{ session.pop('last_form_note') }}</p>
 {% if session.get('last_form_url') %}<p><a href="{{ session.get('last_form_url') }}">Open form link</a></p>{% endif %}
-</div>
+</details>
 {% endif %}
-<div class="card" style="margin-top:14px">
-  <h3>Notary forms</h3>
+<details class="box">
+  <summary>Notary forms <span class="peek">{{ packets|length }} sent</span></summary>
+
   <p class="hint">Check every form you need. Profile name, address, phone, email, entity, and the latest deal property/amount are filled in automatically. The borrower can still edit before printing.</p>
   <form method="post" action="{{ url_for('send_borrower_form', bid=b.id) }}">
     {% for key, spec in form_defs.items() %}
@@ -103,15 +112,16 @@
     <tr><td colspan="4">No forms sent yet.</td></tr>
     {% endfor %}
   </table>
-</div>
+</details>
 <div class="grid cards">
   <div class="card"><h3>Entity</h3><div>{{ b.entity_type }} {% if b.entity_name %}· {{ b.entity_name }}{% endif %}{% if b.ein %}<br>EIN {{ b.ein }}{% endif %}</div></div>
   <div class="card"><h3>Contact</h3><div>{{ b.email }}<br>Mobile {{ b.phone or "—" }}<br>Work {{ b.work_phone or "—" }}</div></div>
   <div class="card"><h3>Credit</h3><div class="n">{{ b.credit_score or "—" }}</div></div>
   <div class="card"><h3>SSN</h3><div>{{ ssn_mask }}</div><div class="hint">Full number only on Profile</div></div>
 </div>
-<div class="card" style="margin-top:14px">
-  <h3>Demographics</h3>
+<details class="box">
+  <summary>Address and family <span class="peek">{{ b.city or b.address or "add address" }}</span></summary>
+
   <p>
     {{ b.address or "—" }}{% if b.city %}, {{ b.city }} {{ b.state }} {{ b.zip }}{% endif %}<br>
     {{ b.own_or_rent or "Own/rent not set" }}
@@ -123,9 +133,10 @@
   {% if b.years_at_address and b.years_at_address < 2 and b.prev_address %}
   <p class="hint">Previous address (under 2 years): {{ b.prev_address }}, {{ b.prev_city }} {{ b.prev_state }} {{ b.prev_zip }}</p>
   {% endif %}
-</div>
-<div class="card" style="margin-top:14px">
-  <h3>Employment</h3>
+</details>
+<details class="box">
+  <summary>Employment <span class="peek">{{ b.employer or "not set" }}</span></summary>
+
   <p>
     {{ b.occupation or "—" }} at {{ b.employer or "—" }}
     {% if b.years_employed %} · {{ b.years_employed }} years{% endif %}<br>
@@ -136,10 +147,11 @@
     {% if b.liquid_assets %}<br>Liquid assets ${{ "{:,.0f}".format(b.liquid_assets) }}{% endif %}
     {% if b.credit_events %}<br>Credit events: {{ b.credit_events }}{% endif %}
   </p>
-</div>
-{% if b.notes %}<div class="card" style="margin-top:14px"><h3>Notes</h3><p>{{ b.notes }}</p></div>{% endif %}
-<div class="card" style="margin-top:14px">
-  <h3>ACH / bank for collections</h3>
+</details>
+{% if b.notes %}<details class="box"><summary>Notes</summary><p>{{ b.notes }}</p></details>{% endif %}
+<details class="box">
+  <summary>ACH / bank <span class="peek">{{ b.bank_name or "not on file" }}</span></summary>
+
   <p class="hint">Save the bank details here, then open the processor to set the payment schedule.</p>
   <form method="post" action="{{ url_for('borrower_ach', bid=b.id) }}" class="form-grid">
     <div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name or '' }}"></div>
@@ -173,10 +185,10 @@
     {% endfor %}
   </table>
   {% endif %}
-</div>
+</details>
+<details class="box">
+  <summary>Credit pulls <span class="peek">{{ pulls|length }} on file</span></summary>
 
-<div class="card" style="margin-top:14px">
-  <h3>Credit pull history</h3>
   <table class="table">
     <tr><th>When</th><th>Type</th><th>Bureau</th><th>Score</th><th>Status</th></tr>
     {% for p in pulls %}
@@ -191,9 +203,10 @@
     <tr><td colspan="5">No pulls yet. Use Soft credit pull — you will be asked to confirm.</td></tr>
     {% endfor %}
   </table>
-</div>
-<div class="card" style="margin-top:14px">
-  <h3>Documents</h3>
+</details>
+<details class="box">
+  <summary>Documents <span class="peek">folders and uploads</span></summary>
+
   <form method="post" action="{{ url_for('borrower_clean_files') }}" style="margin:0 0 10px">
     <input type="hidden" name="next" value="{{ url_for('borrower_detail', bid=b.id) }}">
     <button class="btn" type="submit">Clean misplaced and duplicate files</button>
@@ -340,9 +353,10 @@
     <p class="hint">No files uploaded yet.</p>
     {% endfor %}
   </details>
-</div>
-<div class="card" style="margin-top:14px">
-  <h3>Loan history</h3>
+</details>
+<details class="box">
+  <summary>Loan history <span class="peek">{{ deals|length }} file(s)</span></summary>
+
   <table class="table">
     <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
     {% for d in deals %}
@@ -354,10 +368,11 @@
     </tr>
     {% endfor %}
   </table>
-</div>
+</details>
 <script src="{{ url_for('static', filename='drop-files.js') }}"></script>
-<div class="card" style="margin-top:24px">
-  <h3>Remove borrower</h3>
+<details class="box">
+  <summary>Remove borrower</summary>
+
   {% if delete_warn %}
   <p><strong>This borrower is assigned to a loan. Removing the borrower will remove the loan.</strong></p>
   <ul>
@@ -377,5 +392,5 @@
     <button class="btn ghost" type="submit">Remove borrower</button>
   </form>
   {% endif %}
-</div>
+</details>
 {% endblock %}
