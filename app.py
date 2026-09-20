@@ -6846,6 +6846,27 @@ def borrower_detail(bid):
     deals = deal_rows(
         db().execute("SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (bid,)).fetchall()
     )
+    scope = borrower_statement_ids(b)
+    qmarks = ",".join("?" * len(scope))
+    raw_loans = db().execute(
+        f"""SELECT l.*, b.name AS borrower_name
+            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
+            WHERE l.borrower_id IN ({qmarks})
+              AND COALESCE(l.loan_number,'') != 'BC-TX-10W96'
+            ORDER BY l.id DESC""",
+        scope,
+    ).fetchall()
+    current_loans, past_loans = [], []
+    seen = set()
+    for ln in raw_loans:
+        if ln["id"] in seen:
+            continue
+        seen.add(ln["id"])
+        st = (row_val(ln, "status") or "").lower()
+        if st in ("paid off", "closed", "termed", "sold", "written off"):
+            past_loans.append(ln)
+        else:
+            current_loans.append(ln)
     pulls = db().execute(
         "SELECT * FROM credit_pulls WHERE borrower_id=? ORDER BY id DESC", (bid,)
     ).fetchall()
@@ -6856,6 +6877,8 @@ def borrower_detail(bid):
         flash=session.pop("last_invite_note", None),
         b=b,
         deals=deals,
+        current_loans=current_loans,
+        past_loans=past_loans,
         pulls=pulls,
         ssn_mask=mask_ssn(b["ssn"] if "ssn" in b.keys() else ""),
         ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"),
