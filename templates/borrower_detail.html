@@ -10,8 +10,13 @@
     <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
     <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
     <a class="btn ghost" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
+    <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}" style="display:inline">
+      <button class="btn" type="submit">Email welcome / complete profile</button>
+    </form>
   </div>
 </div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+{% if invite_url %}<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>{% endif %}
 <div class="card" style="margin-top:14px">
   <h3>Borrower portal password</h3>
   <p class="hint">They sign in at {{ request.url_root.rstrip('/') }}/portal/login with the email on this file.</p>
