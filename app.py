@@ -8030,11 +8030,14 @@ def accept_invite(token):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (inv["borrower_id"],)).fetchone()
     if request.method == "POST":
         if not request.form.get("password"):
+            _ready, missing = profile_ready(b)
             return render_template(
                 "invite_accept.html",
                 error="Please choose a password.",
                 inv=inv,
                 b=b,
+                missing=missing,
+                done=False,
             )
         save_borrower_from_form(request.form, bid=b["id"], existing=b)
         db().execute(
@@ -8042,10 +8045,30 @@ def accept_invite(token):
             (datetime.now().isoformat(timespec="minutes"), inv["id"]),
         )
         db().commit()
+        b = db().execute("SELECT * FROM borrowers WHERE id=?", (b["id"],)).fetchone()
+        ready, missing = profile_ready(b)
         session.clear()
         session["borrower_id"] = b["id"]
-        return redirect(url_for("portal_home", msg="Welcome. Finish any remaining required fields, then you can apply."))
-    return render_template("invite_accept.html", error=None, inv=inv, b=b)
+        if ready:
+            return render_template(
+                "invite_accept.html",
+                error=None,
+                inv=inv,
+                b=b,
+                missing=[],
+                done=True,
+            )
+        return render_template(
+            "invite_accept.html",
+            error=None,
+            inv=inv,
+            b=b,
+            missing=missing,
+            msg="Saved. Please finish the highlighted fields.",
+            done=False,
+        )
+    _ready, missing = profile_ready(b)
+    return render_template("invite_accept.html", error=None, inv=inv, b=b, missing=missing, done=False)
 
 
 @app.route("/portal/login", methods=["GET", "POST"])
