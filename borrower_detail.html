@@ -1,15 +1,43 @@
 {% extends "base.html" %}
 {% block body %}
+<style>
+.profile-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:stretch;max-width:640px}
+.profile-actions .btn{
+  min-width:148px;
+  height:40px;
+  margin:0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  box-sizing:border-box;
+}
+.profile-actions form{margin:0}
+</style>
 <div class="top">
   <div>
     <div class="tag">Borrower profile</div>
     <h2>{{ b.name }}</h2>
   </div>
-  <div>
-    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
-    <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
-    <a class="btn" href="{{ url_for('deal_new', borrower_id=b.id) }}">New deal for this borrower</a>
+  <div class="profile-actions">
+    <a class="btn" href="{{ url_for('borrower_edit', bid=b.id) }}">Edit profile</a>
+    <a class="btn" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft pull</a>
+    <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
+    <a class="btn" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">Monthly statement</a>
+    <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}">
+      <button class="btn" type="submit">Email welcome</button>
+    </form>
   </div>
+</div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+{% if invite_url %}<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Borrower portal password</h3>
+  <p class="hint">They sign in at {{ request.url_root.rstrip('/') }}/portal/login with the email on this file.</p>
+  <form method="post" action="{{ url_for('borrower_portal_password', bid=b.id) }}" class="form-grid">
+    <div><label>Set or replace password</label><input name="password" type="password" required></div>
+    <div><button class="btn" type="submit">Save portal password</button></div>
+  </form>
 </div>
 {% if complete %}
 <div class="card">
@@ -292,7 +320,7 @@
   </details>
 </div>
 <div class="card" style="margin-top:14px">
-  <h3>Deal history</h3>
+  <h3>Loan history</h3>
   <table class="table">
     <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
     {% for d in deals %}
