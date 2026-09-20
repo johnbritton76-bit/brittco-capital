@@ -1,33 +1,51 @@
 {% extends "base.html" %}
 {% block body %}
 <style>
-.profile-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:stretch;max-width:640px}
-.profile-actions .btn{
-  min-width:148px;
-  height:40px;
-  margin:0;
-  display:inline-flex;
+.profile-actions{
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:10px;
+  margin:4px 0 22px;
+}
+.profile-actions a,
+.profile-actions button{
+  display:flex !important;
   align-items:center;
   justify-content:center;
-  text-align:center;
+  height:44px;
+  width:100%;
+  margin:0 !important;
+  padding:0 8px !important;
   box-sizing:border-box;
+  border:0 !important;
+  border-radius:10px !important;
+  background:#1f7fd4 !important;
+  color:#fff !important;
+  font-weight:600 !important;
+  font-size:14px !important;
+  text-decoration:none !important;
+  cursor:pointer;
+  white-space:nowrap;
 }
-.profile-actions form{margin:0}
+.profile-actions form{margin:0;display:block}
+@media (max-width:900px){
+  .profile-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 </style>
 <div class="top">
   <div>
     <div class="tag">Borrower profile</div>
     <h2>{{ b.name }}</h2>
   </div>
-  <div class="profile-actions">
-    <a class="btn" href="{{ url_for('borrower_edit', bid=b.id) }}">Edit profile</a>
-    <a class="btn" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft pull</a>
-    <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
-    <a class="btn" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">Monthly statement</a>
-    <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}">
-      <button class="btn" type="submit">Email welcome</button>
-    </form>
-  </div>
+</div>
+<div class="profile-actions">
+  <a href="{{ url_for('borrower_edit', bid=b.id) }}">Edit profile</a>
+  <a href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft pull</a>
+  <a href="{{ url_for('loan_new') }}">Enter a loan</a>
+  <a href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">Monthly statement</a>
+  <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}">
+    <button type="submit">Email welcome</button>
+  </form>
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 {% if invite_url %}<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>{% endif %}
