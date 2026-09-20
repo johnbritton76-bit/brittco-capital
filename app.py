@@ -4114,6 +4114,49 @@ def public_base():
     return (os.environ.get("PUBLIC_BASE_URL") or request.url_root or "").rstrip("/")
 
 
+def borrower_welcome_link(b):
+    token = secrets.token_urlsafe(24)
+    email = (row_val(b, "email") or "").strip().lower()
+    phone = row_val(b, "phone") or ""
+    name = row_val(b, "name") or "there"
+    db().execute(
+        """INSERT INTO invites (token, kind, borrower_id, name, email, phone, channel, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (token, "borrower", b["id"], name, email, phone, "email", datetime.now().isoformat(timespec="minutes")),
+    )
+    try:
+        db().execute("UPDATE borrowers SET complete_token=? WHERE id=?", (token, b["id"]))
+    except sqlite3.Error:
+        pass
+    db().commit()
+    return public_base() + url_for("accept_invite", token=token)
+
+
+def send_borrower_welcome(b):
+    email = (row_val(b, "email") or "").strip()
+    if not email or "@pending.brittco" in email:
+        return False, None, "This borrower needs a real email first."
+    first = (row_val(b, "name") or "there").split()[0]
+    link = borrower_welcome_link(b)
+    body = (
+        f"Hi {first},\n\n"
+        "I hope you are doing well. Brittco Capital is rolling out a new system to make borrowing "
+        "with us easier — faster underwriting, cleaner files, and a quicker path to funding.\n\n"
+        "Would you take a few minutes to complete your profile and choose a login and password? "
+        "That gives us what we need so the next file can move without extra back-and-forth.\n\n"
+        f"Complete your profile here:\n{link}\n\n"
+        "If anything in the form is unclear, reply to this email and we will help.\n\n"
+        "Thank you for trusting Brittco Capital. We are glad to have you with us.\n\n"
+        "Warmly,\n"
+        "The Brittco Capital team\n"
+    )
+    try:
+        sent = send_mail(email, "A quicker way to work with Brittco Capital", body)
+    except Exception:
+        sent = False
+    return bool(sent), link, None
+
+
 def investor_portal_url():
     return public_base() + "/investor/login"
 
@@ -7638,6 +7681,53 @@ def borrower_edit(bid):
     return render_template(
         "borrower_form.html", title="Edit borrower", nav="borrowers", b=b
     )
+
+
+@app.route("/borrowers/<int:bid>/welcome", methods=["POST"])
+@staff_required
+def borrower_send_welcome(bid):
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return redirect(url_for("borrowers"))
+    sent, link, err = send_borrower_welcome(b)
+    if err:
+        session["last_invite_note"] = err
+    elif sent:
+        session["last_invite_note"] = f"Welcome email sent to {b['email']}."
+        session["last_invite_url"] = link
+    else:
+        session["last_invite_note"] = "Email did not go out. Use the link below if you need to text or forward it."
+        session["last_invite_url"] = link
+    return redirect(url_for("borrower_detail", bid=bid))
+
+
+@app.route("/borrowers/welcome-selected", methods=["POST"])
+@staff_required
+def borrowers_send_welcome():
+    ids = request.form.getlist("borrower_id")
+    sent_n = 0
+    last_link = None
+    for raw in ids:
+        try:
+            bid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+        if not b:
+            continue
+        sent, link, _err = send_borrower_welcome(b)
+        if link:
+            last_link = link
+        if sent:
+            sent_n += 1
+    session["last_invite_note"] = (
+        f"Welcome email sent to {sent_n} borrower(s)."
+        if ids
+        else "Check the borrowers first, then click Send welcome / complete-profile email."
+    )
+    if last_link:
+        session["last_invite_url"] = last_link
+    return redirect(url_for("borrowers"))
 
 
 def wipe_borrower(bid):
