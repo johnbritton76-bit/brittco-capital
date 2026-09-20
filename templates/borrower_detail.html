@@ -354,18 +354,37 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     {% endfor %}
   </details>
 </details>
-<details class="box">
-  <summary>Loan history <span class="peek">{{ deals|length }} file(s)</span></summary>
-
+<details class="box" open>
+  <summary>Loans <span class="peek">{{ current_loans|length }} current · {{ past_loans|length }} past</span></summary>
+  <h4>Current</h4>
   <table class="table">
-    <tr><th>Type</th><th>Property</th><th>Loan</th><th>Status</th></tr>
-    {% for d in deals %}
+    <tr><th>Loan #</th><th>Type</th><th>Property</th><th>Balance</th><th>Matures</th><th>Status</th></tr>
+    {% for l in current_loans %}
     <tr>
-      <td><a href="{{ url_for('deal_detail', did=d.id) }}">{{ d.loan_type }}</a></td>
-      <td>{{ d.address }}</td>
-      <td>${{ "{:,.0f}".format(d.loan_amount or 0) }}</td>
-      <td>{{ d.status }}</td>
+      <td><a href="{{ url_for('loan_detail', lid=l.id) }}">{{ l.loan_number or l.id }}</a></td>
+      <td>{{ l.loan_type }}</td>
+      <td>{{ l.property_address }}</td>
+      <td>${{ "{:,.0f}".format(l.current_balance or l.original_principal or 0) }}</td>
+      <td>{{ l.maturity_date or "—" }}</td>
+      <td>{{ l.status }}</td>
     </tr>
+    {% else %}
+    <tr><td colspan="6">No current loans on this file.</td></tr>
+    {% endfor %}
+  </table>
+  <h4 style="margin-top:14px">Past</h4>
+  <table class="table">
+    <tr><th>Loan #</th><th>Type</th><th>Property</th><th>Amount</th><th>Status</th></tr>
+    {% for l in past_loans %}
+    <tr>
+      <td><a href="{{ url_for('loan_detail', lid=l.id) }}">{{ l.loan_number or l.id }}</a></td>
+      <td>{{ l.loan_type }}</td>
+      <td>{{ l.property_address }}</td>
+      <td>${{ "{:,.0f}".format(l.original_principal or 0) }}</td>
+      <td>{{ l.status }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No past loans on this file.</td></tr>
     {% endfor %}
   </table>
 </details>
