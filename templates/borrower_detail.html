@@ -1,19 +1,55 @@
 {% extends "base.html" %}
 {% block body %}
+<style>
+.profile-actions{
+  display:grid !important;
+  grid-template-columns:repeat(5,minmax(0,1fr)) !important;
+  gap:10px !important;
+  margin:0 0 22px !important;
+  width:100%;
+}
+.profile-actions a,
+.profile-actions button{
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  min-height:48px !important;
+  height:auto !important;
+  width:100% !important;
+  margin:0 !important;
+  padding:8px 10px !important;
+  box-sizing:border-box !important;
+  border:0 !important;
+  border-radius:10px !important;
+  background:#1f7fd4 !important;
+  color:#fff !important;
+  font-weight:600 !important;
+  font-size:13px !important;
+  line-height:1.2 !important;
+  text-decoration:none !important;
+  text-align:center !important;
+  cursor:pointer;
+  white-space:normal !important;
+}
+.profile-actions form{margin:0 !important;display:block !important;width:100%}
+@media (max-width:900px){
+  .profile-actions{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+}
+</style>
 <div class="top">
   <div>
     <div class="tag">Borrower profile</div>
     <h2>{{ b.name }}</h2>
   </div>
-  <div>
-    <a class="btn ghost" href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
-    <a class="btn ghost" href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
-    <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
-    <a class="btn ghost" href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
-    <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}" style="display:inline">
-      <button class="btn" type="submit">Email welcome / complete profile</button>
-    </form>
-  </div>
+</div>
+<div class="profile-actions">
+  <a href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
+  <a href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
+  <a href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
+  <a href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
+  <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}">
+    <button type="submit">Email welcome / complete profile</button>
+  </form>
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 {% if invite_url %}<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>{% endif %}
