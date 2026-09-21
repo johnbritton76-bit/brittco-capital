@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Super admin</div>
+    <h2>Staff logins</h2>
+  </div>
+</div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+<p class="hint">Only a super admin sees this page. Staff can use the dashboard. Super admins can add people, reset passwords, and revoke access.</p>
+
+<div class="card">
+  <h3>Add or invite staff</h3>
+  <form method="post" action="{{ url_for('staff_add') }}" class="form-grid">
+    <div><label>Name</label><input name="name" required></div>
+    <div><label>Email</label><input name="email" type="email" required></div>
+    <div><label>Password</label><input name="password" placeholder="Leave blank to generate"></div>
+    <div><label>Role</label>
+      <select name="role">
+        <option value="staff">Staff</option>
+        <option value="super">Super admin</option>
+      </select>
+    </div>
+    <div class="span-2">
+      <label><input type="checkbox" name="send_invite" value="1" checked> Email them the login link and password</label>
+    </div>
+    <div><button class="btn" type="submit">Save staff login</button></div>
+  </form>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Current staff</h3>
+  <table class="table">
+    <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Password</th><th></th></tr>
+    {% for p in people %}
+    <tr>
+      <td>{{ p.name }}{% if p.id==me %} <span class="hint">(you)</span>{% endif %}</td>
+      <td>{{ p.email }}</td>
+      <td>
+        <form method="post" action="{{ url_for('staff_set_role', sid=p.id) }}">
+          <select name="role" onchange="this.form.submit()">
+            <option value="staff" {% if p.role!='super' %}selected{% endif %}>Staff</option>
+            <option value="super" {% if p.role=='super' %}selected{% endif %}>Super admin</option>
+          </select>
+        </form>
+      </td>
+      <td>{% if p.active==0 %}<span class="badge bad">Revoked</span>{% else %}<span class="badge good">Active</span>{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('staff_set_password', sid=p.id) }}">
+          <input name="password" placeholder="New password" style="width:140px">
+          <button class="btn ghost" type="submit">Set</button>
+        </form>
+      </td>
+      <td>
+        {% if p.id!=me %}
+          {% if p.active==0 %}
+          <form method="post" action="{{ url_for('staff_restore', sid=p.id) }}"><button class="btn" type="submit">Restore</button></form>
+          {% else %}
+          <form method="post" action="{{ url_for('staff_revoke', sid=p.id) }}" onsubmit="return confirm('Revoke this login?');"><button class="btn ghost" type="submit">Revoke</button></form>
+          {% endif %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

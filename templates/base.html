@@ -22,6 +22,9 @@
       <a href="{{ url_for('investors') }}" class="{{ 'active' if nav=='investors' else '' }}">Investors</a>
       <a href="{{ url_for('accounting') }}" class="{{ 'active' if nav=='accounting' else '' }}">Accounting</a>
       <a href="{{ url_for('admin_forms') }}" class="{{ 'active' if nav=='forms' else '' }}">Forms</a>
+      {% if is_super %}
+      <a href="{{ url_for('staff_desk') }}" class="{{ 'active' if nav=='staff' else '' }}">Staff</a>
+      {% endif %}
       <a href="{{ url_for('logout') }}">Log out</a>
     </nav>
   </aside>
