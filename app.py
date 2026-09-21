@@ -4184,6 +4184,66 @@ def borrower_welcome_link(b):
     return public_base() + url_for("accept_invite", token=token)
 
 
+def investor_welcome_link(inv):
+    token = secrets.token_urlsafe(24)
+    try:
+        cols = [r[1] for r in db().execute("PRAGMA table_info(invites)").fetchall()]
+        if "investor_id" not in cols:
+            db().execute("ALTER TABLE invites ADD COLUMN investor_id INTEGER")
+    except sqlite3.Error:
+        pass
+    email = (row_val(inv, "email") or "").strip().lower()
+    name = row_val(inv, "name") or "Investor"
+    try:
+        db().execute(
+            """INSERT INTO invites (token, kind, investor_id, name, email, phone, channel, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                token,
+                "investor",
+                inv["id"],
+                name,
+                email,
+                row_val(inv, "phone") or "",
+                "email",
+                datetime.now().isoformat(timespec="minutes"),
+            ),
+        )
+    except sqlite3.Error:
+        db().execute(
+            """INSERT INTO invites (token, kind, borrower_id, name, email, phone, channel, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (token, "investor", inv["id"], name, email, row_val(inv, "phone") or "", "email", datetime.now().isoformat(timespec="minutes")),
+        )
+    db().commit()
+    return public_base() + url_for("investor_complete", token=token)
+
+
+def send_investor_welcome(inv):
+    email = (row_val(inv, "email") or "").strip()
+    if not email:
+        return False, None, "Add an email on the investor profile first."
+    first = (row_val(inv, "name") or "there").split()[0]
+    link = investor_welcome_link(inv)
+    body = (
+        f"Hi {first},\n\n"
+        "I hope you are doing well. Brittco Capital is rolling out a new system to make investing "
+        "with us clearer and easier. You will be able to track the money you have in loans and "
+        "see detailed accounting — profit, Nate’s fee, and what is still working — in one place.\n\n"
+        "Would you take a few minutes to complete your investor profile and choose a login and password?\n\n"
+        f"Complete your profile here:\n{link}\n\n"
+        "If anything is unclear, reply to this email and we will help.\n\n"
+        "Thank you for trusting Brittco Capital.\n\n"
+        "Warmly,\n"
+        "The Brittco Capital team\n"
+    )
+    try:
+        sent = send_mail(email, "A clearer way to follow your Brittco investments", body)
+    except Exception:
+        sent = False
+    return bool(sent), link, None
+
+
 def send_borrower_welcome(b):
     email = (row_val(b, "email") or "").strip()
     if not email or "@pending.brittco" in email:
@@ -4557,6 +4617,20 @@ def apply_packet_data(b, deal, extra):
         "trustee_address": extra.get("title_address") or data.get("trustee_address"),
     })
     return data
+
+
+def super_notify_list():
+    emails = []
+    try:
+        ensure_staff_roles()
+        for r in db().execute(
+            "SELECT email FROM staff WHERE COALESCE(role,'')='super' AND COALESCE(active,1)=1"
+        ).fetchall():
+            if r["email"]:
+                emails.append(r["email"])
+    except sqlite3.Error:
+        pass
+    return emails or staff_notify_list()
 
 
 def staff_notify_list():
@@ -5822,11 +5896,18 @@ def logout():
 def staff_desk():
     ensure_staff_roles()
     rows = db().execute("SELECT * FROM staff ORDER BY id").fetchall()
+    ensure_feature_requests()
+    reqs = db().execute(
+        """SELECT f.*, i.name AS investor_name, i.email AS investor_email
+           FROM feature_requests f LEFT JOIN investors i ON i.id=f.investor_id
+           ORDER BY f.id DESC LIMIT 50"""
+    ).fetchall()
     return render_template(
         "staff.html",
         title="Staff logins",
         nav="staff",
         people=rows,
+        requests=reqs,
         flash=session.pop("last_invite_note", None),
         me=session.get("staff_id"),
     )
@@ -10351,6 +10432,53 @@ def investor_capital(iid):
     return redirect(url_for("investor_detail", iid=iid))
 
 
+@app.route("/investors/<int:iid>/welcome", methods=["POST"])
+@staff_required
+def investor_send_welcome(iid):
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    if not inv:
+        return redirect(url_for("investors"))
+    sent, link, err = send_investor_welcome(inv)
+    if err:
+        session["last_invite_note"] = err
+    elif sent:
+        session["last_invite_note"] = f"Welcome email sent to {inv['email']}."
+        session["last_invite_url"] = link
+    else:
+        session["last_invite_note"] = "Email did not go out. Use the link if you need to text or forward it."
+        session["last_invite_url"] = link
+    return redirect(url_for("investor_detail", iid=iid))
+
+
+@app.route("/investors/welcome-selected", methods=["POST"])
+@staff_required
+def investors_send_welcome():
+    ids = request.form.getlist("investor_id")
+    sent_n = 0
+    last_link = None
+    for raw in ids:
+        try:
+            iid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+        if not inv:
+            continue
+        sent, link, _err = send_investor_welcome(inv)
+        if link:
+            last_link = link
+        if sent:
+            sent_n += 1
+    session["last_invite_note"] = (
+        f"Welcome email sent to {sent_n} investor(s)."
+        if ids
+        else "Check investors first, then send the welcome email."
+    )
+    if last_link:
+        session["last_invite_url"] = last_link
+    return redirect(url_for("investors"))
+
+
 @app.route("/investors/<int:iid>/send-login", methods=["POST"])
 @staff_required
 def investor_send_login(iid):
@@ -10794,6 +10922,47 @@ def loan_delete(lid):
     return redirect(url_for("loans"))
 
 
+@app.route("/investor/complete/<token>", methods=["GET", "POST"])
+def investor_complete(token):
+    inv_row = db().execute("SELECT * FROM invites WHERE token=? AND kind='investor'", (token,)).fetchone()
+    if not inv_row:
+        return render_template("investor_complete.html", error="This link is not valid. Ask Brittco to send a new one.", inv=None)
+    iid = row_val(inv_row, "investor_id") or row_val(inv_row, "borrower_id")
+    person = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone()
+    if not person:
+        return render_template("investor_complete.html", error="This investor file was not found.", inv=None)
+    if request.method == "POST":
+        if not request.form.get("password"):
+            return render_template(
+                "investor_complete.html",
+                error="Please choose a portal password.",
+                inv=person,
+            )
+        save_investor_profile(request.form, person["id"], person)
+        db().execute(
+            "UPDATE invites SET used_at=? WHERE id=?",
+            (datetime.now().isoformat(timespec="minutes"), inv_row["id"]),
+        )
+        db().commit()
+        session.clear()
+        session["investor_id"] = person["id"]
+        return redirect(url_for("investor_portal"))
+    return render_template("investor_complete.html", error=None, inv=person)
+
+
+def ensure_feature_requests():
+    db().execute(
+        """CREATE TABLE IF NOT EXISTS feature_requests (
+            id INTEGER PRIMARY KEY,
+            investor_id INTEGER,
+            body TEXT,
+            created_at TEXT,
+            status TEXT
+        )"""
+    )
+    db().commit()
+
+
 @app.route("/investor/login", methods=["GET", "POST"])
 def investor_login():
     error = None
@@ -10852,7 +11021,34 @@ def investor_portal():
         account_kinds=ACCOUNT_KINDS,
         help_q=help_q,
         help_a=help_a,
+        feature_flash=request.args.get("feat"),
     )
+
+
+@app.route("/investor/feature", methods=["POST"])
+@investor_required
+def investor_feature_request():
+    ensure_feature_requests()
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        return redirect(url_for("investor_portal", feat="Please type the function you would like."))
+    db().execute(
+        "INSERT INTO feature_requests (investor_id, body, created_at, status) VALUES (?,?,?,?)",
+        (inv["id"], body, datetime.now().isoformat(timespec="minutes"), "New"),
+    )
+    db().commit()
+    note = (
+        f"Feature request from investor {inv['name']} ({inv['email'] or 'no email'}):\n\n"
+        f"{body}\n\n"
+        "Open Staff → feature requests after the next deploy, or reply to the investor."
+    )
+    for em in super_notify_list():
+        try:
+            send_mail(em, f"Investor function request — {inv['name']}", note)
+        except Exception:
+            pass
+    return redirect(url_for("investor_portal", feat="Thank you. Brittco staff received your request."))
 
 
 @app.route("/investor/returns", methods=["GET", "POST"])
