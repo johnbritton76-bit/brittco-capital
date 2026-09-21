@@ -2072,11 +2072,59 @@ try:
 except Exception:
     pass
     
+def ensure_staff_roles():
+    try:
+        cols = [r[1] for r in db().execute("PRAGMA table_info(staff)").fetchall()]
+        if "role" not in cols:
+            db().execute("ALTER TABLE staff ADD COLUMN role TEXT")
+        if "active" not in cols:
+            db().execute("ALTER TABLE staff ADD COLUMN active INTEGER")
+        db().execute("UPDATE staff SET role='super' WHERE id=1 AND COALESCE(role,'')=''")
+        db().execute("UPDATE staff SET role='staff' WHERE COALESCE(role,'')=''")
+        db().execute("UPDATE staff SET active=1 WHERE active IS NULL")
+        db().commit()
+    except sqlite3.Error:
+        pass
+
+
+def current_staff():
+    sid = session.get("staff_id")
+    if not sid:
+        return None
+    ensure_staff_roles()
+    return db().execute("SELECT * FROM staff WHERE id=?", (sid,)).fetchone()
+
+
+def staff_is_super(row=None):
+    row = row or current_staff()
+    if not row:
+        return False
+    role = (row_val(row, "role") or "").lower()
+    return role == "super" or int(row["id"] or 0) == 1
+
+
 def staff_required(fn):
     @wraps(fn)
     def wrap(*a, **k):
         if not session.get("staff_id"):
             return redirect(url_for("login"))
+        row = current_staff()
+        if not row or int(row_val(row, "active") if row_val(row, "active") is not None else 1) == 0:
+            session.clear()
+            return redirect(url_for("login"))
+        return fn(*a, **k)
+
+    return wrap
+
+
+def super_required(fn):
+    @wraps(fn)
+    def wrap(*a, **k):
+        if not session.get("staff_id"):
+            return redirect(url_for("login"))
+        if not staff_is_super():
+            session["last_invite_note"] = "Only a super admin can manage staff logins."
+            return redirect(url_for("dashboard"))
         return fn(*a, **k)
 
     return wrap
@@ -2085,7 +2133,7 @@ def staff_required(fn):
 @app.context_processor
 def inject_new_apps():
     if not session.get("staff_id"):
-        return {"new_apps": [], "new_leads": []}
+        return {"new_apps": [], "new_leads": [], "is_super": False}
     try:
         rows = db().execute(
             """SELECT d.id, d.address, b.name AS borrower_name
@@ -2104,9 +2152,13 @@ def inject_new_apps():
             ).fetchall()
         except sqlite3.Error:
             leads = []
-        return {"new_apps": [dict(r) for r in rows], "new_leads": [dict(r) for r in leads]}
+        return {
+            "new_apps": [dict(r) for r in rows],
+            "new_leads": [dict(r) for r in leads],
+            "is_super": staff_is_super(),
+        }
     except sqlite3.Error:
-        return {"new_apps": [], "new_leads": []}
+        return {"new_apps": [], "new_leads": [], "is_super": staff_is_super()}
 
 
 def ensure_closing_list(deal_id):
@@ -5392,11 +5444,109 @@ def match_help_item(question):
     return best
 
 
+def grok_api_key():
+    return (os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY") or "").strip()
+
+
+def ask_grok(system, user, brief):
+    key = grok_api_key()
+    if not key:
+        return None
+    model = os.environ.get("XAI_MODEL") or "grok-3"
+    payload = json.dumps(
+        {
+            "model": model,
+            "temperature": 0.5,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"{brief}\n\nQuestion:\n{user}"},
+            ],
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.x.ai/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return (
+            (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+            .strip()
+        )
+    except Exception:
+        return None
+
+
+def borrower_help_brief(borrower, deals, loans, missing):
+    name = row_val(borrower, "name") or "the borrower"
+    lines = [
+        f"Borrower first name: {(name or '').split()[0]}",
+        f"Email: {row_val(borrower, 'email') or '—'}",
+        f"Profile gaps: {', '.join(missing or []) or 'none listed'}",
+    ]
+    for ln in loans or []:
+        lines.append(
+            "Loan "
+            f"{row_val(ln, 'loan_number') or ln['id']}: {row_val(ln, 'loan_type') or ''} "
+            f"status {row_val(ln, 'status') or '—'} "
+            f"balance ${money(row_val(ln, 'current_balance') or row_val(ln, 'original_principal')):,.0f} "
+            f"matures {row_val(ln, 'maturity_date') or '—'}"
+        )
+    if not loans:
+        lines.append("No loans on this portal file yet.")
+    return "\n".join(lines)
+
+
+def investor_help_brief(inv, books):
+    name = row_val(inv, "name") or "the investor"
+    lines = [
+        f"Investor first name: {(name or '').split()[0]}",
+        f"Still in loans: ${money((books or {}).get('still_out')):,.0f}",
+        f"Year profit: ${money((books or {}).get('ytd_profit')):,.2f}",
+        f"All-time profit: ${money((books or {}).get('all_profit')):,.2f}",
+        f"Nate fee all-time: ${money((books or {}).get('nate_all')):,.2f}",
+    ]
+    for r in ((books or {}).get("rows") or [])[:8]:
+        lines.append(
+            f"Loan {r.get('loan_number')}: capital ${money(r.get('capital')):,.0f}, "
+            f"net ${money(r.get('profit')):,.2f}, status {r.get('status') or '—'}"
+        )
+    return "\n".join(lines)
+
+
+GROK_HELP_RULES = (
+    "You are a warm, plain-spoken desk assistant for Brittco Capital Inc, a private lender. "
+    "Talk like a helpful person at the office, not a manual. Use short paragraphs. "
+    "Use only the file summary you are given. Never invent balances, dates, approvals, or other people's names. "
+    "If the file does not contain the answer, say so and offer to have staff follow up. "
+    "You cannot approve a loan, change terms, wire money, or give legal or tax advice. "
+    "Products: Fix and Flip, Transactional Loan, Gap Loan (3 months 15% flat, extensions 3% each), "
+    "and Other/perpetual standing loans. "
+    "Preferred credit 680+, exceptions possible. Soft pull does not hurt the score. "
+    "Typical funding 7 days or less; repeat borrowers often 24–48 hours. "
+    "Nate Holland’s fee is a share of realized profit after basis is back; it can be 0% on a loan. "
+    "Sign-off only if it feels natural. Do not mention that you are an AI unless asked."
+)
+
+
 def answer_borrower_help(question, borrower, deals, loans, missing):
     q = (question or "").strip().lower()
     name = (borrower["name"] if borrower else None) or "there"
     if not q:
-        return "Ask about documents, credit score, approval time, LTV, or what is still needed on your file."
+        return "Ask anything about your file, documents, timing, or how a Brittco loan works."
+    grok = ask_grok(
+        GROK_HELP_RULES + " You are speaking to the borrower.",
+        question,
+        borrower_help_brief(borrower, deals, loans, missing),
+    )
+    if grok:
+        return grok
     hit = match_help_item(question)
     if hit:
         return hit["answer"]
@@ -5584,7 +5734,14 @@ def reminder_draft(loan, perf):
 def answer_investor_help(question, inv, books):
     q = (question or "").strip().lower()
     if not q:
-        return "Ask about net vs gross, Nate’s fee, annualized return, or cost of funds."
+        return "Ask about your returns, Nate’s fee, a loan on this page, or how annualized yield is figured."
+    grok = ask_grok(
+        GROK_HELP_RULES + " You are speaking to the investor. Be clear about net vs gross and what is still working.",
+        question,
+        investor_help_brief(inv, books),
+    )
+    if grok:
+        return grok
     if any(w in q for w in ("nate", "fee", "25")):
         return (
             "Nate is paid 25% of each loan’s realized net profit, only after your basis is returned and a profit is realized. "
@@ -5641,9 +5798,15 @@ def login():
             (request.form["email"].strip().lower(), request.form["password"]),
         ).fetchone()
         if row:
-            session.clear()
-            session["staff_id"] = row["id"]
-            return redirect(url_for("dashboard"))
+            ensure_staff_roles()
+            row = db().execute("SELECT * FROM staff WHERE id=?", (row["id"],)).fetchone()
+            if int(row_val(row, "active") if row_val(row, "active") is not None else 1) == 0:
+                error = "This staff login has been revoked."
+            else:
+                session.clear()
+                session["staff_id"] = row["id"]
+                session["staff_role"] = row_val(row, "role") or "staff"
+                return redirect(url_for("dashboard"))
         error = "Email or password is incorrect."
     return render_template("login.html", error=error)
 
@@ -5652,6 +5815,108 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/staff")
+@super_required
+def staff_desk():
+    ensure_staff_roles()
+    rows = db().execute("SELECT * FROM staff ORDER BY id").fetchall()
+    return render_template(
+        "staff.html",
+        title="Staff logins",
+        nav="staff",
+        people=rows,
+        flash=session.pop("last_invite_note", None),
+        me=session.get("staff_id"),
+    )
+
+
+@app.route("/staff/add", methods=["POST"])
+@super_required
+def staff_add():
+    ensure_staff_roles()
+    name = (request.form.get("name") or "").strip() or "Staff"
+    email = (request.form.get("email") or "").strip().lower()
+    password = (request.form.get("password") or "").strip() or secrets.token_urlsafe(8)
+    role = "super" if request.form.get("role") == "super" else "staff"
+    if not email:
+        session["last_invite_note"] = "Email is required."
+        return redirect(url_for("staff_desk"))
+    try:
+        db().execute(
+            "INSERT INTO staff (email, password, name, role, active) VALUES (?,?,?,?,1)",
+            (email, password, name, role),
+        )
+        db().commit()
+    except sqlite3.IntegrityError:
+        session["last_invite_note"] = "That email already has a staff login."
+        return redirect(url_for("staff_desk"))
+    link = public_base() + url_for("login")
+    body = (
+        f"Hello {name},\n\n"
+        "You have a Brittco Capital staff login.\n\n"
+        f"Sign in: {link}\n"
+        f"Email: {email}\n"
+        f"Temporary password: {password}\n\n"
+        "Ask the Super Admin if you need that password changed.\n\n"
+        "Brittco Capital Inc\n"
+    )
+    sent = False
+    if request.form.get("send_invite"):
+        try:
+            sent = send_mail(email, "Your Brittco Capital staff login", body)
+        except Exception:
+            sent = False
+    note = f"Staff login created for {email}."
+    if request.form.get("send_invite"):
+        note += " Invite email sent." if sent else " Invite email did not go out — give them the password directly."
+    session["last_invite_note"] = note
+    return redirect(url_for("staff_desk"))
+
+
+@app.route("/staff/<int:sid>/password", methods=["POST"])
+@super_required
+def staff_set_password(sid):
+    pw = (request.form.get("password") or "").strip()
+    if not pw:
+        session["last_invite_note"] = "Enter a new password first."
+        return redirect(url_for("staff_desk"))
+    db().execute("UPDATE staff SET password=? WHERE id=?", (pw, sid))
+    db().commit()
+    session["last_invite_note"] = "Password updated."
+    return redirect(url_for("staff_desk"))
+
+
+@app.route("/staff/<int:sid>/role", methods=["POST"])
+@super_required
+def staff_set_role(sid):
+    role = "super" if request.form.get("role") == "super" else "staff"
+    db().execute("UPDATE staff SET role=? WHERE id=?", (role, sid))
+    db().commit()
+    session["last_invite_note"] = "Role updated."
+    return redirect(url_for("staff_desk"))
+
+
+@app.route("/staff/<int:sid>/revoke", methods=["POST"])
+@super_required
+def staff_revoke(sid):
+    if sid == session.get("staff_id"):
+        session["last_invite_note"] = "You cannot revoke your own login."
+        return redirect(url_for("staff_desk"))
+    db().execute("UPDATE staff SET active=0 WHERE id=?", (sid,))
+    db().commit()
+    session["last_invite_note"] = "Login revoked. They can no longer enter the dashboard."
+    return redirect(url_for("staff_desk"))
+
+
+@app.route("/staff/<int:sid>/restore", methods=["POST"])
+@super_required
+def staff_restore(sid):
+    db().execute("UPDATE staff SET active=1 WHERE id=?", (sid,))
+    db().commit()
+    session["last_invite_note"] = "Login restored."
+    return redirect(url_for("staff_desk"))
 
 
 def ensure_leads_table():
