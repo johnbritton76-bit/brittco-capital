@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Complete your Brittco investor profile</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:900px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Investor profile</div>
+      <h2 style="margin:4px 0 0">Complete your information</h2>
+    </div>
+  </div>
+  {% if error %}<p class="badge bad">{{ error }}</p>{% endif %}
+  {% if inv %}
+  <p class="hint">Choose a password, confirm wire and contact details, then save. Next time use the investor portal login.</p>
+  {% set staff = False %}
+  {% include "_investor_fields.html" %}
+  <p class="hint">Add a portal password below if the form did not include one, then save again from the profile after login.</p>
+  {% endif %}
+</main>
+</body>
+</html>

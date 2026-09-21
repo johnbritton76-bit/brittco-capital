@@ -41,11 +41,20 @@
       Example: $100,000 at 10% in 3 months is $10,000 gross. Nate’s 25% is $2,500. You keep $7,500 (7.5% / 30% annualized).
     </p>
     <form method="get" action="{{ url_for('investor_portal') }}" style="margin-top:10px">
-      <label>Ask about this statement</label>
+      <label>Ask about your account</label>
       <input name="q" value="{{ help_q or '' }}" placeholder="Example: When is Nate paid?" style="width:70%">
       <button class="btn" type="submit">Ask</button>
     </form>
     {% if help_a %}<p style="margin-top:8px">{{ help_a }}</p>{% endif %}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>Request a new function</h3>
+    <p class="hint">Tell Brittco what would make this portal more useful. Super admin staff get the note.</p>
+    {% if feature_flash %}<p class="flash">{{ feature_flash }}</p>{% endif %}
+    <form method="post" action="{{ url_for('investor_feature_request') }}">
+      <textarea name="body" rows="4" required placeholder="Example: I would like a download of every distribution by year."></textarea>
+      <p style="margin-top:8px"><button class="btn" type="submit">Send request</button></p>
+    </form>
   </div>
 
   <div class="grid cards" style="margin-top:14px">

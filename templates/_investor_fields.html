@@ -28,8 +28,8 @@
   <div class="span-2"><label>Further credit / reference</label><input name="wire_further" value="{{ inv.wire_further or '' }}"></div>
   <div class="span-2"><label>Wire notes</label><textarea name="wire_notes">{{ inv.wire_notes or '' }}</textarea></div>
   <div class="span-2"><label>Notes</label><textarea name="notes">{{ inv.notes or '' }}</textarea></div>
-  {% if staff %}
-  <div><label>Portal password (leave blank to keep)</label><input name="password" type="password"></div>
-  {% endif %}
+  <div><label>Portal password {% if not staff %}*{% else %}(leave blank to keep){% endif %}</label>
+    <input name="password" type="password" {% if not staff %}required{% endif %}>
+  </div>
   <div class="span-2"><button class="btn" type="submit">Save profile</button></div>
 </form>

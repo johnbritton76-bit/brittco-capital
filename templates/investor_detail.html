@@ -15,17 +15,24 @@
     <h2>{{ inv.name }}</h2>
     <p class="hint">{{ inv.entity_name }} · {{ inv.email }} · {{ inv.phone }}</p>
   </div>
-  <div>
-    <a class="btn" href="{{ url_for('investor_statement_staff', iid=inv.id) }}">PDF Statement</a>
-    <a class="btn" href="{{ url_for('investor_profile', iid=inv.id) }}">Profile</a>
-    <a class="btn ghost" href="{{ url_for('investors') }}">All investors</a>
-  </div>
+</div>
+<div class="even-actions">
+  <a href="{{ url_for('investor_statement_staff', iid=inv.id) }}">PDF statement</a>
+  <a href="{{ url_for('investor_profile', iid=inv.id) }}">Profile</a>
+  <a href="{{ url_for('investors') }}">All investors</a>
+  <form method="post" action="{{ url_for('investor_send_welcome', iid=inv.id) }}">
+    <button type="submit">Email welcome / complete profile</button>
+  </form>
 </div>
 {% if session.get('last_invite_note') %}
 <p class="flash">{{ session.pop('last_invite_note') }}</p>
 {% endif %}
-<div class="card">
-  <h3>Portal login</h3>
+{% if session.get('last_invite_url') %}
+{% set invite_url = session.pop('last_invite_url') %}
+<p class="hint">Link: <a href="{{ invite_url }}">{{ invite_url }}</a></p>
+{% endif %}
+<details class="box">
+  <summary>Portal login <span class="peek">{{ inv.email or "no email" }}</span></summary>
   <p class="hint">Investor signs in at <a href="{{ url_for('investor_login') }}">/investor/login</a> with this email.</p>
   <p><strong>{{ inv.email or "No email on file" }}</strong></p>
   <form method="post" action="{{ url_for('investor_send_login', iid=inv.id) }}" style="display:inline">
@@ -34,9 +41,9 @@
   <form method="post" action="{{ url_for('investor_reset_password', iid=inv.id) }}" style="display:inline">
     <button class="btn ghost" type="submit">Reset password</button>
   </form>
-</div>
-<div class="card">
-  <h3>Capital available to deploy</h3>
+</details>
+<details class="box">
+  <summary>Capital available <span class="peek">${{ "{:,.0f}".format(inv.capital_available or 0) }}</span></summary>
   <form method="post" action="{{ url_for('investor_capital', iid=inv.id) }}" class="form-grid">
     <div>
       <input name="capital_available" type="number" step="0.01" value="{{ inv.capital_available or 0 }}">
@@ -46,7 +53,7 @@
     </div>
   </form>
   <p class="hint">This is what they can put into a new loan. It is not the amount already in loans.</p>
-</div>
+</details>
 
 <div class="card">
   <h3>In plain English</h3>
@@ -69,8 +76,8 @@
   <div class="card"><h3>Annualized rate</h3><div class="n">{{ "%.1f"|format(shown_ann) }}%</div></div>
 </div>
 
-<div class="card" style="margin-top:14px">
-  <h3>Spreadsheet summary</h3>
+<details class="box">
+  <summary>Loan spreadsheet <span class="peek">{{ books.rows|length }} loan(s)</span></summary>
   <p class="hint">Financial return = dollars paid to this investor (not principal). Rate of return = those dollars ÷ capital. Annualized rate = loan rate × 12 ÷ term months.</p>
   <div style="overflow-x:auto">
   <table class="table">
@@ -104,11 +111,11 @@
     </tr>
   </table>
   </div>
-</div>
+</details>
 
 {% for r in books.rows %}
-<div class="card" style="margin-top:14px">
-  <h3>{{ r.loan_number }} · {{ r.property }}</h3>
+<details class="box">
+  <summary>{{ r.loan_number }} · {{ r.property }} <span class="peek">${{ "{:,.2f}".format(r.profit) }}</span></summary>
   <p>{{ r.story }}</p>
   <p class="hint">Term {{ r.term }} months at {{ r.base }}%{% if r.used %} · {{ r.used }} extension month(s) at {{ r.ext_rate }}%/mo{% endif %} · {{ r.status }}</p>
   <table class="table">
@@ -130,10 +137,10 @@
       <td>${{ "{:,.2f}".format(r.profit) }}</td>
     </tr>
   </table>
-</div>
+</details>
 {% endfor %}
-<div class="card" style="margin-top:24px">
-  <h3>Remove investor</h3>
+<details class="box">
+  <summary>Remove investor</summary>
   {% if delete_warn %}
   <p><strong>This investor is assigned to a loan. Removing the investor will remove the loan.</strong></p>
   <ul>
@@ -153,5 +160,5 @@
     <button class="btn ghost" type="submit">Remove investor</button>
   </form>
   {% endif %}
-</div>
+</details>
 {% endblock %}

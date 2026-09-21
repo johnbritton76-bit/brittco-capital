@@ -64,4 +64,21 @@
     {% endfor %}
   </table>
 </div>
+
+<details class="box" open>
+  <summary>Investor function requests</summary>
+  <table class="table">
+    <tr><th>When</th><th>Investor</th><th>Request</th></tr>
+    {% for r in requests or [] %}
+    <tr>
+      <td>{{ r.created_at }}</td>
+      <td>{{ r.investor_name }}<br><span class="hint">{{ r.investor_email }}</span></td>
+      <td>{{ r.body }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3">None yet.</td></tr>
+    {% endfor %}
+  </table>
+</details>
 {% endblock %}
+
