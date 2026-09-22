@@ -4089,7 +4089,7 @@ def create_borrower_ach_debit(borrower_row, amount_cents, metadata=None):
             "billing_details": {"name": name},
         },
         payment_method_options={
-            "us_bank_account": {"verification_method": "skip"},
+            "us_bank_account": {"verification_method": "automatic"},
         },
         confirm=True,
         mandate_data={
