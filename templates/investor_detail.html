@@ -140,6 +140,30 @@
 </details>
 {% endfor %}
 <details class="box">
+  <summary>ACH / payouts <span class="peek">{% if stripe_ready %}Stripe ready{% else %}Stripe not configured{% endif %}</span></summary>
+  <p class="hint">
+    Investor credits are logged on the ACH page and sent via Brittco bank (or Stripe Connect later).
+    Borrower debits use Stripe when authorized. Wire details live on the investor profile
+    (<code>wire_routing</code> / <code>wire_account</code>).
+  </p>
+  {% if ach %}
+  <table class="table">
+    <tr><th>When</th><th>Direction</th><th>Amount</th><th>Status</th></tr>
+    {% for t in ach %}
+    <tr>
+      <td>{{ t.created_at }}</td>
+      <td>{{ t.direction or "—" }}</td>
+      <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
+      <td>{{ t.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="hint">No ACH transfer rows for this investor yet.</p>
+  {% endif %}
+  <p><a class="btn ghost" href="{{ url_for('ach') }}">Open ACH page</a></p>
+</details>
+<details class="box">
   <summary>Remove investor</summary>
   {% if delete_warn %}
   <p><strong>This investor is assigned to a loan. Removing the investor will remove the loan.</strong></p>

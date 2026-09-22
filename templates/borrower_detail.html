@@ -152,7 +152,10 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 <details class="box">
   <summary>ACH / bank <span class="peek">{{ b.bank_name or "not on file" }}</span></summary>
 
-  <p class="hint">Save the bank details here, then open the processor to set the payment schedule.</p>
+  <p class="hint">
+    Save bank details and ACH authorization here. Collections run through <strong>Stripe</strong>
+    from the ACH page when authorized. Open the Stripe dashboard to monitor sandbox payments.
+  </p>
   <form method="post" action="{{ url_for('borrower_ach', bid=b.id) }}" class="form-grid">
     <div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name or '' }}"></div>
     <div><label>Account type</label>
@@ -169,18 +172,20 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     </div>
     <div class="span-2">
       <button class="btn ghost" type="submit">Save bank details</button>
-      <button class="btn" type="submit" name="open_processor" value="1">Save and open ACH scheduler</button>
+      <button class="btn" type="submit" name="open_processor" value="1">Save and open Stripe dashboard</button>
+      <a class="btn ghost" href="{{ ach_url }}" target="_blank" rel="noopener">Stripe payments</a>
     </div>
   </form>
   {% if ach_rows %}
   <table class="table" style="margin-top:12px">
-    <tr><th>When</th><th>Loan</th><th>Amount</th><th>Status</th></tr>
+    <tr><th>When</th><th>Loan</th><th>Amount</th><th>Vendor</th><th>Status</th></tr>
     {% for t in ach_rows %}
     <tr>
       <td>{{ t.created_at }}</td>
       <td>{{ t.loan_number or "—" }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
-      <td>{{ t.status }}</td>
+      <td>{{ t.vendor or "—" }}</td>
+      <td>{{ t.status }}{% if t.stripe_id %}<br><span class="hint">{{ t.stripe_id }}</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>

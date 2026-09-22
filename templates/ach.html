@@ -1,15 +1,24 @@
 {% extends "base.html" %}
 {% block body %}
 <div class="top"><h2>ACH loan collections</h2></div>
+{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 <p class="hint">
-  This is only for collecting loan payments from borrowers.
-  It does not pull investor capital and it does not pay investor returns.
-  Live ACH needs a processor account (Dwolla is a common fit). Until that key is added in Render,
-  record the collection here and run it from your bank.
+  Borrower loan-payment debits run through <strong>Stripe</strong> (US bank / ACH) when
+  <code>STRIPE_SECRET_KEY</code> is set on Render. Investor credits are <strong>logged only</strong>
+  until Stripe Connect (or a Brittco bank send) is enabled — Stripe cannot ACH-credit an
+  investor’s external bank from a plain PaymentIntent.
 </p>
-{% if vendor_ready %}
-<p class="flash">ACH vendor key is set. Collections will be queued for the processor.</p>
+{% if stripe_ready or vendor_ready %}
+<p class="flash">Stripe is ready. Authorized borrower collections will create a PaymentIntent.</p>
+{% else %}
+<p class="hint">Stripe not configured yet. Collections are recorded manually until you add the Stripe env keys.</p>
 {% endif %}
+<p class="hint"><strong>Mandate reminder:</strong> {{ mandate_text }}</p>
+<p class="hint">
+  Sandbox: Dashboard →
+  <a href="https://dashboard.stripe.com/test/payments" target="_blank" rel="noopener">Stripe test payments</a>.
+  Test routing <code>110000000</code>, account <code>000123456789</code>.
+</p>
 
 <form method="post" class="card form-grid">
   <div><label>Borrower</label>
@@ -27,17 +36,40 @@
   <div class="span-2"><button class="btn" type="submit">Record borrower collection</button></div>
 </form>
 
+{% if investors %}
+<form method="post" action="{{ url_for('ach_investor_payout') }}" class="card form-grid" style="margin-top:14px">
+  <div class="span-2">
+    <h3>Investor payout (log only)</h3>
+    <p class="hint">
+      Requires investor <code>wire_routing</code> + <code>wire_account</code>. Does not move money in Stripe —
+      staff send via Brittco bank or enable Connect later.
+    </p>
+  </div>
+  <div><label>Investor</label>
+    <select name="investor_id" required>
+      {% for i in investors %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div><label>Amount</label><input name="amount" type="number" step="0.01" required></div>
+  <div class="span-2"><label>Notes</label><input name="notes" placeholder="Distribution, return of capital, etc."></div>
+  <div class="span-2"><button class="btn ghost" type="submit">Log investor credit</button></div>
+</form>
+{% endif %}
+
 <div class="card" style="margin-top:14px">
-  <h3>Collection log</h3>
+  <h3>ACH / Stripe log</h3>
   <table class="table">
-    <tr><th>When</th><th>Borrower</th><th>Loan</th><th>Amount</th><th>Status</th></tr>
+    <tr><th>When</th><th>Direction</th><th>Party</th><th>Loan</th><th>Amount</th><th>Vendor</th><th>Status</th><th>Stripe</th></tr>
     {% for t in transfers %}
     <tr>
       <td>{{ t.created_at }}</td>
-      <td>{{ t.borrower_name or "—" }}</td>
+      <td>{{ t.direction or "—" }}</td>
+      <td>{{ t.borrower_name or t.investor_name or "—" }}</td>
       <td>{{ t.loan_number or "—" }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
+      <td>{{ t.vendor or "—" }}</td>
       <td>{{ t.status }}</td>
+      <td><span class="hint">{{ t.stripe_id or "—" }}</span></td>
     </tr>
     {% endfor %}
   </table>
