@@ -19,6 +19,10 @@
   <a href="https://dashboard.stripe.com/test/payments" target="_blank" rel="noopener">Stripe test payments</a>.
   Test routing <code>110000000</code>, account <code>000123456789</code>.
 </p>
+<p class="hint">
+  Webhooks update status automatically when Stripe settles. Use
+  <strong>Refresh from Stripe</strong> only if a row looks stuck (missed webhook).
+</p>
 
 <form method="post" class="card form-grid">
   <div><label>Borrower</label>
@@ -59,7 +63,10 @@
 <div class="card" style="margin-top:14px">
   <h3>ACH / Stripe log</h3>
   <table class="table">
-    <tr><th>When</th><th>Direction</th><th>Party</th><th>Loan</th><th>Amount</th><th>Vendor</th><th>Status</th><th>Stripe</th></tr>
+    <tr>
+      <th>When</th><th>Direction</th><th>Party</th><th>Loan</th><th>Amount</th>
+      <th>Vendor</th><th>Status</th><th>Stripe ID</th><th>Last event</th><th></th>
+    </tr>
     {% for t in transfers %}
     <tr>
       <td>{{ t.created_at }}</td>
@@ -69,7 +76,19 @@
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
       <td>{{ t.vendor or "—" }}</td>
       <td>{{ t.status }}</td>
-      <td><span class="hint">{{ t.stripe_id or "—" }}</span></td>
+      <td>
+        {% if t.stripe_id %}
+          <span class="hint" title="{{ t.stripe_id }}">{{ t.stripe_id[:18] }}{% if t.stripe_id|length > 18 %}…{% endif %}</span>
+        {% else %}—{% endif %}
+      </td>
+      <td><span class="hint">{{ t.stripe_event or "—" }}</span></td>
+      <td>
+        {% if t.stripe_id %}
+        <form method="post" action="{{ url_for('ach_refresh_stripe', tid=t.id) }}" style="display:inline;margin:0">
+          <button class="btn ghost" type="submit" style="padding:2px 8px;font-size:12px" title="Pull latest status from Stripe">Refresh from Stripe</button>
+        </form>
+        {% else %}—{% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
