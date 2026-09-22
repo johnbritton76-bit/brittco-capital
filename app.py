@@ -1790,6 +1790,13 @@ try:
     ach_cols = [r[1] for r in _c.execute("PRAGMA table_info(ach_transfers)")]
     if ach_cols and "borrower_id" not in ach_cols:
         _c.execute("ALTER TABLE ach_transfers ADD COLUMN borrower_id INTEGER")
+        ach_cols.append("borrower_id")
+    if ach_cols and "stripe_id" not in ach_cols:
+        _c.execute("ALTER TABLE ach_transfers ADD COLUMN stripe_id TEXT")
+        ach_cols.append("stripe_id")
+    if ach_cols and "stripe_event" not in ach_cols:
+        _c.execute("ALTER TABLE ach_transfers ADD COLUMN stripe_event TEXT")
+        ach_cols.append("stripe_event")
     inv_cols = [r[1] for r in _c.execute("PRAGMA table_info(investors)")]
     if inv_cols and "password" not in inv_cols:
         _c.execute("ALTER TABLE investors ADD COLUMN password TEXT")
@@ -4020,6 +4027,80 @@ def money(v):
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+# --- Stripe ACH (US bank) ---
+STRIPE_ACH_MANDATE_TEXT = (
+    "By checking ACH authorization in Brittco, the borrower authorizes Brittco Capital, Inc. "
+    "to initiate ACH debit entries to the designated U.S. bank account for loan payments "
+    "and related amounts owed under the loan documents. This authorization remains in effect "
+    "until revoked in writing per applicable NACHA rules."
+)
+
+
+def stripe_configured():
+    return bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip())
+
+
+def get_stripe():
+    """Configure and return the stripe module. Secret key from env only."""
+    import stripe
+
+    key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("STRIPE_SECRET_KEY is not set")
+    stripe.api_key = key
+    return stripe
+
+
+def _borrower_us_account_type(bank_account_type):
+    t = (bank_account_type or "checking").strip().lower()
+    if t.startswith("sav"):
+        return "savings"
+    return "checking"
+
+
+def create_borrower_ach_debit(borrower_row, amount_cents, metadata=None):
+    """
+    Create and confirm a Stripe PaymentIntent debiting the borrower's US bank account.
+    Caller must already verify ach_authorized and routing+account are present.
+    Uses offline mandate_data because staff collected authorization in Brittco (ach_authorized).
+    """
+    stripe = get_stripe()
+    name = (borrower_row["name"] if "name" in borrower_row.keys() else "") or "Borrower"
+    routing = str(borrower_row["bank_routing"] or "").strip()
+    account = str(borrower_row["bank_account"] or "").strip()
+    acct_type = _borrower_us_account_type(
+        borrower_row["bank_account_type"] if "bank_account_type" in borrower_row.keys() else None
+    )
+    meta = {str(k): str(v) for k, v in (metadata or {}).items() if v is not None}
+    pi = stripe.PaymentIntent.create(
+        amount=int(amount_cents),
+        currency="usd",
+        payment_method_types=["us_bank_account"],
+        payment_method_data={
+            "type": "us_bank_account",
+            "us_bank_account": {
+                "routing_number": routing,
+                "account_number": account,
+                "account_holder_type": "individual",
+                "account_type": acct_type,
+            },
+            "billing_details": {"name": name},
+        },
+        payment_method_options={
+            "us_bank_account": {"verification_method": "skip"},
+        },
+        confirm=True,
+        mandate_data={
+            "customer_acceptance": {
+                "type": "offline",
+                "accepted_at": int(datetime.now().timestamp()),
+            }
+        },
+        metadata=meta,
+    )
+    return pi
 
 
 def request_soft_pull(bid, source):
@@ -7227,7 +7308,7 @@ def borrower_detail(bid):
         past_loans=past_loans,
         pulls=pulls,
         ssn_mask=mask_ssn(b["ssn"] if "ssn" in b.keys() else ""),
-        ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"),
+        ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.stripe.com/test/payments"),
         ach_rows=db().execute(
             """SELECT t.*, l.loan_number FROM ach_transfers t
                LEFT JOIN loans l ON l.id=t.loan_id
@@ -8008,7 +8089,7 @@ def borrower_ach(bid):
     )
     db().commit()
     if f.get("open_processor"):
-        return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"))
+        return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.stripe.com/test/payments"))
     return redirect(url_for("borrower_detail", bid=bid))
 
 
@@ -10403,7 +10484,7 @@ def investor_detail(iid):
         dists=dists,
         ach=ach,
         books=books,
-        dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
+        stripe_ready=stripe_configured(),
         delete_warn=warn,
     )
 
@@ -11208,38 +11289,102 @@ def investor_source_remove(sid):
 def ach():
     if request.method == "POST":
         f = request.form
-        vendor = "Dwolla" if os.environ.get("ACH_API_KEY") else "Manual / pending bank"
         lid = int(f["loan_id"]) if f.get("loan_id") else None
         bid = int(f["borrower_id"]) if f.get("borrower_id") else None
         if lid and not bid:
             row = db().execute("SELECT borrower_id FROM loans WHERE id=?", (lid,)).fetchone()
             bid = row["borrower_id"] if row else None
+        amount = money(f.get("amount"))
+        notes = (f.get("notes") or "").strip()
+        now = datetime.now().isoformat(timespec="minutes")
+        stripe_id = None
+        status = "Recorded — collect at bank or connect Stripe"
+        vendor = "Manual / pending Stripe"
+        direction = "Debit borrower (loan payment)"
+
+        borrower = None
+        if bid:
+            borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+
+        authorized = bool(borrower and int(borrower["ach_authorized"] or 0))
+        routing = (borrower["bank_routing"] or "").strip() if borrower else ""
+        account = (borrower["bank_account"] or "").strip() if borrower else ""
+
+        if stripe_configured():
+            vendor = "Stripe"
+            if not borrower:
+                status = "Failed"
+                notes = ((notes + " | ") if notes else "") + "Borrower required for Stripe debit."
+            elif not authorized:
+                status = "Failed"
+                notes = ((notes + " | ") if notes else "") + "Borrower has not authorized ACH (ach_authorized)."
+            elif not routing or not account:
+                status = "Failed"
+                notes = ((notes + " | ") if notes else "") + "Borrower routing and account required for Stripe debit."
+            elif amount <= 0:
+                status = "Failed"
+                notes = ((notes + " | ") if notes else "") + "Amount must be greater than zero."
+            else:
+                try:
+                    amount_cents = int(round(amount * 100))
+                    pi = create_borrower_ach_debit(
+                        borrower,
+                        amount_cents,
+                        metadata={
+                            "brittco_borrower_id": bid,
+                            "brittco_loan_id": lid or "",
+                            "direction": direction,
+                        },
+                    )
+                    stripe_id = pi.id
+                    pi_status = (getattr(pi, "status", None) or "").lower()
+                    if pi_status in ("succeeded",):
+                        status = "Paid"
+                    elif pi_status in ("processing", "requires_action", "requires_confirmation"):
+                        status = "Pending"
+                    else:
+                        status = "Pending"
+                    notes = ((notes + " | ") if notes else "") + f"Stripe PI {pi.id} status={pi_status or 'n/a'}"
+                except Exception as exc:
+                    status = "Failed"
+                    notes = ((notes + " | ") if notes else "") + f"Stripe error: {exc}"
+        else:
+            session["last_invite_note"] = "Stripe not configured (set STRIPE_SECRET_KEY). Collection recorded manually."
+
         db().execute(
             """INSERT INTO ach_transfers
-            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, stripe_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 None,
                 bid,
                 lid,
-                "Debit borrower (loan payment)",
-                money(f.get("amount")),
-                "Queued" if os.environ.get("ACH_API_KEY") else "Recorded — collect at bank or connect processor",
+                direction,
+                amount,
+                status,
                 vendor,
-                f.get("notes"),
-                datetime.now().isoformat(timespec="minutes"),
+                notes or None,
+                now,
+                stripe_id,
             ),
         )
         db().commit()
+        if stripe_configured() and status == "Failed":
+            session["last_invite_note"] = notes or "ACH debit failed."
+        elif stripe_configured() and stripe_id:
+            session["last_invite_note"] = f"Stripe ACH debit submitted ({stripe_id}). Status: {status}."
         return redirect(url_for("ach"))
+
     transfers = db().execute(
-        """SELECT t.*, b.name AS borrower_name, l.loan_number
+        """SELECT t.*, b.name AS borrower_name, i.name AS investor_name, l.loan_number
            FROM ach_transfers t
            LEFT JOIN borrowers b ON b.id=t.borrower_id
+           LEFT JOIN investors i ON i.id=t.investor_id
            LEFT JOIN loans l ON l.id=t.loan_id
            ORDER BY t.id DESC"""
     ).fetchall()
     borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
     loans = db().execute(
         """SELECT l.id, l.loan_number, l.property_address, b.name AS borrower_name
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
@@ -11251,9 +11396,150 @@ def ach():
         nav="ach",
         transfers=transfers,
         borrowers=borrowers,
+        investors=investors,
         loans=loans,
-        vendor_ready=bool(os.environ.get("ACH_API_KEY")),
+        vendor_ready=stripe_configured(),
+        stripe_ready=stripe_configured(),
+        mandate_text=STRIPE_ACH_MANDATE_TEXT,
+        flash=session.pop("last_invite_note", None),
     )
+
+
+@app.route("/ach/investor-payout", methods=["POST"])
+@staff_required
+def ach_investor_payout():
+    """
+    Investor ACH credits: log only. Stripe cannot ACH-credit an external bank without
+    Connect/Treasury. Staff send via Brittco bank or enable Connect later.
+    """
+    f = request.form
+    iid = int(f["investor_id"]) if f.get("investor_id") else None
+    amount = money(f.get("amount"))
+    notes = (f.get("notes") or "").strip()
+    now = datetime.now().isoformat(timespec="minutes")
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone() if iid else None
+    if not inv:
+        session["last_invite_note"] = "Select an investor for payout."
+        return redirect(url_for("ach"))
+    routing = (inv["wire_routing"] or "").strip() if "wire_routing" in inv.keys() else ""
+    account = (inv["wire_account"] or "").strip() if "wire_account" in inv.keys() else ""
+    if not routing or not account:
+        session["last_invite_note"] = (
+            "Investor needs wire_routing and wire_account on file before recording a payout."
+        )
+        return redirect(url_for("ach"))
+    if amount <= 0:
+        session["last_invite_note"] = "Payout amount must be greater than zero."
+        return redirect(url_for("ach"))
+    status = "Recorded — send via bank or enable Connect"
+    note_bits = [
+        notes,
+        f"wire {routing[-4:] if len(routing) >= 4 else routing} / acct …{(account[-4:] if len(account) >= 4 else account)}",
+        "Sandbox borrower debits run through Stripe; investor credits are logged until Stripe Connect is enabled.",
+    ]
+    full_notes = " | ".join(b for b in note_bits if b)
+    db().execute(
+        """INSERT INTO ach_transfers
+        (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, stripe_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            iid,
+            None,
+            None,
+            "Credit investor (distribution)",
+            amount,
+            status,
+            "Stripe",
+            full_notes,
+            now,
+            None,
+        ),
+    )
+    db().commit()
+    session["last_invite_note"] = (
+        "Investor payout logged. Send via Brittco bank ACH/wire or enable Stripe Connect — "
+        "not auto-sent by Stripe."
+    )
+    return redirect(url_for("ach"))
+
+
+@app.route("/webhooks/stripe", methods=["POST"])
+def stripe_webhook():
+    """Stripe webhook — no staff login. Verifies signature when STRIPE_WEBHOOK_SECRET is set."""
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature", "")
+    wh_secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+    event = None
+    try:
+        if wh_secret and stripe_configured():
+            stripe = get_stripe()
+            event = stripe.Webhook.construct_event(payload, sig_header, wh_secret)
+        else:
+            # Allow unsigned parse only when secret missing (local/dev); prefer secret in production.
+            import json as _json
+
+            event = _json.loads(payload.decode("utf-8"))
+    except Exception:
+        return ("Webhook verification failed", 400)
+
+    etype = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+    data_obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event["data"]["object"]
+    if not isinstance(data_obj, dict):
+        try:
+            data_obj = data_obj.to_dict() if hasattr(data_obj, "to_dict") else dict(data_obj)
+        except Exception:
+            data_obj = {}
+
+    stripe_ids = []
+    obj_id = data_obj.get("id")
+    if obj_id:
+        stripe_ids.append(obj_id)
+    pi_ref = data_obj.get("payment_intent")
+    if pi_ref:
+        stripe_ids.append(pi_ref)
+
+    paid_types = {
+        "payment_intent.succeeded",
+        "charge.succeeded",
+        "payout.paid",
+        "setup_intent.succeeded",
+    }
+    failed_types = {
+        "payment_intent.payment_failed",
+        "charge.failed",
+        "payout.failed",
+    }
+    new_status = None
+    if etype in paid_types:
+        new_status = "Paid"
+    elif etype in failed_types:
+        new_status = "Failed"
+
+    if new_status and stripe_ids:
+        for sid in stripe_ids:
+            rows = db().execute(
+                "SELECT id, status, notes FROM ach_transfers WHERE stripe_id=?", (sid,)
+            ).fetchall()
+            for row in rows:
+                note = (row["notes"] or "")
+                tag = f"webhook:{etype}"
+                if tag not in note:
+                    note = (note + " | " if note else "") + tag
+                db().execute(
+                    """UPDATE ach_transfers
+                       SET status=?, stripe_event=?, notes=? WHERE id=?""",
+                    (new_status, etype, note, row["id"]),
+                )
+        db().commit()
+    elif etype and stripe_ids:
+        for sid in stripe_ids:
+            db().execute(
+                "UPDATE ach_transfers SET stripe_event=? WHERE stripe_id=?",
+                (etype, sid),
+            )
+        db().commit()
+
+    return ("", 200)
 
 
 @app.route("/deals/<int:did>/decision", methods=["POST"])

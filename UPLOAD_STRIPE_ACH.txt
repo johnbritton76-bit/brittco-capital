@@ -1,0 +1,49 @@
+Brittco Capital — Stripe ACH upload (sandbox)
+
+Files in this zip (keep paths):
+  app.py
+  requirements.txt
+  templates/ach.html
+  templates/borrower_detail.html
+  templates/investor_detail.html
+  UPLOAD_STRIPE_ACH.txt
+
+Steps for John:
+
+1) GitHub repo johnbritton76-bit/brittco-capital → Add file → Upload files
+
+2) Upload so app.py and requirements.txt sit at the repo ROOT; HTML files under templates/
+   (same layout as this zip). Do not nest inside another folder.
+
+3) Commit to main.
+
+4) Render → Environment → add (test/sandbox values from Stripe Dashboard — paste from chat/Stripe;
+   do NOT put secret values into this file or into git):
+     STRIPE_SECRET_KEY
+     STRIPE_PUBLISHABLE_KEY
+     STRIPE_WEBHOOK_SECRET
+   Stripe is treated as “ready” when STRIPE_SECRET_KEY is set.
+
+5) Optional: remove old ACH_API_KEY / ACH_PORTAL_URL if still present.
+   Default portal link is now https://dashboard.stripe.com/test/payments
+
+6) Render → Manual Deploy (so requirements installs stripe==11.1.1).
+
+7) Webhook (recommended for status updates):
+   Stripe Dashboard → Developers → Webhooks → add endpoint
+   https://YOUR-RENDER-HOST/webhooks/stripe
+   Events: payment_intent.succeeded, payment_intent.payment_failed,
+   charge.succeeded, charge.failed, payout.paid, payout.failed, setup_intent.succeeded
+   Paste the signing secret into STRIPE_WEBHOOK_SECRET, then redeploy if needed.
+
+8) Test borrower debit:
+   - Borrower: check “Borrower authorized ACH drafts”, save bank details
+   - Stripe test routing 110000000, account 000123456789 (checking)
+   - /ach → Record borrower collection for a loan
+   - Confirm ach_transfers row gets stripe_id (pi_…) and Pending/Paid; watch webhook/status
+   - Stripe Dashboard → test payments
+
+9) Investor credit: /ach → Log investor credit (needs wire_routing + wire_account).
+   This only records a row — it does NOT send money until Connect or bank send.
+
+10) No live (sk_live) keys until John confirms sandbox test worked.
