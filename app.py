@@ -11463,6 +11463,112 @@ def ach_investor_payout():
     return redirect(url_for("ach"))
 
 
+
+@app.route("/ach/<int:tid>/refresh-stripe", methods=["POST"])
+@staff_required
+def ach_refresh_stripe(tid):
+    """Staff backup: pull PaymentIntent status from Stripe when a webhook was missed."""
+    row = db().execute("SELECT * FROM ach_transfers WHERE id=?", (tid,)).fetchone()
+    if not row:
+        session["last_invite_note"] = "ACH transfer not found."
+        return redirect(url_for("ach"))
+
+    sid = (row["stripe_id"] or "").strip() if "stripe_id" in row.keys() else ""
+    if not sid:
+        session["last_invite_note"] = "No Stripe ID on this transfer — nothing to refresh."
+        return redirect(url_for("ach"))
+
+    if not stripe_configured():
+        session["last_invite_note"] = "Stripe is not configured (STRIPE_SECRET_KEY)."
+        return redirect(url_for("ach"))
+
+    pi_id = sid
+    try:
+        stripe = get_stripe()
+        if sid.startswith("ch_"):
+            # Charge id — resolve PaymentIntent if present
+            ch = stripe.Charge.retrieve(sid)
+            pi_ref = getattr(ch, "payment_intent", None) or (ch.get("payment_intent") if hasattr(ch, "get") else None)
+            if not pi_ref:
+                session["last_invite_note"] = f"Charge {sid} has no PaymentIntent to refresh."
+                return redirect(url_for("ach"))
+            pi_id = pi_ref if isinstance(pi_ref, str) else getattr(pi_ref, "id", None) or str(pi_ref)
+        elif not sid.startswith("pi_"):
+            session["last_invite_note"] = f"Stripe ID {sid} is not a PaymentIntent (pi_) or Charge (ch_)."
+            return redirect(url_for("ach"))
+
+        pi = stripe.PaymentIntent.retrieve(pi_id)
+        pi_status = (getattr(pi, "status", None) or "").lower()
+        last_error = getattr(pi, "last_payment_error", None)
+
+        if pi_status == "succeeded":
+            mapped = "Paid"
+        elif pi_status in ("processing", "requires_action", "requires_confirmation"):
+            mapped = "Pending"
+        elif pi_status == "canceled":
+            mapped = "Failed"
+        elif pi_status in ("requires_payment_method",) or pi_status == "payment_failed":
+            mapped = "Failed"
+        elif last_error:
+            mapped = "Failed"
+        else:
+            mapped = "Pending"
+
+        # Staff refresh: allow Failed→Paid and also allow setting Pending only if not Paid
+        cur = row["status"] or ""
+        apply_status = mapped
+        if mapped == "Pending" and cur in ("Paid", "Failed"):
+            apply_status = cur  # do not downgrade
+        elif mapped == "Failed" and cur == "Paid":
+            # Rare: PI canceled after paid — still allow staff refresh to show Failed
+            apply_status = "Failed"
+
+        note = (row["notes"] or "")
+        tag = f"refresh:{pi_status}"
+        if tag not in note:
+            note = (note + " | " if note else "") + tag
+        event_label = f"refresh:{pi_status}"
+
+        db().execute(
+            """UPDATE ach_transfers
+               SET status=?, stripe_event=?, notes=?, stripe_id=? WHERE id=?""",
+            (apply_status, event_label, note, pi_id if pi_id.startswith("pi_") else sid, tid),
+        )
+        db().commit()
+        session["last_invite_note"] = (
+            f"Refreshed from Stripe: PI {pi_id} status={pi_status} → {apply_status}."
+        )
+    except Exception as exc:
+        session["last_invite_note"] = f"Stripe refresh failed: {exc}"
+
+    return redirect(url_for("ach"))
+
+
+
+def _ach_status_may_apply(current_status, new_status):
+    """Idempotent ACH status transitions for webhooks / refresh."""
+    cur = (current_status or "").strip()
+    nxt = (new_status or "").strip()
+    if not nxt:
+        return False
+    if cur == nxt:
+        return True  # still allow notes/event update
+    # Never downgrade Paid or Failed to Pending
+    if nxt == "Pending" and cur in ("Paid", "Failed"):
+        return False
+    # Never overwrite Paid with Failed (keep Paid sticky unless staff refresh)
+    if nxt == "Failed" and cur == "Paid":
+        return False
+    # Allowed: Pending→Paid, Pending→Failed, Failed→Paid, and same-status no-ops
+    if nxt == "Paid":
+        return True
+    if nxt == "Failed" and cur != "Paid":
+        return True
+    if nxt == "Pending" and cur not in ("Paid", "Failed"):
+        return True
+    return False
+
+
 @app.route("/webhooks/stripe", methods=["POST"])
 def stripe_webhook():
     """Stripe webhook — no staff login. Verifies signature when STRIPE_WEBHOOK_SECRET is set."""
@@ -11479,67 +11585,113 @@ def stripe_webhook():
             import json as _json
 
             event = _json.loads(payload.decode("utf-8"))
-    except Exception:
+    except Exception as exc:
+        # Signature / parse failure — tell Stripe not to retry as success
+        try:
+            app.logger.warning("stripe_webhook verification failed: %s", exc)
+        except Exception:
+            pass
         return ("Webhook verification failed", 400)
 
-    etype = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
-    data_obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event["data"]["object"]
-    if not isinstance(data_obj, dict):
+    try:
+        etype = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+        data_obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event["data"]["object"]
+        if not isinstance(data_obj, dict):
+            try:
+                data_obj = data_obj.to_dict() if hasattr(data_obj, "to_dict") else dict(data_obj)
+            except Exception:
+                data_obj = {}
+
+        stripe_ids = []
+        obj_id = data_obj.get("id")
+        if obj_id:
+            stripe_ids.append(obj_id)
+        pi_ref = data_obj.get("payment_intent")
+        if pi_ref:
+            stripe_ids.append(pi_ref)
+        # Deduplicate while preserving order
+        seen = set()
+        stripe_ids = [x for x in stripe_ids if not (x in seen or seen.add(x))]
+
+        paid_types = {
+            "payment_intent.succeeded",
+            "charge.succeeded",
+            "charge.updated",  # ACH settle may arrive as charge.updated with paid=true
+            "payout.paid",
+            "setup_intent.succeeded",
+        }
+        failed_types = {
+            "payment_intent.payment_failed",
+            "charge.failed",
+            "payout.failed",
+            "payment_intent.canceled",
+        }
+        processing_types = {
+            "payment_intent.processing",
+            "payment_intent.requires_action",
+        }
+
+        new_status = None
+        if etype in paid_types:
+            # charge.updated: only treat as Paid when the charge is paid
+            if etype == "charge.updated":
+                if data_obj.get("paid") or (data_obj.get("status") or "").lower() == "succeeded":
+                    new_status = "Paid"
+                elif (data_obj.get("status") or "").lower() in ("failed", "canceled"):
+                    new_status = "Failed"
+                else:
+                    new_status = None  # event-only update
+            else:
+                new_status = "Paid"
+        elif etype in failed_types:
+            new_status = "Failed"
+        elif etype in processing_types:
+            new_status = "Pending"
+
+        if stripe_ids:
+            for sid in stripe_ids:
+                rows = db().execute(
+                    "SELECT id, status, notes FROM ach_transfers WHERE stripe_id=?", (sid,)
+                ).fetchall()
+                for row in rows:
+                    note = (row["notes"] or "")
+                    tag = f"webhook:{etype}" if etype else "webhook"
+                    if tag not in note:
+                        note = (note + " | " if note else "") + tag
+                    cur = row["status"] or ""
+                    if new_status and _ach_status_may_apply(cur, new_status):
+                        db().execute(
+                            """UPDATE ach_transfers
+                               SET status=?, stripe_event=?, notes=? WHERE id=?""",
+                            (new_status, etype, note, row["id"]),
+                        )
+                    elif etype:
+                        # Still record last event / notes without status downgrade
+                        db().execute(
+                            """UPDATE ach_transfers
+                               SET stripe_event=?, notes=? WHERE id=?""",
+                            (etype, note, row["id"]),
+                        )
+            db().commit()
+    except Exception as exc:
+        # DB / processing error — 500 so Stripe retries
         try:
-            data_obj = data_obj.to_dict() if hasattr(data_obj, "to_dict") else dict(data_obj)
+            app.logger.exception("stripe_webhook processing error: %s", exc)
         except Exception:
-            data_obj = {}
-
-    stripe_ids = []
-    obj_id = data_obj.get("id")
-    if obj_id:
-        stripe_ids.append(obj_id)
-    pi_ref = data_obj.get("payment_intent")
-    if pi_ref:
-        stripe_ids.append(pi_ref)
-
-    paid_types = {
-        "payment_intent.succeeded",
-        "charge.succeeded",
-        "payout.paid",
-        "setup_intent.succeeded",
-    }
-    failed_types = {
-        "payment_intent.payment_failed",
-        "charge.failed",
-        "payout.failed",
-    }
-    new_status = None
-    if etype in paid_types:
-        new_status = "Paid"
-    elif etype in failed_types:
-        new_status = "Failed"
-
-    if new_status and stripe_ids:
-        for sid in stripe_ids:
-            rows = db().execute(
-                "SELECT id, status, notes FROM ach_transfers WHERE stripe_id=?", (sid,)
-            ).fetchall()
-            for row in rows:
-                note = (row["notes"] or "")
-                tag = f"webhook:{etype}"
-                if tag not in note:
-                    note = (note + " | " if note else "") + tag
-                db().execute(
-                    """UPDATE ach_transfers
-                       SET status=?, stripe_event=?, notes=? WHERE id=?""",
-                    (new_status, etype, note, row["id"]),
-                )
-        db().commit()
-    elif etype and stripe_ids:
-        for sid in stripe_ids:
-            db().execute(
-                "UPDATE ach_transfers SET stripe_event=? WHERE stripe_id=?",
-                (etype, sid),
-            )
-        db().commit()
+            pass
+        try:
+            db().rollback()
+        except Exception:
+            pass
+        return ("Webhook processing error", 500)
 
     return ("", 200)
+
+
+@app.route("/webhooks/stripe/health", methods=["GET"])
+def stripe_webhook_health():
+    """Optional uptime/warm ping — no auth."""
+    return ("ok", 200)
 
 
 @app.route("/deals/<int:did>/decision", methods=["POST"])
