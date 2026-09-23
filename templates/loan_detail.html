@@ -95,13 +95,19 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
   <div class="card"><h3>Purchase price</h3><div>${{ "{:,.0f}".format(loan.purchase_price or 0) }}</div></div>
-  <div class="card"><h3>Loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div>
+  {% set pts = loan.points or 0 %}
+  {% set gross = ((loan.original_principal or 0) / (1 + pts/100)) if pts else (loan.original_principal or 0) %}
+  {% set funded_p = gross - (loan.rehab_cost or 0) %}
+  <div class="card"><h3>Funded purchase</h3><div>${{ "{:,.0f}".format(funded_p) }}</div>
     {% if loan.purchase_price %}
-    <div class="hint">{{ "%.0f"|format((loan.original_principal or 0) / loan.purchase_price * 100) }}% of purchase</div>
+    <div class="hint">{{ "%.0f"|format(funded_p / loan.purchase_price * 100) }}% of purchase</div>
     {% endif %}
   </div>
+  <div class="card"><h3>Rehab</h3><div>${{ "{:,.0f}".format(loan.rehab_cost or 0) }}</div></div>
   <div class="card"><h3>Upfront points</h3><div>{{ loan.points or 0 }}%</div></div>
-  <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
+  <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div>
+    <div class="hint">Funded purchase + rehab + points</div>
+  </div>
   <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
   <div class="card"><h3>Amount due at maturity</h3>
