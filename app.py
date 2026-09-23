@@ -3317,10 +3317,12 @@ def used_extension_fee(loan):
     return round(total, 2)
 
 
-def compute_loan_total(purchase, rehab, points):
-    base = money(purchase) + money(rehab)
+def compute_loan_total(purchase, rehab, points, loan_amount=None):
+    funded = money(loan_amount)
+    if funded <= 0:
+        funded = money(purchase) + money(rehab)
     pts = money(points)
-    return round(base + base * pts / 100.0, 2)
+    return round(funded + funded * pts / 100.0, 2)
 
 
 def is_standing_loan(loan):
@@ -9224,7 +9226,7 @@ def loan_new():
             if not late_fee:
                 late_fee = round(pay_amt * 0.05, 2) if pay_amt else 0
         else:
-            principal = compute_loan_total(purchase, rehab, points)
+            principal = compute_loan_total(purchase, rehab, points, f.get("loan_amount"))
             if f.get("total_loan_amount"):
                 principal = money(f.get("total_loan_amount")) or principal
             base_term = int(float(f["base_term"])) if f.get("base_term") not in (None, "") else 0
