@@ -3318,11 +3318,12 @@ def used_extension_fee(loan):
 
 
 def compute_loan_total(purchase, rehab, points, loan_amount=None):
-    funded = money(loan_amount)
-    if funded <= 0:
-        funded = money(purchase) + money(rehab)
+    funded_purchase = money(loan_amount)
+    if funded_purchase <= 0:
+        funded_purchase = money(purchase)
+    base = funded_purchase + money(rehab)
     pts = money(points)
-    return round(funded + funded * pts / 100.0, 2)
+    return round(base + base * pts / 100.0, 2)
 
 
 def is_standing_loan(loan):
