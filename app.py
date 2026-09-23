@@ -308,9 +308,7 @@ def init_db():
             status TEXT,
             vendor TEXT,
             notes TEXT,
-            created_at TEXT,
-            payment_id INTEGER,
-            applied_to TEXT
+            created_at TEXT
         );
         CREATE TABLE IF NOT EXISTS invites (
             id INTEGER PRIMARY KEY,
@@ -1792,19 +1790,6 @@ try:
     ach_cols = [r[1] for r in _c.execute("PRAGMA table_info(ach_transfers)")]
     if ach_cols and "borrower_id" not in ach_cols:
         _c.execute("ALTER TABLE ach_transfers ADD COLUMN borrower_id INTEGER")
-        ach_cols.append("borrower_id")
-    if ach_cols and "stripe_id" not in ach_cols:
-        _c.execute("ALTER TABLE ach_transfers ADD COLUMN stripe_id TEXT")
-        ach_cols.append("stripe_id")
-    if ach_cols and "stripe_event" not in ach_cols:
-        _c.execute("ALTER TABLE ach_transfers ADD COLUMN stripe_event TEXT")
-        ach_cols.append("stripe_event")
-    if ach_cols and "payment_id" not in ach_cols:
-        _c.execute("ALTER TABLE ach_transfers ADD COLUMN payment_id INTEGER")
-        ach_cols.append("payment_id")
-    if ach_cols and "applied_to" not in ach_cols:
-        _c.execute("ALTER TABLE ach_transfers ADD COLUMN applied_to TEXT")
-        ach_cols.append("applied_to")
     inv_cols = [r[1] for r in _c.execute("PRAGMA table_info(investors)")]
     if inv_cols and "password" not in inv_cols:
         _c.execute("ALTER TABLE investors ADD COLUMN password TEXT")
@@ -3384,12 +3369,9 @@ def loan_term_dates(loan):
     except sqlite3.Error:
         used_months = 0
     extra = max(extra, used_months)
-    base_end = start + timedelta(days=30 * max(base, 0))
-    full_end = start + timedelta(days=30 * (max(base, 0) + max(extra, 0)))
-    stored = parse_date(row_val(loan, "maturity_date"))
-    if stored and stored > full_end:
-        full_end = stored
-    return base_end.isoformat(), full_end.isoformat()
+    base_end = add_calendar_months(start, max(base, 0))
+    full_end = add_calendar_months(start, max(base, 0) + max(extra, 0))
+    return base_end.isoformat() if base_end else None, full_end.isoformat() if full_end else None
 
 
 def loan_term_phase(loan):
@@ -3439,14 +3421,27 @@ def option_months_total(lid):
     return total
 
 
+def add_calendar_months(start, months):
+    """Same day of month, N calendar months later. 3/25 + 3 months = 6/25."""
+    d = parse_date(start) if not isinstance(start, date) else start
+    if not d:
+        return None
+    months = int(months or 0)
+    if months <= 0:
+        return d
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    last = calendar.monthrange(y, m)[1]
+    return date(y, m, min(d.day, last))
+
+
 def scheduled_maturity_date(start, base_term, extra_months):
     d = parse_date(start)
     if not d:
         return None
     months = int(base_term or 0) + int(extra_months or 0)
-    if months <= 0:
-        return d.isoformat()
-    return (d + timedelta(days=30 * months)).isoformat()
+    end = add_calendar_months(d, months)
+    return end.isoformat() if end else None
 
 
 def refresh_loan_maturity(lid, start=None, base_term=None):
@@ -3458,7 +3453,15 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
     start = start or row_val(loan, "start_date")
     if base_term is None:
         base_term = _row_months(loan)
-    mat = scheduled_maturity_date(start, base_term, option_months_total(lid))
+    extra = option_months_total(lid)
+    try:
+        used = db().execute(
+            "SELECT COALESCE(SUM(months),0) t FROM extensions WHERE loan_id=?", (lid,)
+        ).fetchone()["t"]
+        extra = max(int(extra or 0), int(used or 0))
+    except sqlite3.Error:
+        pass
+    mat = scheduled_maturity_date(start, base_term, extra)
     if not mat:
         return None
     status = row_val(loan, "status") or "Current"
@@ -4035,80 +4038,6 @@ def money(v):
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
-
-
-# --- Stripe ACH (US bank) ---
-STRIPE_ACH_MANDATE_TEXT = (
-    "By checking ACH authorization in Brittco, the borrower authorizes Brittco Capital, Inc. "
-    "to initiate ACH debit entries to the designated U.S. bank account for loan payments "
-    "and related amounts owed under the loan documents. This authorization remains in effect "
-    "until revoked in writing per applicable NACHA rules."
-)
-
-
-def stripe_configured():
-    return bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip())
-
-
-def get_stripe():
-    """Configure and return the stripe module. Secret key from env only."""
-    import stripe
-
-    key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
-    if not key:
-        raise RuntimeError("STRIPE_SECRET_KEY is not set")
-    stripe.api_key = key
-    return stripe
-
-
-def _borrower_us_account_type(bank_account_type):
-    t = (bank_account_type or "checking").strip().lower()
-    if t.startswith("sav"):
-        return "savings"
-    return "checking"
-
-
-def create_borrower_ach_debit(borrower_row, amount_cents, metadata=None):
-    """
-    Create and confirm a Stripe PaymentIntent debiting the borrower's US bank account.
-    Caller must already verify ach_authorized and routing+account are present.
-    Uses offline mandate_data because staff collected authorization in Brittco (ach_authorized).
-    """
-    stripe = get_stripe()
-    name = (borrower_row["name"] if "name" in borrower_row.keys() else "") or "Borrower"
-    routing = str(borrower_row["bank_routing"] or "").strip()
-    account = str(borrower_row["bank_account"] or "").strip()
-    acct_type = _borrower_us_account_type(
-        borrower_row["bank_account_type"] if "bank_account_type" in borrower_row.keys() else None
-    )
-    meta = {str(k): str(v) for k, v in (metadata or {}).items() if v is not None}
-    pi = stripe.PaymentIntent.create(
-        amount=int(amount_cents),
-        currency="usd",
-        payment_method_types=["us_bank_account"],
-        payment_method_data={
-            "type": "us_bank_account",
-            "us_bank_account": {
-                "routing_number": routing,
-                "account_number": account,
-                "account_holder_type": "individual",
-                "account_type": acct_type,
-            },
-            "billing_details": {"name": name},
-        },
-        payment_method_options={
-            "us_bank_account": {"verification_method": "automatic"},
-        },
-        confirm=True,
-        mandate_data={
-            "customer_acceptance": {
-                "type": "offline",
-                "accepted_at": int(datetime.now().timestamp()),
-            }
-        },
-        metadata=meta,
-    )
-    return pi
 
 
 def request_soft_pull(bid, source):
@@ -7316,7 +7245,7 @@ def borrower_detail(bid):
         past_loans=past_loans,
         pulls=pulls,
         ssn_mask=mask_ssn(b["ssn"] if "ssn" in b.keys() else ""),
-        ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.stripe.com/test/payments"),
+        ach_url=os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"),
         ach_rows=db().execute(
             """SELECT t.*, l.loan_number FROM ach_transfers t
                LEFT JOIN loans l ON l.id=t.loan_id
@@ -8097,7 +8026,7 @@ def borrower_ach(bid):
     )
     db().commit()
     if f.get("open_processor"):
-        return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.stripe.com/test/payments"))
+        return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"))
     return redirect(url_for("borrower_detail", bid=bid))
 
 
@@ -9538,6 +9467,16 @@ def loan_detail(lid):
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
         (lid,),
     ).fetchone()
+    try:
+        refresh_loan_maturity(lid)
+        db().commit()
+        loan = db().execute(
+            """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score
+               FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
+            (lid,),
+        ).fetchone()
+    except Exception:
+        pass
     payments = db().execute(
         "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on DESC, id DESC", (lid,)
     ).fetchall()
@@ -9600,20 +9539,11 @@ def loan_detail(lid):
         "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
     ).fetchall()
     latest = letters[0] if letters else None
-    borrower = db().execute(
-        "SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)
-    ).fetchone()
-    ach_transfers = db().execute(
-        """SELECT * FROM ach_transfers
-           WHERE loan_id=? ORDER BY id DESC LIMIT 15""",
-        (lid,),
-    ).fetchall()
     return render_template(
         "loan_detail.html",
         title=loan["loan_number"],
         nav="loans",
         loan=loan,
-        borrower=borrower,
         standing=is_standing_loan(loan),
         payoff_due=standing_payoff_due(loan),
         payments=payments,
@@ -9635,8 +9565,6 @@ def loan_detail(lid):
             "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
         ).fetchall(),
         snap=property_snapshot(loan["property_address"]),
-        stripe_ready=stripe_configured(),
-        ach_transfers=ach_transfers,
     )
 
 
@@ -10251,26 +10179,21 @@ def file_payoff_accounting_docs(loan):
         pass
 
 
-def apply_loan_payment(loan_id, amount, applied_to, paid_on=None, note=None, next_payment_due=None):
-    """
-    Core loan payment accounting (same as manual Record a payment):
-    INSERT payments, distributions via split_payment, update loan balance/status/next due.
-    Returns payment_id of the main payments row. Does not commit — caller commits.
-    """
-    amt = money(amount)
-    applied = applied_to or "Interest"
-    loan = db().execute("SELECT * FROM loans WHERE id=?", (loan_id,)).fetchone()
-    if not loan:
-        raise ValueError("loan not found")
+@app.route("/loans/<int:lid>/payment", methods=["POST"])
+@staff_required
+def loan_payment(lid):
+    f = request.form
+    amt = money(f.get("amount"))
+    applied = f.get("applied_to") or "Interest"
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
     bal = money(loan["current_balance"])
-    paid_on = paid_on or date.today().isoformat()
     if applied != "Principal" and amt > bal + 0.5 and bal > 0:
         applied = "Principal"
     if applied == "Principal" and amt > bal + 0.5 and bal > 0:
         extra = round(amt - bal, 2)
         db().execute(
             "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
-            (loan_id, paid_on, extra, "Interest", note or "Profit above principal"),
+            (lid, f.get("paid_on") or date.today().isoformat(), extra, "Interest", f.get("note") or "Profit above principal"),
         )
         for row in split_payment(loan, extra, "Interest"):
             db().execute(
@@ -10279,7 +10202,7 @@ def apply_loan_payment(loan_id, amount, applied_to, paid_on=None, note=None, nex
                 VALUES (?,?,?,?,?,?,?,?)""",
                 (
                     None,
-                    loan_id,
+                    lid,
                     row["investor_id"],
                     row["investor_amount"],
                     row["brittco_amount"],
@@ -10294,10 +10217,10 @@ def apply_loan_payment(loan_id, amount, applied_to, paid_on=None, note=None, nex
     if applied == "Principal":
         new_bal = max(0.0, new_bal - amt)
     status = "Paid Off" if new_bal <= 0 else loan["status"]
-    nxt = next_payment_due or loan["next_payment_due"]
+    nxt = f.get("next_payment_due") or loan["next_payment_due"]
     cur = db().execute(
         "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
-        (loan_id, paid_on, amt, applied, note),
+        (lid, f.get("paid_on") or date.today().isoformat(), amt, applied, f.get("note")),
     )
     pay_id = cur.lastrowid
     for row in split_payment(loan, amt, applied):
@@ -10307,7 +10230,7 @@ def apply_loan_payment(loan_id, amount, applied_to, paid_on=None, note=None, nex
             VALUES (?,?,?,?,?,?,?,?)""",
             (
                 pay_id,
-                loan_id,
+                lid,
                 row["investor_id"],
                 row["investor_amount"],
                 row["brittco_amount"],
@@ -10318,156 +10241,12 @@ def apply_loan_payment(loan_id, amount, applied_to, paid_on=None, note=None, nex
         )
     db().execute(
         "UPDATE loans SET current_balance=?, status=?, next_payment_due=? WHERE id=?",
-        (new_bal, status, nxt, loan_id),
+        (new_bal, status, nxt, lid),
     )
     if status == "Paid Off" and (loan["status"] or "") != "Paid Off":
-        fresh = db().execute("SELECT * FROM loans WHERE id=?", (loan_id,)).fetchone()
+        fresh = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
         file_payoff_accounting_docs(fresh or loan)
-    return pay_id
-
-
-@app.route("/loans/<int:lid>/payment", methods=["POST"])
-@staff_required
-def loan_payment(lid):
-    f = request.form
-    apply_loan_payment(
-        lid,
-        f.get("amount"),
-        f.get("applied_to") or "Interest",
-        paid_on=f.get("paid_on") or None,
-        note=f.get("note"),
-        next_payment_due=f.get("next_payment_due") or None,
-    )
     db().commit()
-    return redirect(url_for("loan_detail", lid=lid))
-
-
-@app.route("/loans/<int:lid>/ach-collect", methods=["POST"])
-@staff_required
-def loan_ach_collect(lid):
-    """Debit borrower bank via Stripe ACH for this loan; accounting applies when PI succeeds."""
-    f = request.form
-    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
-    if not loan:
-        session["last_invite_note"] = "Loan not found."
-        return redirect(url_for("loans"))
-    borrower = db().execute(
-        "SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)
-    ).fetchone()
-    amount = money(f.get("amount"))
-    applied = (f.get("applied_to") or "Interest").strip() or "Interest"
-    note = (f.get("note") or "").strip()
-    direction = "Debit borrower (loan payment)"
-    now = datetime.now().isoformat(timespec="minutes")
-
-    if not stripe_configured():
-        session["last_invite_note"] = "Stripe is not configured (STRIPE_SECRET_KEY)."
-        return redirect(url_for("loan_detail", lid=lid))
-    if not borrower:
-        session["last_invite_note"] = "Borrower not found for this loan."
-        return redirect(url_for("loan_detail", lid=lid))
-    authorized = bool(int(borrower["ach_authorized"] or 0))
-    routing = (borrower["bank_routing"] or "").strip()
-    account = (borrower["bank_account"] or "").strip()
-    if not authorized:
-        session["last_invite_note"] = "Borrower has not authorized ACH (ach_authorized)."
-        return redirect(url_for("loan_detail", lid=lid))
-    if not routing or not account:
-        session["last_invite_note"] = "Borrower routing and account required for Stripe debit."
-        return redirect(url_for("loan_detail", lid=lid))
-    if amount <= 0:
-        session["last_invite_note"] = "Amount must be greater than zero."
-        return redirect(url_for("loan_detail", lid=lid))
-
-    stripe_id = None
-    status = "Pending"
-    notes = note
-    payment_id = None
-    try:
-        amount_cents = int(round(amount * 100))
-        pi = create_borrower_ach_debit(
-            borrower,
-            amount_cents,
-            metadata={
-                "brittco_loan_id": lid,
-                "brittco_borrower_id": borrower["id"],
-                "applied_to": applied,
-                "direction": direction,
-            },
-        )
-        stripe_id = pi.id
-        pi_status = (getattr(pi, "status", None) or "").lower()
-        if pi_status == "succeeded":
-            status = "Paid"
-        elif pi_status in ("processing", "requires_action", "requires_confirmation"):
-            status = "Pending"
-        else:
-            status = "Pending"
-        notes = ((notes + " | ") if notes else "") + f"Stripe PI {pi.id} status={pi_status or 'n/a'}"
-    except Exception as exc:
-        status = "Failed"
-        notes = ((notes + " | ") if notes else "") + f"Stripe error: {exc}"
-
-    cur = db().execute(
-        """INSERT INTO ach_transfers
-        (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at,
-         stripe_id, applied_to, payment_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            None,
-            borrower["id"],
-            lid,
-            direction,
-            amount,
-            status,
-            "Stripe",
-            notes or None,
-            now,
-            stripe_id,
-            applied,
-            None,
-        ),
-    )
-    tid = cur.lastrowid
-
-    if status == "Paid" and stripe_id:
-        try:
-            pay_id = apply_loan_payment(
-                lid,
-                amount,
-                applied,
-                note=f"ACH Stripe {stripe_id}" + (f" — {note}" if note else ""),
-            )
-            note2 = notes or ""
-            tag = "accounting:applied"
-            if tag not in note2:
-                note2 = (note2 + " | " if note2 else "") + tag
-            db().execute(
-                "UPDATE ach_transfers SET payment_id=?, notes=? WHERE id=?",
-                (pay_id, note2, tid),
-            )
-            payment_id = pay_id
-        except Exception as exc:
-            notes = ((notes + " | ") if notes else "") + f"Accounting error: {exc}"
-            db().execute(
-                "UPDATE ach_transfers SET notes=? WHERE id=?",
-                (notes, tid),
-            )
-
-    db().commit()
-    if status == "Failed":
-        session["last_invite_note"] = notes or "ACH debit failed."
-    elif payment_id:
-        session["last_invite_note"] = (
-            f"Stripe ACH debit succeeded ({stripe_id}). Loan payment recorded (#{payment_id})."
-        )
-    elif stripe_id:
-        session["last_invite_note"] = (
-            f"Stripe ACH debit submitted ({stripe_id}). Status: {status}. "
-            "Accounting applies when the payment succeeds."
-        )
-    else:
-        session["last_invite_note"] = notes or "ACH debit recorded."
     return redirect(url_for("loan_detail", lid=lid))
 
 
@@ -10652,7 +10431,7 @@ def investor_detail(iid):
         dists=dists,
         ach=ach,
         books=books,
-        stripe_ready=stripe_configured(),
+        dwolla_ready=bool(os.environ.get("ACH_API_KEY")),
         delete_warn=warn,
     )
 
@@ -11452,155 +11231,43 @@ def investor_source_remove(sid):
     return redirect(url_for("investor_portal"))
 
 
-def maybe_apply_ach_accounting(stripe_id=None, transfer_row=None):
-    """
-    When a borrower-debit ACH transfer is Paid and accounting not yet applied,
-    run the same accounting as manual loan_payment. Idempotent via payment_id.
-    """
-    row = transfer_row
-    if row is None and stripe_id:
-        row = db().execute(
-            "SELECT * FROM ach_transfers WHERE stripe_id=? ORDER BY id DESC",
-            (stripe_id,),
-        ).fetchone()
-    if not row:
-        return None
-    row = db().execute("SELECT * FROM ach_transfers WHERE id=?", (row["id"],)).fetchone()
-    if not row:
-        return None
-    keys = row.keys()
-    if "payment_id" in keys and row["payment_id"] is not None:
-        return row["payment_id"]
-    if (row["status"] or "").strip() != "Paid":
-        return None
-    loan_id = row["loan_id"]
-    if not loan_id:
-        return None
-    direction = (row["direction"] or "").strip()
-    if direction != "Debit borrower (loan payment)":
-        return None
-    amount = money(row["amount"])
-    if amount <= 0:
-        return None
-    applied = "Interest"
-    if "applied_to" in keys and row["applied_to"]:
-        applied = (row["applied_to"] or "").strip() or "Interest"
-    sid = (row["stripe_id"] or "").strip() if "stripe_id" in keys else ""
-    note = f"ACH Stripe {sid}" if sid else "ACH collection"
-    pay_id = apply_loan_payment(loan_id, amount, applied, note=note)
-    note_existing = row["notes"] or ""
-    tag = "accounting:applied"
-    if tag not in note_existing:
-        note_existing = (note_existing + " | " if note_existing else "") + tag
-    db().execute(
-        "UPDATE ach_transfers SET payment_id=?, notes=? WHERE id=? AND payment_id IS NULL",
-        (pay_id, note_existing, row["id"]),
-    )
-    db().commit()
-    return pay_id
-
-
 @app.route("/ach", methods=["GET", "POST"])
 @staff_required
 def ach():
     if request.method == "POST":
         f = request.form
+        vendor = "Dwolla" if os.environ.get("ACH_API_KEY") else "Manual / pending bank"
         lid = int(f["loan_id"]) if f.get("loan_id") else None
         bid = int(f["borrower_id"]) if f.get("borrower_id") else None
         if lid and not bid:
             row = db().execute("SELECT borrower_id FROM loans WHERE id=?", (lid,)).fetchone()
             bid = row["borrower_id"] if row else None
-        amount = money(f.get("amount"))
-        notes = (f.get("notes") or "").strip()
-        now = datetime.now().isoformat(timespec="minutes")
-        stripe_id = None
-        status = "Recorded — collect at bank or connect Stripe"
-        vendor = "Manual / pending Stripe"
-        direction = "Debit borrower (loan payment)"
-
-        borrower = None
-        if bid:
-            borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
-
-        authorized = bool(borrower and int(borrower["ach_authorized"] or 0))
-        routing = (borrower["bank_routing"] or "").strip() if borrower else ""
-        account = (borrower["bank_account"] or "").strip() if borrower else ""
-
-        if stripe_configured():
-            vendor = "Stripe"
-            if not borrower:
-                status = "Failed"
-                notes = ((notes + " | ") if notes else "") + "Borrower required for Stripe debit."
-            elif not authorized:
-                status = "Failed"
-                notes = ((notes + " | ") if notes else "") + "Borrower has not authorized ACH (ach_authorized)."
-            elif not routing or not account:
-                status = "Failed"
-                notes = ((notes + " | ") if notes else "") + "Borrower routing and account required for Stripe debit."
-            elif amount <= 0:
-                status = "Failed"
-                notes = ((notes + " | ") if notes else "") + "Amount must be greater than zero."
-            else:
-                try:
-                    amount_cents = int(round(amount * 100))
-                    pi = create_borrower_ach_debit(
-                        borrower,
-                        amount_cents,
-                        metadata={
-                            "brittco_borrower_id": bid,
-                            "brittco_loan_id": lid or "",
-                            "direction": direction,
-                        },
-                    )
-                    stripe_id = pi.id
-                    pi_status = (getattr(pi, "status", None) or "").lower()
-                    if pi_status in ("succeeded",):
-                        status = "Paid"
-                    elif pi_status in ("processing", "requires_action", "requires_confirmation"):
-                        status = "Pending"
-                    else:
-                        status = "Pending"
-                    notes = ((notes + " | ") if notes else "") + f"Stripe PI {pi.id} status={pi_status or 'n/a'}"
-                except Exception as exc:
-                    status = "Failed"
-                    notes = ((notes + " | ") if notes else "") + f"Stripe error: {exc}"
-        else:
-            session["last_invite_note"] = "Stripe not configured (set STRIPE_SECRET_KEY). Collection recorded manually."
-
         db().execute(
             """INSERT INTO ach_transfers
-            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, stripe_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 None,
                 bid,
                 lid,
-                direction,
-                amount,
-                status,
+                "Debit borrower (loan payment)",
+                money(f.get("amount")),
+                "Queued" if os.environ.get("ACH_API_KEY") else "Recorded — collect at bank or connect processor",
                 vendor,
-                notes or None,
-                now,
-                stripe_id,
+                f.get("notes"),
+                datetime.now().isoformat(timespec="minutes"),
             ),
         )
         db().commit()
-        if stripe_configured() and status == "Failed":
-            session["last_invite_note"] = notes or "ACH debit failed."
-        elif stripe_configured() and stripe_id:
-            session["last_invite_note"] = f"Stripe ACH debit submitted ({stripe_id}). Status: {status}."
         return redirect(url_for("ach"))
-
     transfers = db().execute(
-        """SELECT t.*, b.name AS borrower_name, i.name AS investor_name, l.loan_number
+        """SELECT t.*, b.name AS borrower_name, l.loan_number
            FROM ach_transfers t
            LEFT JOIN borrowers b ON b.id=t.borrower_id
-           LEFT JOIN investors i ON i.id=t.investor_id
            LEFT JOIN loans l ON l.id=t.loan_id
            ORDER BY t.id DESC"""
     ).fetchall()
     borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
-    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
     loans = db().execute(
         """SELECT l.id, l.loan_number, l.property_address, b.name AS borrower_name
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
@@ -11612,328 +11279,9 @@ def ach():
         nav="ach",
         transfers=transfers,
         borrowers=borrowers,
-        investors=investors,
         loans=loans,
-        vendor_ready=stripe_configured(),
-        stripe_ready=stripe_configured(),
-        mandate_text=STRIPE_ACH_MANDATE_TEXT,
-        flash=session.pop("last_invite_note", None),
+        vendor_ready=bool(os.environ.get("ACH_API_KEY")),
     )
-
-
-@app.route("/ach/investor-payout", methods=["POST"])
-@staff_required
-def ach_investor_payout():
-    """
-    Investor ACH credits: log only. Stripe cannot ACH-credit an external bank without
-    Connect/Treasury. Staff send via Brittco bank or enable Connect later.
-    """
-    f = request.form
-    iid = int(f["investor_id"]) if f.get("investor_id") else None
-    amount = money(f.get("amount"))
-    notes = (f.get("notes") or "").strip()
-    now = datetime.now().isoformat(timespec="minutes")
-    inv = db().execute("SELECT * FROM investors WHERE id=?", (iid,)).fetchone() if iid else None
-    if not inv:
-        session["last_invite_note"] = "Select an investor for payout."
-        return redirect(url_for("ach"))
-    routing = (inv["wire_routing"] or "").strip() if "wire_routing" in inv.keys() else ""
-    account = (inv["wire_account"] or "").strip() if "wire_account" in inv.keys() else ""
-    if not routing or not account:
-        session["last_invite_note"] = (
-            "Investor needs wire_routing and wire_account on file before recording a payout."
-        )
-        return redirect(url_for("ach"))
-    if amount <= 0:
-        session["last_invite_note"] = "Payout amount must be greater than zero."
-        return redirect(url_for("ach"))
-    status = "Recorded — send via bank or enable Connect"
-    note_bits = [
-        notes,
-        f"wire {routing[-4:] if len(routing) >= 4 else routing} / acct …{(account[-4:] if len(account) >= 4 else account)}",
-        "Sandbox borrower debits run through Stripe; investor credits are logged until Stripe Connect is enabled.",
-    ]
-    full_notes = " | ".join(b for b in note_bits if b)
-    db().execute(
-        """INSERT INTO ach_transfers
-        (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, stripe_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (
-            iid,
-            None,
-            None,
-            "Credit investor (distribution)",
-            amount,
-            status,
-            "Stripe",
-            full_notes,
-            now,
-            None,
-        ),
-    )
-    db().commit()
-    session["last_invite_note"] = (
-        "Investor payout logged. Send via Brittco bank ACH/wire or enable Stripe Connect — "
-        "not auto-sent by Stripe."
-    )
-    return redirect(url_for("ach"))
-
-
-
-@app.route("/ach/<int:tid>/refresh-stripe", methods=["POST"])
-@staff_required
-def ach_refresh_stripe(tid):
-    """Staff backup: pull PaymentIntent status from Stripe when a webhook was missed."""
-    row = db().execute("SELECT * FROM ach_transfers WHERE id=?", (tid,)).fetchone()
-    if not row:
-        session["last_invite_note"] = "ACH transfer not found."
-        return redirect(url_for("ach"))
-
-    def _ach_refresh_redirect():
-        if row["loan_id"]:
-            return redirect(url_for("loan_detail", lid=row["loan_id"]))
-        return redirect(url_for("ach"))
-
-    sid = (row["stripe_id"] or "").strip() if "stripe_id" in row.keys() else ""
-    if not sid:
-        session["last_invite_note"] = "No Stripe ID on this transfer — nothing to refresh."
-        return _ach_refresh_redirect()
-
-    if not stripe_configured():
-        session["last_invite_note"] = "Stripe is not configured (STRIPE_SECRET_KEY)."
-        return _ach_refresh_redirect()
-
-    pi_id = sid
-    try:
-        stripe = get_stripe()
-        if sid.startswith("ch_"):
-            # Charge id — resolve PaymentIntent if present
-            ch = stripe.Charge.retrieve(sid)
-            pi_ref = getattr(ch, "payment_intent", None) or (ch.get("payment_intent") if hasattr(ch, "get") else None)
-            if not pi_ref:
-                session["last_invite_note"] = f"Charge {sid} has no PaymentIntent to refresh."
-                return _ach_refresh_redirect()
-            pi_id = pi_ref if isinstance(pi_ref, str) else getattr(pi_ref, "id", None) or str(pi_ref)
-        elif not sid.startswith("pi_"):
-            session["last_invite_note"] = f"Stripe ID {sid} is not a PaymentIntent (pi_) or Charge (ch_)."
-            return _ach_refresh_redirect()
-
-        pi = stripe.PaymentIntent.retrieve(pi_id)
-        pi_status = (getattr(pi, "status", None) or "").lower()
-        last_error = getattr(pi, "last_payment_error", None)
-
-        if pi_status == "succeeded":
-            mapped = "Paid"
-        elif pi_status in ("processing", "requires_action", "requires_confirmation"):
-            mapped = "Pending"
-        elif pi_status == "canceled":
-            mapped = "Failed"
-        elif pi_status in ("requires_payment_method",) or pi_status == "payment_failed":
-            mapped = "Failed"
-        elif last_error:
-            mapped = "Failed"
-        else:
-            mapped = "Pending"
-
-        # Staff refresh: allow Failed→Paid and also allow setting Pending only if not Paid
-        cur = row["status"] or ""
-        apply_status = mapped
-        if mapped == "Pending" and cur in ("Paid", "Failed"):
-            apply_status = cur  # do not downgrade
-        elif mapped == "Failed" and cur == "Paid":
-            # Rare: PI canceled after paid — still allow staff refresh to show Failed
-            apply_status = "Failed"
-
-        note = (row["notes"] or "")
-        tag = f"refresh:{pi_status}"
-        if tag not in note:
-            note = (note + " | " if note else "") + tag
-        event_label = f"refresh:{pi_status}"
-
-        db().execute(
-            """UPDATE ach_transfers
-               SET status=?, stripe_event=?, notes=?, stripe_id=? WHERE id=?""",
-            (apply_status, event_label, note, pi_id if pi_id.startswith("pi_") else sid, tid),
-        )
-        db().commit()
-        acct_note = ""
-        if apply_status == "Paid":
-            try:
-                pay_id = maybe_apply_ach_accounting(
-                    stripe_id=pi_id if str(pi_id).startswith("pi_") else sid
-                )
-                if pay_id:
-                    acct_note = f" Loan payment recorded (#{pay_id})."
-            except Exception as acct_exc:
-                acct_note = f" Accounting apply failed: {acct_exc}."
-        session["last_invite_note"] = (
-            f"Refreshed from Stripe: PI {pi_id} status={pi_status} → {apply_status}.{acct_note}"
-        )
-    except Exception as exc:
-        session["last_invite_note"] = f"Stripe refresh failed: {exc}"
-
-    return _ach_refresh_redirect()
-
-
-
-def _ach_status_may_apply(current_status, new_status):
-    """Idempotent ACH status transitions for webhooks / refresh."""
-    cur = (current_status or "").strip()
-    nxt = (new_status or "").strip()
-    if not nxt:
-        return False
-    if cur == nxt:
-        return True  # still allow notes/event update
-    # Never downgrade Paid or Failed to Pending
-    if nxt == "Pending" and cur in ("Paid", "Failed"):
-        return False
-    # Never overwrite Paid with Failed (keep Paid sticky unless staff refresh)
-    if nxt == "Failed" and cur == "Paid":
-        return False
-    # Allowed: Pending→Paid, Pending→Failed, Failed→Paid, and same-status no-ops
-    if nxt == "Paid":
-        return True
-    if nxt == "Failed" and cur != "Paid":
-        return True
-    if nxt == "Pending" and cur not in ("Paid", "Failed"):
-        return True
-    return False
-
-
-@app.route("/webhooks/stripe", methods=["POST"])
-def stripe_webhook():
-    """Stripe webhook — no staff login. Verifies signature when STRIPE_WEBHOOK_SECRET is set."""
-    payload = request.get_data()
-    sig_header = request.headers.get("Stripe-Signature", "")
-    wh_secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
-    event = None
-    try:
-        if wh_secret and stripe_configured():
-            stripe = get_stripe()
-            event = stripe.Webhook.construct_event(payload, sig_header, wh_secret)
-        else:
-            # Allow unsigned parse only when secret missing (local/dev); prefer secret in production.
-            import json as _json
-
-            event = _json.loads(payload.decode("utf-8"))
-    except Exception as exc:
-        # Signature / parse failure — tell Stripe not to retry as success
-        try:
-            app.logger.warning("stripe_webhook verification failed: %s", exc)
-        except Exception:
-            pass
-        return ("Webhook verification failed", 400)
-
-    try:
-        etype = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
-        data_obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event["data"]["object"]
-        if not isinstance(data_obj, dict):
-            try:
-                data_obj = data_obj.to_dict() if hasattr(data_obj, "to_dict") else dict(data_obj)
-            except Exception:
-                data_obj = {}
-
-        stripe_ids = []
-        obj_id = data_obj.get("id")
-        if obj_id:
-            stripe_ids.append(obj_id)
-        pi_ref = data_obj.get("payment_intent")
-        if pi_ref:
-            stripe_ids.append(pi_ref)
-        # Deduplicate while preserving order
-        seen = set()
-        stripe_ids = [x for x in stripe_ids if not (x in seen or seen.add(x))]
-
-        paid_types = {
-            "payment_intent.succeeded",
-            "charge.succeeded",
-            "charge.updated",  # ACH settle may arrive as charge.updated with paid=true
-            "payout.paid",
-            "setup_intent.succeeded",
-        }
-        failed_types = {
-            "payment_intent.payment_failed",
-            "charge.failed",
-            "payout.failed",
-            "payment_intent.canceled",
-        }
-        processing_types = {
-            "payment_intent.processing",
-            "payment_intent.requires_action",
-        }
-
-        new_status = None
-        if etype in paid_types:
-            # charge.updated: only treat as Paid when the charge is paid
-            if etype == "charge.updated":
-                if data_obj.get("paid") or (data_obj.get("status") or "").lower() == "succeeded":
-                    new_status = "Paid"
-                elif (data_obj.get("status") or "").lower() in ("failed", "canceled"):
-                    new_status = "Failed"
-                else:
-                    new_status = None  # event-only update
-            else:
-                new_status = "Paid"
-        elif etype in failed_types:
-            new_status = "Failed"
-        elif etype in processing_types:
-            new_status = "Pending"
-
-        if stripe_ids:
-            for sid in stripe_ids:
-                rows = db().execute(
-                    "SELECT id, status, notes FROM ach_transfers WHERE stripe_id=?", (sid,)
-                ).fetchall()
-                for row in rows:
-                    note = (row["notes"] or "")
-                    tag = f"webhook:{etype}" if etype else "webhook"
-                    if tag not in note:
-                        note = (note + " | " if note else "") + tag
-                    cur = row["status"] or ""
-                    if new_status and _ach_status_may_apply(cur, new_status):
-                        db().execute(
-                            """UPDATE ach_transfers
-                               SET status=?, stripe_event=?, notes=? WHERE id=?""",
-                            (new_status, etype, note, row["id"]),
-                        )
-                    elif etype:
-                        # Still record last event / notes without status downgrade
-                        db().execute(
-                            """UPDATE ach_transfers
-                               SET stripe_event=?, notes=? WHERE id=?""",
-                            (etype, note, row["id"]),
-                        )
-            db().commit()
-            if new_status == "Paid":
-                for sid in stripe_ids:
-                    try:
-                        maybe_apply_ach_accounting(stripe_id=sid)
-                    except Exception as acct_exc:
-                        try:
-                            app.logger.exception(
-                                "stripe_webhook ACH accounting failed for %s: %s", sid, acct_exc
-                            )
-                        except Exception:
-                            pass
-    except Exception as exc:
-        # DB / processing error — 500 so Stripe retries
-        try:
-            app.logger.exception("stripe_webhook processing error: %s", exc)
-        except Exception:
-            pass
-        try:
-            db().rollback()
-        except Exception:
-            pass
-        return ("Webhook processing error", 500)
-
-    return ("", 200)
-
-
-@app.route("/webhooks/stripe/health", methods=["GET"])
-def stripe_webhook_health():
-    """Optional uptime/warm ping — no auth."""
-    return ("ok", 200)
 
 
 @app.route("/deals/<int:did>/decision", methods=["POST"])
