@@ -14,22 +14,19 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     <p class="hint">{{ loan.borrower_name }} · {{ loan.property_address }}</p>
     {% if loan.archived %}<p class="hint">This loan is archived. Accounting is unchanged.</p>{% endif %}
   </div>
-  <div>
-    {% if loan.archived %}
-    <form method="post" action="{{ url_for('loan_restore', lid=loan.id) }}">
-      <button class="btn" type="submit">Restore to working list</button>
-    </form>
-    {% else %}
-    <a class="btn" href="{{ url_for('loan_edit', lid=loan.id) }}">Edit loan</a>
-    <form method="post" action="{{ url_for('loan_archive', lid=loan.id) }}">
-      <button class="btn ghost" type="submit">Archive</button>
-    </form>
-    {% endif %}
-    <form method="post" action="{{ url_for('loan_delete', lid=loan.id) }}" style="margin-top:8px" onsubmit="return confirm('This permanently deletes the loan and its payments.');">
-      <input name="confirm" placeholder="Type DELETE" style="width:120px">
-      <button class="btn ghost" type="submit">Delete loan</button>
-    </form>
-  </div>
+</div>
+<div class="even-actions">
+  {% if loan.archived %}
+  <form method="post" action="{{ url_for('loan_restore', lid=loan.id) }}">
+    <button type="submit">Restore</button>
+  </form>
+  {% else %}
+  <a href="{{ url_for('loan_edit', lid=loan.id) }}">Edit loan</a>
+  <form method="post" action="{{ url_for('loan_archive', lid=loan.id) }}">
+    <button type="submit">Archive</button>
+  </form>
+  {% endif %}
+  <a href="{{ url_for('borrower_detail', bid=loan.borrower_id) }}">Borrower file</a>
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 <details class="box">
@@ -97,6 +94,13 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <summary>Loan figures <span class="peek">balance, rate, payoff, investors paid</span></summary>
   <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
+  <div class="card"><h3>Purchase price</h3><div>${{ "{:,.0f}".format(loan.purchase_price or 0) }}</div></div>
+  <div class="card"><h3>Loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div>
+    {% if loan.purchase_price %}
+    <div class="hint">{{ "%.0f"|format((loan.original_principal or 0) / loan.purchase_price * 100) }}% of purchase</div>
+    {% endif %}
+  </div>
+  <div class="card"><h3>Upfront points</h3><div>{{ loan.points or 0 }}%</div></div>
   <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div></div>
   <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
@@ -119,7 +123,8 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 </details>
 
 <details class="box" id="loan-file">
-  <summary>Loan file <span class="peek">{{ folder.name if folder else loan.property_address }} · {{ folder_docs|length }} paper(s)</span></summary>
+  <summary>Loan file <span class="peek">{{ folder.name if folder else loan.property_address }} · {{ folder_docs|length }} paper(s) · full cabinet on the borrower file</span></summary>
+  <p class="hint"><a href="{{ url_for('borrower_detail', bid=loan.borrower_id) }}">Open this borrower’s documents</a> for the full cabinet. This folder is the papers for this loan only.</p>
 
   <p class="hint">Named for the property. Papers are pulled from this borrower’s file. Drag a computer file onto the folder, or drag a document from the list below into the folder.</p>
   <div class="drop-file drop-upload" data-add="{{ url_for('loan_files_move', lid=loan.id, fid=folder.id) }}" data-upload="{{ url_for('loan_files_upload', lid=loan.id) }}" style="margin:8px 0;border:1px dashed #9bb4c9;border-radius:10px;padding:12px;background:#fff">
@@ -294,13 +299,15 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   {% endif %}
 </details>
 
+{% set show_staff = (perf.gap or 0) > 0.5 or (perf.due_in is not none and perf.due_in <= 7) or (perf.matures_in is not none and perf.matures_in <= 14) or perf.closed %}
+{% if show_staff %}
 <details class="box">
-  <summary>Staff notes and reminder <span class="peek">copy a borrower reminder</span></summary>
-
+  <summary>Staff notes and reminder <span class="peek">action needed</span></summary>
   <p>{{ staff_assist }}</p>
   <label>Reminder draft (copy into email or text)</label>
   <textarea rows="4" style="width:100%">{{ reminder_draft }}</textarea>
 </details>
+{% endif %}
 
 <details class="box">
   {% if perf.closed %}
@@ -476,99 +483,31 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     <div class="span-2"><button class="btn" type="submit">Save payment</button></div>
   </form>
 </details>
-
-<details class="box" open>
-  <summary>Set up ACH payment</summary>
-  <p class="hint">
-    Debits the borrower bank on file via Stripe ACH.
-    Loan accounting (payment + splits + balance) applies automatically when Stripe marks the debit Paid
-    (webhook or Refresh from Stripe).
-  </p>
-  {% set bank_ok = borrower and borrower.bank_routing and borrower.bank_account %}
-  {% set auth_ok = borrower and borrower.ach_authorized %}
-  {% if not stripe_ready %}
-  <p class="hint">Stripe is not configured (set STRIPE_SECRET_KEY on the server).</p>
-  {% elif not borrower %}
-  <p class="hint">No borrower linked to this loan.</p>
-  {% elif not auth_ok or not bank_ok %}
-  <p class="hint">
-    Borrower needs ACH authorization and routing + account on file before collecting.
-    {% if borrower %}
-    <a href="{{ url_for('borrower_detail', bid=borrower.id) }}">Open borrower profile</a>
-    {% endif %}
-  </p>
-  {% else %}
-  <p class="hint">
-    Bank on file ends …{{ (borrower.bank_account or '')[-4:] }}
-    · routing …{{ (borrower.bank_routing or '')[-4:] }}
-    · authorized
-  </p>
-  <form method="post" action="{{ url_for('loan_ach_collect', lid=loan.id) }}" class="form-grid">
-    <div><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required></div>
-    <div><label>Applied to</label>
-      <select name="applied_to"><option>Interest</option><option>Principal</option><option>Fees</option><option>Brittco fee</option></select>
-    </div>
-    <div class="span-2"><label>Note (optional)</label><input name="note"></div>
-    <div class="span-2"><button class="btn" type="submit">Collect ACH payment</button></div>
-  </form>
-  {% endif %}
-
-  {% if ach_transfers %}
-  <table class="table" style="margin-top:12px">
-    <tr><th>When</th><th>Amount</th><th>Applied</th><th>Status</th><th>Stripe</th><th>Payment #</th><th></th></tr>
-    {% for t in ach_transfers %}
-    <tr>
-      <td>{{ t.created_at }}</td>
-      <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
-      <td>{{ t.applied_to or "—" }}</td>
-      <td>{{ t.status }}</td>
-      <td style="font-size:12px">{{ t.stripe_id or "—" }}</td>
-      <td>{{ t.payment_id or "—" }}</td>
-      <td>
-        {% if t.stripe_id %}
-        <form method="post" action="{{ url_for('ach_refresh_stripe', tid=t.id) }}" style="display:inline">
-          <button class="btn ghost" type="submit">Refresh</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-</details>
-
 <details class="box">
-  <summary>Payment history <span class="peek">{{ payments|length }} payment(s) · ${{ "{:,.0f}".format(perf.paid) }} recorded</span></summary>
-
+  <summary>Payments and splits <span class="peek">{{ payments|length }} payment(s) · ${{ "{:,.0f}".format(perf.paid) }} recorded</span></summary>
   <table class="table">
-    <tr><th>Date</th><th>Amount</th><th>Applied</th><th>Note</th></tr>
+    <tr><th>Date</th><th>What</th><th>Amount</th><th>Applied / type</th><th>Note</th></tr>
     {% for p in payments %}
     <tr>
       <td>{{ p.paid_on }}</td>
+      <td>Borrower payment</td>
       <td>${{ "{:,.2f}".format(p.amount or 0) }}</td>
       <td>{{ p.applied_to }}</td>
       <td>{{ p.note or "" }}</td>
     </tr>
-    {% else %}
-    <tr><td colspan="4">No payments yet.</td></tr>
-    {% endfor %}
-  </table>
-</details>
-<details class="box">
-  <summary>How payments were split <span class="peek">{{ dists|length }} distribution(s)</span></summary>
-
-  <table class="table">
-    <tr><th>When</th><th>Investor</th><th>Investor received</th><th>Brittco kept</th><th>Type</th></tr>
     {% for d in dists %}
+    {% if d.payment_id == p.id %}
     <tr>
-      <td>{{ d.created_at }}</td>
-      <td>{{ d.investor_name or "Brittco book" }}</td>
-      <td>${{ "{:,.2f}".format(d.investor_amount or 0) }}</td>
-      <td>${{ "{:,.2f}".format(d.brittco_amount or 0) }}</td>
+      <td></td>
+      <td>Split · {{ d.investor_name or "Brittco book" }}</td>
+      <td>Inv ${{ "{:,.2f}".format(d.investor_amount or 0) }} · Brittco ${{ "{:,.2f}".format(d.brittco_amount or 0) }}</td>
       <td>{{ d.kind }}</td>
+      <td></td>
     </tr>
+    {% endif %}
+    {% endfor %}
     {% else %}
-    <tr><td colspan="5">Splits appear after you record a borrower payment.</td></tr>
+    <tr><td colspan="5">No payments yet.</td></tr>
     {% endfor %}
   </table>
 </details>

@@ -33,9 +33,15 @@
     <div id="prop-snap" class="hint" style="margin-top:8px"></div>
   </div>
   <div class="flip-only"><label>Purchase price</label><input name="purchase_price" id="purchase_price" type="number" step="0.01" value="{{ loan.purchase_price if loan else '' }}"></div>
+  <div class="flip-only"><label>Loan amount</label><input name="loan_amount" id="loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}" placeholder="What Brittco funds"></div>
+  <div class="flip-only"><label>Loan % of purchase</label><input name="loan_pct" id="loan_pct" type="number" step="0.01" placeholder="80 if $80k on $100k">
+    <p class="hint" id="loan-pct-hint">Enter purchase and loan amount. 100k purchase / 80k loan = 80% funded (20% not financed).</p>
+  </div>
   <div class="flip-only"><label>Rehab cost</label><input name="rehab_cost" id="rehab_cost" type="number" step="0.01" value="{{ loan.rehab_cost if loan else '' }}"></div>
-  <div class="flip-only"><label>Points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the loan if entered" value="{{ loan.points if loan else '' }}"></div>
-  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}"></div>
+  <div class="flip-only"><label>Upfront points (%)</label><input name="points" id="points" type="number" step="0.01" placeholder="Added to the funded loan if entered" value="{{ loan.points if loan else '' }}"></div>
+  <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}">
+    <p class="hint">Funded loan plus upfront points.</p>
+  </div>
   <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10" value="{{ loan.rate if loan else '' }}"></div>
   <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3" value="{{ loan.base_term_months if loan else '' }}"></div>
   <div class="standing-only span-2"><h3>Standing / other loan</h3>
@@ -116,14 +122,31 @@
     if (lab) lab.textContent = t === "Balloon" ? "Payoff" : "Payment amount";
     syncPayoff();
   }
+  function syncPctHint(){
+    var purchase = num("purchase_price");
+    var loanAmt = num("loan_amount");
+    var hint = document.getElementById("loan-pct-hint");
+    if (!hint) return;
+    if (purchase && loanAmt){
+      var funded = loanAmt / purchase * 100;
+      var gap = 100 - funded;
+      hint.textContent = funded.toFixed(1) + "% funded · " + gap.toFixed(1) + "% not financed ($" + (purchase - loanAmt).toLocaleString(undefined,{maximumFractionDigits:0}) + ").";
+    }
+  }
   function syncTotal(){
     var purchase = num("purchase_price");
+    var loanAmt = num("loan_amount");
     var rehab = num("rehab_cost");
     var pts = num("points");
-    var base = purchase + rehab;
+    var pctBox = document.getElementById("loan_pct");
+    if (purchase && loanAmt && pctBox && document.activeElement !== pctBox){
+      pctBox.value = (loanAmt / purchase * 100).toFixed(2);
+    }
+    var base = loanAmt || (purchase + rehab);
     var total = base + base * pts / 100;
     var out = document.getElementById("total_loan_amount");
     if (out) out.value = total ? total.toFixed(2) : "";
+    syncPctHint();
     syncPayoff();
   }
   function principal(){
@@ -214,7 +237,15 @@
     syncMaturity();
     syncPayoff();
   }
-  ["purchase_price","rehab_cost","points"].forEach(function(id){
+  var pctBox = document.getElementById("loan_pct");
+  if (pctBox) pctBox.addEventListener("input", function(){
+    var purchase = num("purchase_price");
+    var pct = num("loan_pct");
+    var loanBox = document.getElementById("loan_amount");
+    if (purchase && pct && loanBox) loanBox.value = (purchase * pct / 100).toFixed(2);
+    syncTotal();
+  });
+  ["purchase_price","rehab_cost","points","loan_amount"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.addEventListener("input", syncTotal);
   });
