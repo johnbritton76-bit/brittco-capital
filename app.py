@@ -5547,7 +5547,7 @@ def ask_grok(system, user, brief):
     key = grok_api_key()
     if not key:
         return None
-    model = os.environ.get("XAI_MODEL") or "grok-3"
+    model = os.environ.get("XAI_MODEL") or "grok-4-fast-non-reasoning"
     payload = json.dumps(
         {
             "model": model,
@@ -5617,17 +5617,53 @@ def investor_help_brief(inv, books):
 
 GROK_HELP_RULES = (
     "You are a warm, plain-spoken desk assistant for Brittco Capital Inc, a private lender. "
-    "Talk like a helpful person at the office, not a manual. Use short paragraphs. "
+    "Talk like a helpful person at the office. Short paragraphs. "
     "Use only the file summary you are given. Never invent balances, dates, approvals, or other people's names. "
     "If the file does not contain the answer, say so and offer to have staff follow up. "
     "You cannot approve a loan, change terms, wire money, or give legal or tax advice. "
-    "Products: Fix and Flip, Transactional Loan, Gap Loan (3 months 15% flat, extensions 3% each), "
-    "and Other/perpetual standing loans. "
+    "Software live at app.brittcocapital.com. Staff use the dashboard. Borrowers use /portal/login. Investors use /investor/login. "
+    "Products: Fix and Flip; Transactional (same-day double close 1%, 2–7 days 2%); "
+    "Gap Loan (3 months 15% flat, two 3% extensions); Other/perpetual standing loans. No bridge product right now. "
+    "Loan math: purchase price is the house price. Loan amount is what Brittco funds toward purchase (can be a %). "
+    "Rehab is added. Upfront points are added on that funded purchase + rehab. That total is original principal and drives accounting. "
+    "Maturity is calendar months, same day of month (3/25 + 3 months = 6/25). Extensions move that date. "
+    "Late only after base term plus every extension. During unused or used extension window say in extension. "
+    "Reminders fire 14 days before full maturity. "
+    "Staff: Loans tab, Edit loan, Add/remove extension on the loan file. Borrowers tab for profiles and welcome emails. "
+    "Staff page (super admin only) adds/revokes staff logins. "
     "Preferred credit 680+, exceptions possible. Soft pull does not hurt the score. "
     "Typical funding 7 days or less; repeat borrowers often 24–48 hours. "
     "Nate Holland’s fee is a share of realized profit after basis is back; it can be 0% on a loan. "
-    "Sign-off only if it feels natural. Do not mention that you are an AI unless asked."
+    "Do not mention that you are an AI unless asked."
 )
+
+
+def staff_help_brief():
+    try:
+        loans_n = db().execute(
+            "SELECT COUNT(*) n FROM loans WHERE COALESCE(archived,0)=0 AND COALESCE(loan_number,'')!='BC-TX-10W96'"
+        ).fetchone()["n"]
+        b_n = db().execute("SELECT COUNT(*) n FROM borrowers").fetchone()["n"]
+        i_n = db().execute("SELECT COUNT(*) n FROM investors").fetchone()["n"]
+    except sqlite3.Error:
+        loans_n = b_n = i_n = 0
+    return (
+        f"Desk snapshot: {loans_n} live loans, {b_n} borrowers, {i_n} investors. "
+        "Staff can open Loans, Borrowers, Investors, Accounting, Forms, and Staff (super only)."
+    )
+
+
+def answer_staff_help(question):
+    q = (question or "").strip()
+    if not q:
+        return "Ask how to enter a loan, add an extension, send a welcome email, or where a number comes from."
+    grok = ask_grok(
+        GROK_HELP_RULES + " You are speaking to Brittco staff. Explain where to click. Do not expose other customers' private data.",
+        q,
+        staff_help_brief(),
+    )
+    return grok or "Add XAI_API_KEY in Render to turn the desk assistant on, or ask from a borrower/investor file."
+
 
 
 def answer_borrower_help(question, borrower, deals, loans, missing):
@@ -7065,6 +7101,8 @@ def dashboard():
         loan_statuses=loan_statuses,
         stats=stats,
         alerts=alerts,
+        staff_q=request.args.get("q") or "",
+        staff_a=answer_staff_help(request.args.get("q") or "") if request.args.get("q") else None,
         public_url=public_base() or request.url_root.rstrip("/"),
     )
 
