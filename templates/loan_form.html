@@ -92,6 +92,16 @@
     {% if loan %}<a class="btn ghost" href="{{ url_for('loan_detail', lid=loan.id) }}">Cancel</a>{% endif %}
   </div>
 </form>
+{% if loan %}
+<div class="card" style="margin-top:16px">
+  <h3>Delete this loan</h3>
+  <p class="hint">This removes the loan and its payments. Type DELETE to confirm.</p>
+  <form method="post" action="{{ url_for('loan_delete', lid=loan.id) }}" onsubmit="return confirm('This permanently deletes the loan and its payments.');">
+    <input name="confirm" placeholder="Type DELETE" style="width:140px">
+    <button class="btn ghost" type="submit">Delete loan</button>
+  </form>
+</div>
+{% endif %}
 <script>
 (function(){
   var list = document.getElementById("ext-list");
@@ -164,11 +174,17 @@
       }
     }
   }
-  function addDays(iso, days){
+  function addMonths(iso, months){
     if (!iso) return "";
-    var d = new Date(iso + "T00:00:00");
-    d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0,10);
+    var p = iso.split("-");
+    var y = parseInt(p[0], 10), m = parseInt(p[1], 10), day = parseInt(p[2], 10);
+    var idx = m - 1 + (parseInt(months, 10) || 0);
+    y += Math.floor(idx / 12);
+    m = idx % 12 + 1;
+    if (m <= 0){ m += 12; y -= 1; }
+    var last = new Date(y, m, 0).getDate();
+    if (day > last) day = last;
+    return y + "-" + String(m).padStart(2,"0") + "-" + String(day).padStart(2,"0");
   }
   function syncMaturity(){
     var start = (document.getElementById("start_date")||{}).value;
@@ -178,7 +194,7 @@
       extra += parseInt(el.value || "0", 10) || 0;
     });
     var out = document.getElementById("maturity_date");
-    if (out) out.value = start ? addDays(start, (base + extra) * 30) : "";
+    if (out) out.value = start ? addMonths(start, base + extra) : "";
   }
   function row(months, rate){
     n += 1;
