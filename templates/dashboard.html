@@ -7,6 +7,15 @@
   </div>
   <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
 </div>
+<div class="card" style="margin-bottom:16px">
+  <h3>Ask Brittco</h3>
+  <p class="hint">Staff desk assistant. Uses this software’s rules. Does not change loans.</p>
+  <form method="get" action="{{ url_for('dashboard') }}">
+    <input name="q" value="{{ staff_q or '' }}" placeholder="Example: How do I add an extension?" style="width:70%">
+    <button class="btn" type="submit">Ask</button>
+  </form>
+  {% if staff_a %}<p style="margin-top:10px">{{ staff_a }}</p>{% endif %}
+</div>
 <div class="grid cards">
   <div class="card"><h3>Capital available to deploy</h3><div class="n">${{ "{:,.0f}".format(stats.capital_available) }}</div><div class="hint"><a href="{{ url_for('investors') }}">View by investor</a></div></div>
   <div class="card"><h3>Nate payable</h3><div class="n">${{ "{:,.0f}".format(stats.nate_payable) }}</div><div class="hint">Realized net profit fee</div></div>
