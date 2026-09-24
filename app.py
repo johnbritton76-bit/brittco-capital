@@ -4084,6 +4084,17 @@ def profile_ready(b):
     ]:
         if not str(b[key] if key in b.keys() else "" or "").strip():
             missing.append(label)
+    for label, key in [
+        ("Bank name", "bank_name"),
+        ("Bank routing number", "bank_routing"),
+        ("Bank account number", "bank_account"),
+    ]:
+        try:
+            val = b[key] if key in b.keys() else ""
+        except Exception:
+            val = ""
+        if not str(val or "").strip():
+            missing.append(label)
     years = None
     try:
         years = float(b["years_at_address"]) if b["years_at_address"] not in (None, "") else None
@@ -4265,19 +4276,71 @@ def send_investor_welcome(inv):
     return bool(sent), link, None
 
 
-def send_borrower_welcome(b):
+def issue_ach_auth_link(b, loan=None, extras=None):
+    packet_add_loan_id()
+    extras = extras or {}
+    if loan is None:
+        loan = db().execute(
+            """SELECT * FROM loans WHERE borrower_id=? AND COALESCE(archived,0)=0
+               AND COALESCE(loan_number,'') != 'BC-TX-10W96'
+               ORDER BY id DESC LIMIT 1""",
+            (b["id"],),
+        ).fetchone()
+    payload = {
+        "kind": extras.get("kind") or "recurring",
+        "amount": extras.get("amount") or (str(row_val(loan, "payment_amount") or "") if loan else ""),
+        "day_of_month": extras.get("day_of_month") or "1",
+        "start_on": extras.get("start_on") or date.today().isoformat(),
+        "end_on": extras.get("end_on") or (row_val(loan, "maturity_date") or "" if loan else ""),
+        "bank_name": row_val(b, "bank_name") or "",
+        "bank_routing": row_val(b, "bank_routing") or "",
+        "bank_account": row_val(b, "bank_account") or "",
+        "bank_account_type": row_val(b, "bank_account_type") or "Checking",
+        "loan_number": row_val(loan, "loan_number") if loan else "",
+        "property": row_val(loan, "property_address") if loan else "",
+    }
+    token = secrets.token_urlsafe(18)
+    lid = loan["id"] if loan else None
+    try:
+        db().execute(
+            """INSERT INTO form_packets (token, form_key, borrower_id, deal_id, loan_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (token, "ach_auth", b["id"], None, lid, "Sent", json.dumps(payload), datetime.now().isoformat(timespec="minutes")),
+        )
+    except sqlite3.Error:
+        db().execute(
+            """INSERT INTO form_packets (token, form_key, borrower_id, deal_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, "ach_auth", b["id"], None, "Sent", json.dumps(payload), datetime.now().isoformat(timespec="minutes")),
+        )
+    db().commit()
+    return public_base() + url_for("ach_auth_fill", token=token)
+
+
+def send_borrower_welcome(b, include_ach=False):
     email = (row_val(b, "email") or "").strip()
     if not email or "@pending.brittco" in email:
         return False, None, "This borrower needs a real email first."
     first = (row_val(b, "name") or "there").split()[0]
     link = borrower_welcome_link(b)
+    ach_link = issue_ach_auth_link(b) if include_ach else None
+    steps = (
+        "Would you take a few minutes to complete your profile"
+        + (", add your bank information," if include_ach else "")
+        + " and choose a login and password? That gives us what we need so the next file can move "
+        "without extra back-and-forth.\n\n"
+        f"Complete your profile here:\n{link}\n"
+    )
+    if ach_link:
+        steps += (
+            "\nPlease also review and electronically sign the ACH authorization:\n"
+            f"{ach_link}\n"
+        )
     body = (
         f"Hi {first},\n\n"
         "I hope you are doing well. Brittco Capital is rolling out a new system to make borrowing "
         "with us easier — faster underwriting, cleaner files, and a quicker path to funding.\n\n"
-        "Would you take a few minutes to complete your profile and choose a login and password? "
-        "That gives us what we need so the next file can move without extra back-and-forth.\n\n"
-        f"Complete your profile here:\n{link}\n\n"
+        f"{steps}\n"
         "If anything in the form is unclear, reply to this email and we will help.\n\n"
         "Thank you for trusting Brittco Capital. We are glad to have you with us.\n\n"
         "Warmly,\n"
@@ -4910,6 +4973,26 @@ def save_borrower_from_form(f, bid=None, existing=None):
             row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
             if row:
                 db().execute("UPDATE borrowers SET ein=? WHERE id=?", (ein, row[0]))
+    except sqlite3.Error:
+        pass
+    try:
+        target = bid
+        if not target:
+            row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
+            target = row[0] if row else None
+        if target and (f.get("bank_name") or f.get("bank_routing") or f.get("bank_account")):
+            db().execute(
+                """UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?,
+                   bank_account_type=?, ach_authorized=? WHERE id=?""",
+                (
+                    f.get("bank_name"),
+                    f.get("bank_routing"),
+                    f.get("bank_account"),
+                    f.get("bank_account_type") or "Checking",
+                    1 if f.get("ach_authorized") else row_val(existing, "ach_authorized") or 0,
+                    target,
+                ),
+            )
     except sqlite3.Error:
         pass
     try:
@@ -8131,7 +8214,7 @@ def borrower_send_welcome(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     if not b:
         return redirect(url_for("borrowers"))
-    sent, link, err = send_borrower_welcome(b)
+    sent, link, err = send_borrower_welcome(b, include_ach=bool(request.form.get("include_ach")))
     if err:
         session["last_invite_note"] = err
     elif sent:
@@ -8157,7 +8240,7 @@ def borrowers_send_welcome():
         b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
         if not b:
             continue
-        sent, link, _err = send_borrower_welcome(b)
+        sent, link, _err = send_borrower_welcome(b, include_ach=bool(request.form.get("include_ach")))
         if link:
             last_link = link
         if sent:
@@ -9591,6 +9674,7 @@ def loan_detail(lid):
         ).fetchall()
         if r["id"] not in in_ids
     ]
+    packet_add_loan_id()
     letters = db().execute(
         "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
     ).fetchall()
@@ -9618,6 +9702,10 @@ def loan_detail(lid):
         flash=session.pop("last_invite_note", None),
         ach_plan=loan_ach_plan(lid),
         ach_ready=bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip()),
+        ach_auths=db().execute(
+            "SELECT * FROM form_packets WHERE form_key='ach_auth' AND (loan_id=? OR borrower_id=?) ORDER BY id DESC LIMIT 6",
+            (lid, loan["borrower_id"]),
+        ).fetchall(),
         ach_runs=db().execute(
             "SELECT * FROM ach_transfers WHERE loan_id=? ORDER BY id DESC LIMIT 8", (lid,)
         ).fetchall() if True else [],
@@ -11312,6 +11400,72 @@ def ensure_ach_plans():
     db().commit()
 
 
+def packet_add_loan_id():
+    try:
+        cols = [r[1] for r in db().execute("PRAGMA table_info(form_packets)").fetchall()]
+        if "loan_id" not in cols:
+            db().execute("ALTER TABLE form_packets ADD COLUMN loan_id INTEGER")
+            db().commit()
+    except sqlite3.Error:
+        pass
+
+
+def ach_auth_pdf(b, loan, data):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as pdfcanvas
+    from reportlab.lib.utils import ImageReader
+
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    w, h = letter
+    y = h - 54
+    c.setFont("Times-Bold", 16)
+    c.drawString(54, y, "Brittco Capital Inc")
+    y -= 18
+    c.setFont("Times-Bold", 13)
+    c.drawString(54, y, "ACH Authorization")
+    y -= 22
+    c.setFont("Times-Roman", 10)
+    lines = [
+        "Borrower: %s" % (row_val(b, "name") or ""),
+        "Email: %s" % (row_val(b, "email") or ""),
+        "Loan: %s" % (row_val(loan, "loan_number") or loan["id"] if loan else ""),
+        "Property: %s" % (row_val(loan, "property_address") or "" if loan else ""),
+        "Kind: %s" % (data.get("kind") or "recurring"),
+        "Amount: $%s" % (data.get("amount") or ""),
+        "Day of month: %s" % (data.get("day_of_month") or ""),
+        "Start: %s   End: %s" % (data.get("start_on") or "", data.get("end_on") or "until stopped"),
+        "Bank: %s" % (data.get("bank_name") or row_val(b, "bank_name") or ""),
+        "Routing: %s" % (data.get("bank_routing") or row_val(b, "bank_routing") or ""),
+        "Account: ****%s" % ((data.get("bank_account") or row_val(b, "bank_account") or "")[-4:]),
+        "Account type: %s" % (data.get("bank_account_type") or row_val(b, "bank_account_type") or ""),
+        "",
+        "I authorize Brittco Capital Inc to debit the bank account above for the amount and schedule shown.",
+        "I understand I may stop this authorization by written notice to Brittco before the next debit.",
+        "Signed name: %s" % (data.get("signed_name") or ""),
+        "Signed on: %s" % (data.get("signed_at") or ""),
+    ]
+    for line in lines:
+        c.drawString(54, y, line[:110])
+        y -= 14
+        if y < 140:
+            c.showPage()
+            y = h - 54
+            c.setFont("Times-Roman", 10)
+    raw = data.get("signature") or ""
+    if raw.startswith("data:image"):
+        try:
+            blob = raw.split(",", 1)[1]
+            img = ImageReader(BytesIO(__import__("base64").b64decode(blob)))
+            c.drawImage(img, 54, 48, width=220, height=70, mask="auto")
+            c.setFont("Times-Roman", 8)
+            c.drawString(54, 40, "Electronic signature")
+        except Exception:
+            pass
+    c.save()
+    return buf.getvalue()
+
+
 def loan_ach_plan(lid):
     ensure_ach_plans()
     return db().execute(
@@ -11458,6 +11612,168 @@ def collect_ach_once(loan, plan, borrower):
         )
     db().commit()
     return True, status
+
+
+@app.route("/loans/<int:lid>/ach-auth", methods=["POST"])
+@staff_required
+def loan_ach_auth_send(lid):
+    packet_add_loan_id()
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return redirect(url_for("loans"))
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    kind = (request.form.get("kind") or "recurring").lower()
+    if kind not in ("single", "recurring"):
+        kind = "recurring"
+    payload = {
+        "kind": kind,
+        "amount": request.form.get("amount") or "",
+        "day_of_month": request.form.get("day_of_month") or "1",
+        "start_on": request.form.get("start_on") or date.today().isoformat(),
+        "end_on": request.form.get("end_on") or (row_val(loan, "maturity_date") or ""),
+        "bank_name": row_val(b, "bank_name") or "",
+        "bank_routing": row_val(b, "bank_routing") or "",
+        "bank_account": row_val(b, "bank_account") or "",
+        "bank_account_type": row_val(b, "bank_account_type") or "Checking",
+        "loan_number": row_val(loan, "loan_number") or str(lid),
+        "property": row_val(loan, "property_address") or "",
+    }
+    token = secrets.token_urlsafe(18)
+    try:
+        db().execute(
+            """INSERT INTO form_packets (token, form_key, borrower_id, deal_id, loan_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (token, "ach_auth", b["id"], None, lid, "Sent", json.dumps(payload), datetime.now().isoformat(timespec="minutes")),
+        )
+    except sqlite3.Error:
+        db().execute(
+            """INSERT INTO form_packets (token, form_key, borrower_id, deal_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, "ach_auth", b["id"], None, "Sent", json.dumps(payload), datetime.now().isoformat(timespec="minutes")),
+        )
+    db().commit()
+    link = public_base() + url_for("ach_auth_fill", token=token)
+    mailed = False
+    if row_val(b, "email"):
+        body = (
+            f"Hi {(row_val(b,'name') or 'there').split()[0]},\n\n"
+            "Please review and electronically sign the Brittco Capital ACH authorization for your loan. "
+            "This lets us debit the bank account you list for the payment shown on the form.\n\n"
+            f"{link}\n\n"
+            "If anything looks wrong, reply to this email before you sign.\n\n"
+            "Thank you,\nBrittco Capital\n"
+        )
+        try:
+            mailed = send_mail(b["email"], "Please sign your Brittco ACH authorization", body)
+        except Exception:
+            mailed = False
+    session["last_invite_note"] = (
+        ("Authorization emailed to " + b["email"] + ". ") if mailed else "Email did not send. "
+    ) + "Link: " + link
+    session["last_invite_url"] = link
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/ach-auth/<token>", methods=["GET", "POST"])
+def ach_auth_fill(token):
+    packet_add_loan_id()
+    row = db().execute("SELECT * FROM form_packets WHERE token=? AND form_key='ach_auth'", (token,)).fetchone()
+    if not row:
+        return render_template("ach_auth.html", error="This link is not valid.", packet=None, data={}, loan=None, b=None)
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
+    lid = row_val(row, "loan_id")
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone() if lid else None
+    data = json.loads(row["payload"] or "{}")
+    if request.method == "POST":
+        for key in (
+            "kind", "amount", "day_of_month", "start_on", "end_on",
+            "bank_name", "bank_routing", "bank_account", "bank_account_type",
+            "signed_name",
+        ):
+            if request.form.get(key) not in (None,):
+                data[key] = request.form.get(key)
+        data["signature"] = request.form.get("signature") or ""
+        data["signed_at"] = datetime.now().isoformat(timespec="minutes")
+        if not data.get("signed_name") or not data.get("signature"):
+            return render_template(
+                "ach_auth.html",
+                error="Type your name and sign in the box, then submit.",
+                packet=row,
+                data=data,
+                loan=loan,
+                b=b,
+            )
+        if not request.form.get("agree"):
+            return render_template(
+                "ach_auth.html",
+                error="Check the authorization box to continue.",
+                packet=row,
+                data=data,
+                loan=loan,
+                b=b,
+            )
+        db().execute(
+            "UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?, bank_account_type=?, ach_authorized=1 WHERE id=?",
+            (
+                data.get("bank_name"),
+                data.get("bank_routing"),
+                data.get("bank_account"),
+                data.get("bank_account_type") or "Checking",
+                b["id"],
+            ),
+        )
+        db().execute(
+            "UPDATE form_packets SET payload=?, status=?, completed_at=? WHERE id=?",
+            (json.dumps(data), "Signed", datetime.now().isoformat(timespec="minutes"), row["id"]),
+        )
+        ensure_ach_plans()
+        if loan:
+            db().execute(
+                "UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status IN ('Active','Pending')",
+                ("Replaced", loan["id"]),
+            )
+            db().execute(
+                """INSERT INTO loan_ach_plans
+                   (loan_id, amount, day_of_month, start_on, end_on, status, created_at, note)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    loan["id"],
+                    money(data.get("amount")),
+                    int(float(data.get("day_of_month") or 1)),
+                    data.get("start_on") or date.today().isoformat(),
+                    data.get("end_on") if data.get("kind") != "single" else data.get("start_on"),
+                    "Pending",
+                    datetime.now().isoformat(timespec="minutes"),
+                    "Signed ACH auth · %s" % (data.get("kind") or "recurring"),
+                ),
+            )
+        db().commit()
+        try:
+            pdf = ach_auth_pdf(b, loan, data)
+            attach_borrower_pdf(
+                b,
+                pdf,
+                "ACH authorization %s" % (row_val(loan, "loan_number") if loan else ""),
+                "ACH authorization",
+            )
+        except Exception:
+            pass
+        return render_template("ach_auth.html", done=True, packet=row, data=data, loan=loan, b=b, error=None)
+    return render_template("ach_auth.html", error=None, packet=row, data=data, loan=loan, b=b, done=False)
+
+
+@app.route("/loans/<int:lid>/ach-plan/approve", methods=["POST"])
+@staff_required
+def loan_ach_plan_approve(lid):
+    ensure_ach_plans()
+    plan = loan_ach_plan(lid)
+    if not plan:
+        session["last_invite_note"] = "No ACH plan waiting."
+        return redirect(url_for("loan_detail", lid=lid))
+    db().execute("UPDATE loan_ach_plans SET status=? WHERE id=?", ("Active", plan["id"]))
+    db().commit()
+    session["last_invite_note"] = "ACH plan approved. Staff can collect or wait for the due day."
+    return redirect(url_for("loan_detail", lid=lid))
 
 
 @app.route("/loans/<int:lid>/ach-plan", methods=["POST"])
