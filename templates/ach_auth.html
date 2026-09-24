@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACH authorization · Brittco Capital</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:720px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Electronic authorization</div>
+      <h2 style="margin:4px 0 0">ACH debit authorization</h2>
+    </div>
+  </div>
+  {% if error %}<p class="badge bad">{{ error }}</p>{% endif %}
+  {% if done %}
+  <div class="card">
+    <p>Thank you. Your signed authorization is on file with Brittco Capital. Staff will review it before any debit is sent.</p>
+  </div>
+  {% elif packet %}
+  <p class="hint">{{ b.name if b else "" }} · Loan {{ data.loan_number or (loan.loan_number if loan else "") }} · {{ data.property or (loan.property_address if loan else "") }}</p>
+  <form method="post" id="ach-form" class="card form-grid">
+    <div>
+      <label>This authorization is for</label>
+      <select name="kind">
+        <option value="recurring" {% if data.kind!='single' %}selected{% endif %}>Recurring monthly payments</option>
+        <option value="single" {% if data.kind=='single' %}selected{% endif %}>One payment only</option>
+      </select>
+    </div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required value="{{ data.amount or '' }}"></div>
+    <div><label>Day of month</label><input name="day_of_month" type="number" min="1" max="28" value="{{ data.day_of_month or 1 }}"></div>
+    <div><label>Start</label><input name="start_on" type="date" value="{{ data.start_on or '' }}"></div>
+    <div><label>End (recurring)</label><input name="end_on" type="date" value="{{ data.end_on or '' }}"></div>
+    <div class="span-2"><h3>Bank account to debit</h3></div>
+    <div><label>Bank name</label><input name="bank_name" value="{{ data.bank_name or '' }}" required></div>
+    <div>
+      <label>Account type</label>
+      <select name="bank_account_type">
+        <option {% if data.bank_account_type!='Savings' %}selected{% endif %}>Checking</option>
+        <option {% if data.bank_account_type=='Savings' %}selected{% endif %}>Savings</option>
+      </select>
+    </div>
+    <div><label>Routing number</label><input name="bank_routing" value="{{ data.bank_routing or '' }}" required></div>
+    <div><label>Account number</label><input name="bank_account" value="{{ data.bank_account or '' }}" required></div>
+    <div class="span-2">
+      <p>I authorize Brittco Capital Inc to debit the account above for the amount and schedule on this form. I can revoke this authorization by written notice to Brittco before the next debit. NACHA rules apply.</p>
+      <label><input type="checkbox" name="agree" value="1"> I agree and authorize this ACH debit</label>
+    </div>
+    <div class="span-2"><label>Type your full legal name</label><input name="signed_name" required placeholder="Name as it should appear on the authorization"></div>
+    <div class="span-2">
+      <label>Sign here</label>
+      <canvas id="sig" width="640" height="160" style="width:100%;max-width:640px;height:160px;border:1px solid #c5d0dc;border-radius:8px;background:#fff;touch-action:none"></canvas>
+      <input type="hidden" name="signature" id="signature">
+      <p><button type="button" class="btn ghost" id="clear-sig">Clear signature</button></p>
+    </div>
+    <div class="span-2"><button class="btn" type="submit">Submit signed authorization</button></div>
+  </form>
+  <script>
+  (function(){
+    var canvas = document.getElementById("sig");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    ctx.strokeStyle = "#1a2b3c";
+    ctx.lineWidth = 2;
+    var draw = false;
+    function pos(e){
+      var r = canvas.getBoundingClientRect();
+      var t = e.touches ? e.touches[0] : e;
+      return {x:(t.clientX-r.left)*canvas.width/r.width, y:(t.clientY-r.top)*canvas.height/r.height};
+    }
+    function start(e){ draw=true; var p=pos(e); ctx.beginPath(); ctx.moveTo(p.x,p.y); e.preventDefault(); }
+    function move(e){ if(!draw) return; var p=pos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); e.preventDefault(); }
+    function end(){ draw=false; document.getElementById("signature").value = canvas.toDataURL("image/png"); }
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    canvas.addEventListener("touchstart", start, {passive:false});
+    canvas.addEventListener("touchmove", move, {passive:false});
+    canvas.addEventListener("touchend", end);
+    document.getElementById("clear-sig").addEventListener("click", function(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      document.getElementById("signature").value = "";
+    });
+    document.getElementById("ach-form").addEventListener("submit", function(){
+      document.getElementById("signature").value = canvas.toDataURL("image/png");
+    });
+  })();
+  </script>
+  {% endif %}
+</main>
+</body>
+</html>

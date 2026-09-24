@@ -10,7 +10,6 @@
   </select>
 </div>
 <div><label>Entity / LLC name</label><input name="entity_name" id="entity_name" value="{{ b.entity_name if b else '' }}"></div>
-<div><label>EIN (entity)</label><input name="ein" value="{% if b and b['ein'] is defined %}{{ b['ein'] or '' }}{% endif %}" placeholder="XX-XXXXXXX"></div>
 <div><label>Email</label><input name="email" type="email" value="{{ b.email if b else '' }}" required></div>
 <div><label>Mobile / cell phone</label><input name="phone" id="phone" value="{{ b.phone if b else '' }}"></div>
 <div><label>Social Security/TIN#</label><input name="ssn" value="{{ b.ssn if b else '' }}" autocomplete="off"></div>
@@ -18,6 +17,10 @@
 <div><label>City</label><input name="city" id="city" value="{{ b.city if b else '' }}"></div>
 <div><label>State</label><input name="state" id="state" value="{{ b.state if b else '' }}"></div>
 <div><label>ZIP</label><input name="zip" id="zip" value="{{ b.zip if b else '' }}"></div>
+<details class="box span-2">
+  <summary>More profile <span class="peek">EIN, spouse</span></summary>
+  <div class="form-grid">
+<div><label>EIN (entity)</label><input name="ein" value="{% if b and b['ein'] is defined %}{{ b['ein'] or '' }}{% endif %}" placeholder="XX-XXXXXXX"></div>
 <div class="span-2">
   <label>Marital status</label>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
@@ -38,6 +41,8 @@
     <div><label>Spouse Social Security/TIN#</label><input name="spouse_ssn" value="" autocomplete="off"></div>
   </div>
 </div>
+  </div>
+</details>
 <div><label>Own or rent</label>
   <select name="own_or_rent">
     {% for t in ['','Own','Rent'] %}
@@ -92,6 +97,21 @@
     <div><label>Employer state</label><input name="employer_state" id="employer_state" value="{{ b.employer_state if b else '' }}"></div>
     <p class="hint span-2">If self employed, these start as your home address and cell. You can edit them.</p>
   </div>
+</div>
+<div class="span-2"><h3>Bank account for ACH</h3>
+  <p class="hint">Used if you authorize Brittco to debit payments. Routing and account stay on your file.</p></div>
+<div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name if b else '' }}"></div>
+<div>
+  <label>Account type</label>
+  <select name="bank_account_type">
+    <option value="Checking" {% if not b or (b.bank_account_type or 'Checking')=='Checking' %}selected{% endif %}>Checking</option>
+    <option value="Savings" {% if b and b.bank_account_type=='Savings' %}selected{% endif %}>Savings</option>
+  </select>
+</div>
+<div><label>Routing number</label><input name="bank_routing" value="{{ b.bank_routing if b else '' }}"></div>
+<div><label>Account number</label><input name="bank_account" value="{{ b.bank_account if b else '' }}"></div>
+<div class="span-2">
+  <label><input type="checkbox" name="ach_authorized" value="1" {% if b and b.ach_authorized %}checked{% endif %}> I authorize Brittco Capital to debit this account when I sign an ACH authorization</label>
 </div>
 <div><label>Liquid assets</label><input name="liquid_assets" type="number" step="0.01" value="{{ b.liquid_assets if b else '' }}"></div>
 <div><label>Bankruptcy / foreclosure (7 yrs)</label>

@@ -494,6 +494,19 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     · routing {{ (loan.bank_routing or "—")[:4] }}…
     · ACH authorized: {{ "yes" if loan.ach_authorized else "no — open the borrower profile" }}
   </p>
+  {% if ach_plan and ach_plan.status == 'Pending' %}
+  <p class="flash">Borrower signed. Plan waiting for staff approval:
+    ${{ "{:,.2f}".format(ach_plan.amount or 0) }}
+    · {{ ach_plan.note }}
+    · day {{ ach_plan.day_of_month }}
+    · {{ ach_plan.start_on }} to {{ ach_plan.end_on or "open" }}.</p>
+  <form method="post" action="{{ url_for('loan_ach_plan_approve', lid=loan.id) }}" style="display:inline">
+    <button class="btn" type="submit">Approve ACH plan</button>
+  </form>
+  <form method="post" action="{{ url_for('loan_ach_plan_stop', lid=loan.id) }}" style="display:inline">
+    <button class="btn ghost" type="submit">Decline</button>
+  </form>
+  {% endif %}
   {% if ach_plan and ach_plan.status == 'Active' %}
   <p>Active plan: <strong>${{ "{:,.2f}".format(ach_plan.amount or 0) }}</strong> on day <strong>{{ ach_plan.day_of_month }}</strong>
     from {{ ach_plan.start_on }} through {{ ach_plan.end_on or "stopped by staff" }}.
@@ -504,6 +517,30 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <form method="post" action="{{ url_for('loan_ach_plan_stop', lid=loan.id) }}" style="display:inline">
     <button class="btn ghost" type="submit">Stop plan</button>
   </form>
+  {% endif %}
+  <form method="post" action="{{ url_for('loan_ach_auth_send', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
+    <div class="span-2"><h3>Send authorization to borrower</h3></div>
+    <div>
+      <label>Single or recurring</label>
+      <select name="kind">
+        <option value="recurring">Recurring monthly</option>
+        <option value="single">One payment only</option>
+      </select>
+    </div>
+    <div><label>Amount</label><input name="amount" type="number" step="0.01" required value="{{ loan.payment_amount or '' }}"></div>
+    <div><label>Day of month</label><input name="day_of_month" type="number" min="1" max="28" value="1"></div>
+    <div><label>Start</label><input name="start_on" type="date"></div>
+    <div><label>End</label><input name="end_on" type="date" value="{{ loan.maturity_date or '' }}"></div>
+    <div class="span-2"><button class="btn" type="submit">Email ACH authorization to sign</button></div>
+  </form>
+  {% if ach_auths %}
+  <p class="hint" style="margin-top:10px">Sent authorizations</p>
+  <table class="table">
+    <tr><th>When</th><th>Status</th></tr>
+    {% for p in ach_auths %}
+    <tr><td>{{ p.created_at }}</td><td>{{ p.status }}</td></tr>
+    {% endfor %}
+  </table>
   {% endif %}
   <form method="post" action="{{ url_for('loan_ach_plan_save', lid=loan.id) }}" class="form-grid" style="margin-top:12px">
     <div><label>Amount each pull</label>

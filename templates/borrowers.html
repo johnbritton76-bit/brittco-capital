@@ -8,7 +8,7 @@
     <a class="btn ghost" href="/borrowers/new">Staff add (rare)</a>
   </div>
 </div>
-<p class="hint">Invite is the normal path: staff enters name and contact only. The borrower completes the rest. Check the borrowers you want, then email last month’s statement only to those names.</p>
+<p class="hint">One line per borrower. Open a name for the full file.</p>
 {% if invite_url %}
 <div class="card">
   <p>{{ invite_note }}</p>
@@ -21,21 +21,21 @@
 <table class="table">
   <tr>
     <th></th>
-    <th>Name</th><th>Entity</th><th>Email</th><th>Phone</th><th>Credit</th><th>Loans</th>
+    <th>Name</th><th>Email</th><th>Loans</th>
   </tr>
   {% for b in borrowers %}
   <tr>
     <td><input type="checkbox" name="borrower_id" value="{{ b.id }}"></td>
     <td><a href="/borrowers/{{ b.id }}">{{ b.name }}</a></td>
-    <td>{{ b.entity_type }}</td>
     <td>{{ b.email }}</td>
-    <td>{{ b.phone }}</td>
-    <td>{{ b.credit_score or "—" }}</td>
     <td>{{ b.deal_count }}</td>
   </tr>
   {% endfor %}
 </table>
 <p style="margin-top:12px">
+  <label><input type="checkbox" name="include_ach" value="1"> Include ACH authorization with welcome email</label>
+</p>
+<p>
   <button class="btn" type="submit">Email last month’s statements to selected</button>
   <button class="btn ghost" type="submit" formaction="{{ url_for('borrowers_send_welcome') }}">Send welcome / complete-profile email to selected</button>
 </p>
