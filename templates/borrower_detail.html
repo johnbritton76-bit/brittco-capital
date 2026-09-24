@@ -32,6 +32,28 @@
   white-space:normal !important;
 }
 .profile-actions form{margin:0 !important;display:block !important;width:100%}
+.welcome-stack{display:flex;flex-direction:column;gap:10px;width:100%}
+.welcome-stack .ach-toggle{
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  min-height:48px !important;
+  width:100% !important;
+  margin:0 !important;
+  padding:8px 10px !important;
+  box-sizing:border-box !important;
+  border:0 !important;
+  border-radius:10px !important;
+  background:#1f7fd4 !important;
+  color:#fff !important;
+  font-weight:600 !important;
+  font-size:13px !important;
+  line-height:1.2 !important;
+  text-align:center !important;
+  gap:8px;
+  cursor:pointer;
+}
+.welcome-stack .ach-toggle input{accent-color:#fff;width:16px;height:16px}
 
 details.box{margin-top:14px;border:1px solid #d5dee8;border-radius:12px;background:#fff;padding:0 14px 12px}
 details.box>summary{cursor:pointer;padding:12px 0 8px;font-weight:650}
@@ -51,8 +73,8 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <a href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
   <a href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
   <a href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
-  <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}">
-    <label style="display:block;font-size:12px;margin-bottom:6px">
+  <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}" class="welcome-stack">
+    <label class="ach-toggle">
       <input type="checkbox" name="include_ach" value="1"> Include ACH authorization
     </label>
     <button type="submit">Email welcome / complete profile</button>
