@@ -5546,36 +5546,46 @@ def grok_api_key():
 def ask_grok(system, user, brief):
     key = grok_api_key()
     if not key:
-        return None
-    model = os.environ.get("XAI_MODEL") or "grok-4-fast-non-reasoning"
-    payload = json.dumps(
-        {
-            "model": model,
-            "temperature": 0.5,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"{brief}\n\nQuestion:\n{user}"},
-            ],
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.x.ai/v1/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return (
-            (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-            .strip()
+        return None, "missing_key"
+    models = []
+    chosen = (os.environ.get("XAI_MODEL") or "").strip()
+    for m in (chosen, "grok-4.3", "grok-4-fast-non-reasoning", "grok-3"):
+        if m and m not in models:
+            models.append(m)
+    last_err = "api_error"
+    for model in models:
+        payload = json.dumps(
+            {
+                "model": model,
+                "temperature": 0.4,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"{brief}\n\nQuestion:\n{user}"},
+                ],
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+            method="POST",
         )
-    except Exception:
-        return None
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = (
+                (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+                .strip()
+            )
+            if text:
+                return text, None
+        except Exception as exc:
+            last_err = str(exc)[:180]
+            continue
+    return None, last_err
 
 
 def borrower_help_brief(borrower, deals, loans, missing):
@@ -5657,12 +5667,16 @@ def answer_staff_help(question):
     q = (question or "").strip()
     if not q:
         return "Ask how to enter a loan, add an extension, send a welcome email, or where a number comes from."
-    grok = ask_grok(
+    grok, err = ask_grok(
         GROK_HELP_RULES + " You are speaking to Brittco staff. Explain where to click. Do not expose other customers' private data.",
         q,
         staff_help_brief(),
     )
-    return grok or "Add XAI_API_KEY in Render to turn the desk assistant on, or ask from a borrower/investor file."
+    if grok:
+        return grok
+    if err == "missing_key":
+        return "Render does not have XAI_API_KEY yet. Environment → add XAI_API_KEY → paste the xai- key → Save → wait for restart."
+    return "The key is present but xAI did not answer. Check the key is the new one from today and that credits show on console.x.ai."
 
 
 
@@ -5671,7 +5685,7 @@ def answer_borrower_help(question, borrower, deals, loans, missing):
     name = (borrower["name"] if borrower else None) or "there"
     if not q:
         return "Ask anything about your file, documents, timing, or how a Brittco loan works."
-    grok = ask_grok(
+    grok, _err = ask_grok(
         GROK_HELP_RULES + " You are speaking to the borrower.",
         question,
         borrower_help_brief(borrower, deals, loans, missing),
@@ -5866,7 +5880,7 @@ def answer_investor_help(question, inv, books):
     q = (question or "").strip().lower()
     if not q:
         return "Ask about your returns, Nate’s fee, a loan on this page, or how annualized yield is figured."
-    grok = ask_grok(
+    grok, _err = ask_grok(
         GROK_HELP_RULES + " You are speaking to the investor. Be clear about net vs gross and what is still working.",
         question,
         investor_help_brief(inv, books),
@@ -9504,7 +9518,8 @@ def loan_edit(lid):
 @staff_required
 def loan_detail(lid):
     loan = db().execute(
-        """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score
+        """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score,
+                  b.bank_name, b.bank_routing, b.bank_account, b.bank_account_type, b.ach_authorized
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
         (lid,),
     ).fetchone()
@@ -9601,6 +9616,11 @@ def loan_detail(lid):
         letters=letters,
         latest_letter=latest,
         flash=session.pop("last_invite_note", None),
+        ach_plan=loan_ach_plan(lid),
+        ach_ready=bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip()),
+        ach_runs=db().execute(
+            "SELECT * FROM ach_transfers WHERE loan_id=? ORDER BY id DESC LIMIT 8", (lid,)
+        ).fetchall() if True else [],
         ext_options=loan_ext_options(lid),
         used_exts=db().execute(
             "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
@@ -11270,6 +11290,250 @@ def investor_source_remove(sid):
     )
     db().commit()
     return redirect(url_for("investor_portal"))
+
+
+def ensure_ach_plans():
+    db().execute(
+        """CREATE TABLE IF NOT EXISTS loan_ach_plans (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            amount REAL,
+            day_of_month INTEGER,
+            start_on TEXT,
+            end_on TEXT,
+            status TEXT,
+            stripe_customer TEXT,
+            stripe_pm TEXT,
+            last_run TEXT,
+            created_at TEXT,
+            note TEXT
+        )"""
+    )
+    db().commit()
+
+
+def loan_ach_plan(lid):
+    ensure_ach_plans()
+    return db().execute(
+        "SELECT * FROM loan_ach_plans WHERE loan_id=? ORDER BY id DESC LIMIT 1", (lid,)
+    ).fetchone()
+
+
+def stripe_secret():
+    return (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+
+
+def stripe_post(path, fields):
+    key = stripe_secret()
+    if not key:
+        return None, "No STRIPE_SECRET_KEY in Render."
+    body = urllib.parse.urlencode(fields, doseq=True).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.stripe.com/v1" + path,
+        data=body,
+        method="POST",
+        headers={"Authorization": "Bearer " + key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            return json.loads(resp.read().decode("utf-8")), None
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8") if exc.fp else str(exc)
+        try:
+            err = json.loads(raw).get("error", {}).get("message") or raw
+        except Exception:
+            err = raw
+        return None, err
+    except Exception as exc:
+        return None, str(exc)
+
+
+def stripe_customer_and_bank(borrower):
+    routing = (row_val(borrower, "bank_routing") or "").replace(" ", "")
+    account = (row_val(borrower, "bank_account") or "").replace(" ", "")
+    if not routing or not account:
+        return None, None, "Add routing and account on the borrower profile first."
+    if not row_val(borrower, "ach_authorized"):
+        return None, None, "Borrower must have ACH authorized on their profile."
+    holder = "company" if (row_val(borrower, "bank_account_type") or "").lower() in ("checking business", "business") else "individual"
+    cust, err = stripe_post(
+        "/customers",
+        {
+            "name": row_val(borrower, "name") or "Borrower",
+            "email": row_val(borrower, "email") or "",
+            "metadata[borrower_id]": str(borrower["id"]),
+        },
+    )
+    if err:
+        return None, None, err
+    pm, err = stripe_post(
+        "/payment_methods",
+        {
+            "type": "us_bank_account",
+            "us_bank_account[routing_number]": routing,
+            "us_bank_account[account_number]": account,
+            "us_bank_account[account_holder_type]": holder,
+            "billing_details[name]": row_val(borrower, "name") or "Borrower",
+        },
+    )
+    if err:
+        return cust.get("id") if cust else None, None, err
+    _, err2 = stripe_post("/payment_methods/%s/attach" % pm["id"], {"customer": cust["id"]})
+    if err2:
+        return cust["id"], None, err2
+    return cust["id"], pm["id"], None
+
+
+def collect_ach_once(loan, plan, borrower):
+    amt = money(plan["amount"] if plan else 0)
+    if amt <= 0:
+        return False, "Plan amount is missing."
+    cents = int(round(amt * 100))
+    cus = row_val(plan, "stripe_customer") if plan else None
+    pm = row_val(plan, "stripe_pm") if plan else None
+    if stripe_secret() and (not cus or not pm):
+        cus, pm, err = stripe_customer_and_bank(borrower)
+        if err:
+            return False, err
+        if plan:
+            db().execute(
+                "UPDATE loan_ach_plans SET stripe_customer=?, stripe_pm=? WHERE id=?",
+                (cus, pm, plan["id"]),
+            )
+    status = "Recorded — collect at bank"
+    vendor = "Manual"
+    stripe_id = ""
+    if stripe_secret() and cus and pm:
+        accepted = int(datetime.now().timestamp())
+        pi, err = stripe_post(
+            "/payment_intents",
+            {
+                "amount": str(cents),
+                "currency": "usd",
+                "customer": cus,
+                "payment_method": pm,
+                "payment_method_types[]": "us_bank_account",
+                "confirm": "true",
+                "mandate_data[customer_acceptance][type]": "offline",
+                "mandate_data[customer_acceptance][accepted_at]": str(accepted),
+                "description": "Brittco loan %s" % (row_val(loan, "loan_number") or loan["id"]),
+                "metadata[loan_id]": str(loan["id"]),
+            },
+        )
+        if err:
+            return False, err
+        stripe_id = pi.get("id") or ""
+        status = pi.get("status") or "processing"
+        vendor = "Stripe"
+    db().execute(
+        """INSERT INTO ach_transfers
+           (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            None,
+            loan["borrower_id"],
+            loan["id"],
+            "Debit borrower (loan payment)",
+            amt,
+            status,
+            vendor,
+            stripe_id,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().execute(
+        "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
+        (
+            loan["id"],
+            date.today().isoformat(),
+            amt,
+            "Interest",
+            "ACH %s %s" % (vendor, status),
+        ),
+    )
+    if plan:
+        db().execute(
+            "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
+            (date.today().isoformat(), plan["id"]),
+        )
+    db().commit()
+    return True, status
+
+
+@app.route("/loans/<int:lid>/ach-plan", methods=["POST"])
+@staff_required
+def loan_ach_plan_save(lid):
+    ensure_ach_plans()
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return redirect(url_for("loans"))
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    amt = money(request.form.get("amount"))
+    try:
+        day = int(request.form.get("day_of_month") or "1")
+    except ValueError:
+        day = 1
+    day = min(28, max(1, day))
+    start = request.form.get("start_on") or date.today().isoformat()
+    end = request.form.get("end_on") or row_val(loan, "maturity_date")
+    if amt <= 0:
+        session["last_invite_note"] = "Enter the ACH amount."
+        return redirect(url_for("loan_detail", lid=lid))
+    if not row_val(b, "ach_authorized"):
+        session["last_invite_note"] = "Check ACH authorized on the borrower profile first."
+        return redirect(url_for("loan_detail", lid=lid))
+    cus = pm = None
+    warn = None
+    if stripe_secret():
+        cus, pm, warn = stripe_customer_and_bank(b)
+    db().execute("UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status=?", ("Stopped", lid, "Active"))
+    db().execute(
+        """INSERT INTO loan_ach_plans
+           (loan_id, amount, day_of_month, start_on, end_on, status, stripe_customer, stripe_pm, created_at, note)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            lid,
+            amt,
+            day,
+            start,
+            end,
+            "Active",
+            cus,
+            pm,
+            datetime.now().isoformat(timespec="minutes"),
+            request.form.get("note") or "",
+        ),
+    )
+    db().commit()
+    session["last_invite_note"] = (
+        "ACH plan saved: $%.2f on day %s each month through %s." % (amt, day, end or "you stop it")
+        + ((" Stripe: " + warn) if warn else (" Stripe customer ready." if cus else " Stripe key not set — plan is on file for manual collect."))
+    )
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/ach-plan/stop", methods=["POST"])
+@staff_required
+def loan_ach_plan_stop(lid):
+    ensure_ach_plans()
+    db().execute("UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status=?", ("Stopped", lid, "Active"))
+    db().commit()
+    session["last_invite_note"] = "ACH plan stopped. No more automatic pulls."
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/loans/<int:lid>/ach-collect", methods=["POST"])
+@staff_required
+def loan_ach_collect(lid):
+    ensure_ach_plans()
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone() if loan else None
+    plan = loan_ach_plan(lid)
+    if not loan or not b:
+        return redirect(url_for("loans"))
+    ok, msg = collect_ach_once(loan, plan, b)
+    session["last_invite_note"] = ("ACH sent: " + msg) if ok else ("ACH did not send: " + msg)
+    return redirect(url_for("loan_detail", lid=lid))
 
 
 @app.route("/ach", methods=["GET", "POST"])
