@@ -9,6 +9,19 @@
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 {% if error %}<p class="flash" style="background:#fde8e8;color:#8a2b2b">{{ error }}</p>{% endif %}
 
+
+<div class="card" style="margin-top:8px;max-width:640px">
+  <h3>Dwolla white-label setup</h3>
+  <p class="hint">
+    Numbered steps for connecting <strong>your</strong> Dwolla account: sandbox vs production,
+    application key/secret, webhook, host env vars, business customer + funding source, and a first test ACH.
+    No secrets are stored in git.
+  </p>
+  <p>
+    <a class="btn" href="{{ url_for('dwolla_setup') }}">Open Dwolla setup tutorial</a>
+  </p>
+</div>
+
 <div class="card" style="margin-top:8px;max-width:640px">
   <h3>Amortization schedule</h3>
   <p class="hint">

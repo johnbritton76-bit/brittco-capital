@@ -125,3 +125,20 @@ textarea { min-height: 88px; resize: vertical; }
 .alert-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0; }
 
 .table tr.total td { font-weight: 700; background: #e8eef6; border-top: 2px solid #c5d3e3; }
+
+.modal-back {
+  position: fixed; inset: 0; background: rgba(13, 21, 32, 0.55);
+  display: grid; place-items: center; z-index: 40; padding: 18px;
+}
+.modal {
+  width: min(480px, 100%); background: #fff; border-radius: 16px;
+  border: 1px solid var(--line); padding: 22px; box-shadow: 0 16px 40px rgba(16, 32, 54, 0.18);
+}
+.steps { display: flex; flex-wrap: wrap; gap: 8px; }
+.step {
+  flex: 1 1 200px; background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--text);
+}
+.step strong { display: block; color: var(--blue); font-size: 12px; margin-bottom: 4px; }
+.setup-banner {
+  background: #fff4d6; color: #6d5420; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px;
+}
