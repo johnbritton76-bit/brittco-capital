@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investor tools — Brittco</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main" style="max-width:720px;margin:0 auto">
+  <div class="portal-head">
+    <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+    <div>
+      <div class="tag">Investor tools</div>
+      <h2 style="margin:4px 0 0">Tools</h2>
+    </div>
+    <a class="btn" href="{{ url_for('investor_returns') }}">Returns calculator</a>
+    <a class="btn ghost" href="{{ url_for('investor_portal') }}">Back to portal</a>
+  </div>
+  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  {% if error %}<div class="flash" style="background:#fde8e8;color:#8a2b2b">{{ error }}</div>{% endif %}
+
+  <div class="card" style="margin-top:18px">
+    <h3>Amortization schedule</h3>
+    <p class="hint">Download an editable spreadsheet for a loan you participate in. Shows the loan’s payment schedule from Brittco’s books.</p>
+    {% if not loans %}
+    <p class="hint">No participations on your account yet.</p>
+    {% else %}
+    <form method="get" action="{{ url_for('investor_amortization_xlsx') }}">
+      <label>Loan you participate in</label>
+      <select name="loan_id" required>
+        <option value="">Select loan…</option>
+        {% for ln in loans %}
+        <option value="{{ ln.id }}">{{ ln.loan_number }} — {{ ln.property_address }} (${{ "{:,.0f}".format(ln.current_balance or 0) }})</option>
+        {% endfor %}
+      </select>
+      <p style="margin-top:14px">
+        <button class="btn" type="submit">Download amortization spreadsheet</button>
+      </p>
+    </form>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>
