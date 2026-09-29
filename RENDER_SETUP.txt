@@ -34,6 +34,14 @@ PART B — Connect to Render
 6. Under Environment Variables, add:
    Key:   SECRET_KEY
    Value: Brittco2026SecureKey!   (or any long phrase you invent)
+   Dwolla sandbox (do not put these values in git). See .env.example:
+   DWOLLA_ENV=sandbox
+   DWOLLA_KEY, DWOLLA_SECRET, DWOLLA_WEBHOOK_SECRET
+   PLATFORM_MODE=brittco_existing
+   DWOLLA_MASTER_CUSTOMER_URL  (existing Brittco customer — skips company onboarding)
+   Optional: DWOLLA_PLATFORM_FUNDING_SOURCE_URL
+   Webhook: https://app.brittcocapital.com/webhooks/dwolla
+   New white-label companies use PLATFORM_MODE=whitelabel instead.
 7. Click “Create Web Service”.
 
 --------------------------------------------

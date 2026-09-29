@@ -487,8 +487,23 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   </summary>
   <p class="hint">
     Uses the bank on the borrower profile. Borrower must have ACH authorized.
-    {% if ach_ready %}Stripe keys are on. Test mode pulls go to Stripe.{% else %}Add STRIPE_SECRET_KEY in Render to send live/test pulls.{% endif %}
+    {% if payments_provider == 'dwolla' %}
+      New collections use Dwolla{% if ach_ready %} (keys are set){% else %} — add DWOLLA_KEY and DWOLLA_SECRET{% endif %}.
+      Stripe rows already on the loan stay readable.
+    {% elif ach_ready %}
+      Stripe keys are on. Test mode pulls go to Stripe.
+    {% else %}
+      Add DWOLLA_KEY and DWOLLA_SECRET (preferred) or STRIPE_SECRET_KEY to send pulls.
+    {% endif %}
   </p>
+  {% if payments_provider == 'dwolla' and loan.dwolla_fs_status == 'unverified' %}
+  <form method="post" action="{{ url_for('loan_ach_verify_bank', lid=loan.id) }}" class="form-grid" style="margin-top:8px">
+    <div class="span-2"><p class="hint">Dwolla has not verified this borrower bank. Enter the two micro-deposit amounts (sandbox: 0.01 and 0.02).</p></div>
+    <div><label>Amount 1</label><input name="amount1" required placeholder="0.01"></div>
+    <div><label>Amount 2</label><input name="amount2" required placeholder="0.02"></div>
+    <div class="span-2"><button class="btn ghost" type="submit">Verify borrower bank</button></div>
+  </form>
+  {% endif %}
   <p class="hint">
     Bank on file: {{ loan.bank_name or "—" }}
     · routing {{ (loan.bank_routing or "—")[:4] }}…

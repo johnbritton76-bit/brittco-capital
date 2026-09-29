@@ -32,6 +32,7 @@ from amortization import (
     amortization_workbook,
     filename_for_loan,
 )
+import dwolla_client
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR") or ("/data" if os.path.isdir("/data") else APP_DIR)
@@ -1785,6 +1786,50 @@ def seed_demo_books(c):
             dist(pid, lid3, d_id, 833, 208, "Interest", when)
 
 
+def ensure_dwolla_schema(conn=None):
+    """Platform Dwolla customer plus processor columns on ACH rows and borrowers."""
+    c = conn or db()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS platform_dwolla (
+            id INTEGER PRIMARY KEY,
+            legal_name TEXT,
+            business_type TEXT,
+            ein_last4 TEXT,
+            email TEXT,
+            dwolla_customer_url TEXT,
+            status TEXT,
+            funding_source_url TEXT,
+            funding_source_status TEXT,
+            updated_at TEXT
+        )"""
+    )
+    alters = {
+        "ach_transfers": [
+            ("provider", "TEXT"),
+            ("provider_ref", "TEXT"),
+            ("provider_event", "TEXT"),
+            ("payment_id", "INTEGER"),
+        ],
+        "borrowers": [
+            ("dwolla_customer_url", "TEXT"),
+            ("dwolla_funding_source_url", "TEXT"),
+            ("dwolla_fs_status", "TEXT"),
+        ],
+    }
+    for table, cols in alters.items():
+        try:
+            existing = [r[1] for r in c.execute("PRAGMA table_info(%s)" % table)]
+        except sqlite3.Error:
+            existing = []
+        if not existing:
+            continue
+        for col, spec in cols:
+            if col not in existing:
+                c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, spec))
+    if conn is None:
+        c.commit()
+
+
 try:
     init_db()
 except Exception:
@@ -2060,6 +2105,7 @@ try:
     _c.execute(
         "UPDATE investors SET capital_available=150000 WHERE email='david@example.com' AND (capital_available IS NULL OR capital_available=0)"
     )
+    ensure_dwolla_schema(_c)
     _c.commit()
     _c.close()
 except sqlite3.Error:
@@ -2134,10 +2180,34 @@ def super_required(fn):
     return wrap
 
 
+def _dwolla_ui_flags():
+    flags = {
+        "dwolla_show_banner": False,
+        "dwolla_show_modal": False,
+        "payments_provider": "manual",
+    }
+    try:
+        flags["payments_provider"] = payments_provider()
+    except Exception:
+        pass
+    if not session.get("staff_id"):
+        return flags
+    try:
+        need = dwolla_onboarding_required()
+        on_page = request.endpoint == "dwolla_onboarding"
+        flags["dwolla_show_banner"] = bool(need) and not on_page
+        flags["dwolla_show_modal"] = bool(need) and not on_page and not session.get("hide_dwolla_modal")
+    except Exception:
+        pass
+    return flags
+
+
 @app.context_processor
 def inject_new_apps():
+    flags = _dwolla_ui_flags()
     if not session.get("staff_id"):
-        return {"new_apps": [], "new_leads": [], "is_super": False}
+        flags.update({"new_apps": [], "new_leads": [], "is_super": False})
+        return flags
     try:
         rows = db().execute(
             """SELECT d.id, d.address, b.name AS borrower_name
@@ -2156,13 +2226,17 @@ def inject_new_apps():
             ).fetchall()
         except sqlite3.Error:
             leads = []
-        return {
-            "new_apps": [dict(r) for r in rows],
-            "new_leads": [dict(r) for r in leads],
-            "is_super": staff_is_super(),
-        }
+        flags.update(
+            {
+                "new_apps": [dict(r) for r in rows],
+                "new_leads": [dict(r) for r in leads],
+                "is_super": staff_is_super(),
+            }
+        )
+        return flags
     except sqlite3.Error:
-        return {"new_apps": [], "new_leads": [], "is_super": staff_is_super()}
+        flags.update({"new_apps": [], "new_leads": [], "is_super": staff_is_super()})
+        return flags
 
 
 def ensure_closing_list(deal_id):
@@ -9604,9 +9678,11 @@ def loan_edit(lid):
 @app.route("/loans/<int:lid>")
 @staff_required
 def loan_detail(lid):
+    ensure_dwolla_schema()
     loan = db().execute(
         """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score,
-                  b.bank_name, b.bank_routing, b.bank_account, b.bank_account_type, b.ach_authorized
+                  b.bank_name, b.bank_routing, b.bank_account, b.bank_account_type, b.ach_authorized,
+                  b.dwolla_fs_status
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
         (lid,),
     ).fetchone()
@@ -9614,7 +9690,9 @@ def loan_detail(lid):
         refresh_loan_maturity(lid)
         db().commit()
         loan = db().execute(
-            """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score
+            """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score,
+                      b.bank_name, b.bank_routing, b.bank_account, b.bank_account_type, b.ach_authorized,
+                      b.dwolla_fs_status
                FROM loans l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=?""",
             (lid,),
         ).fetchone()
@@ -9705,7 +9783,8 @@ def loan_detail(lid):
         latest_letter=latest,
         flash=session.pop("last_invite_note", None),
         ach_plan=loan_ach_plan(lid),
-        ach_ready=bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip()),
+        ach_ready=ach_provider_ready(),
+        payments_provider=payments_provider(),
         ach_auths=db().execute(
             "SELECT * FROM form_packets WHERE form_key='ach_auth' AND (loan_id=? OR borrower_id=?) ORDER BY id DESC LIMIT 6",
             (lid, loan["borrower_id"]),
@@ -9825,7 +9904,17 @@ def staff_tools():
         selected_investor_id=selected_investor_id,
         flash=session.pop("last_invite_note", None),
         error=request.args.get("error"),
+        dwolla_env=dwolla_client.env_name(),
+        test_investor_creds=session.pop("test_investor_creds", None),
     )
+
+
+@app.route("/tools/test-investors", methods=["POST"])
+@staff_required
+def tools_seed_test_investors():
+    session["test_investor_creds"] = create_test_investors()
+    session["last_invite_note"] = "Test investor passwords are shown once below. Copy them before you leave this page."
+    return redirect(url_for("staff_tools"))
 
 
 @app.route("/tools/api/loans")
@@ -10544,13 +10633,12 @@ def file_payoff_accounting_docs(loan):
         pass
 
 
-@app.route("/loans/<int:lid>/payment", methods=["POST"])
-@staff_required
-def loan_payment(lid):
-    f = request.form
-    amt = money(f.get("amount"))
-    applied = f.get("applied_to") or "Interest"
-    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+def apply_collected_payment(loan, amount, applied_to, note, paid_on=None, next_payment_due=None):
+    """Post a borrower payment to the ledger and investor split. Does not commit."""
+    lid = loan["id"]
+    amt = money(amount)
+    applied = applied_to or "Interest"
+    paid_on = paid_on or date.today().isoformat()
     bal = money(loan["current_balance"])
     if applied != "Principal" and amt > bal + 0.5 and bal > 0:
         applied = "Principal"
@@ -10558,7 +10646,7 @@ def loan_payment(lid):
         extra = round(amt - bal, 2)
         db().execute(
             "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
-            (lid, f.get("paid_on") or date.today().isoformat(), extra, "Interest", f.get("note") or "Profit above principal"),
+            (lid, paid_on, extra, "Interest", note or "Profit above principal"),
         )
         for row in split_payment(loan, extra, "Interest"):
             db().execute(
@@ -10582,10 +10670,10 @@ def loan_payment(lid):
     if applied == "Principal":
         new_bal = max(0.0, new_bal - amt)
     status = "Paid Off" if new_bal <= 0 else loan["status"]
-    nxt = f.get("next_payment_due") or loan["next_payment_due"]
+    nxt = next_payment_due or loan["next_payment_due"]
     cur = db().execute(
         "INSERT INTO payments (loan_id, paid_on, amount, applied_to, note) VALUES (?,?,?,?,?)",
-        (lid, f.get("paid_on") or date.today().isoformat(), amt, applied, f.get("note")),
+        (lid, paid_on, amt, applied, note),
     )
     pay_id = cur.lastrowid
     for row in split_payment(loan, amt, applied):
@@ -10611,6 +10699,24 @@ def loan_payment(lid):
     if status == "Paid Off" and (loan["status"] or "") != "Paid Off":
         fresh = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
         file_payoff_accounting_docs(fresh or loan)
+    return pay_id
+
+
+@app.route("/loans/<int:lid>/payment", methods=["POST"])
+@staff_required
+def loan_payment(lid):
+    f = request.form
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return redirect(url_for("loans"))
+    apply_collected_payment(
+        loan,
+        money(f.get("amount")),
+        f.get("applied_to") or "Interest",
+        f.get("note"),
+        f.get("paid_on") or date.today().isoformat(),
+        f.get("next_payment_due") or loan["next_payment_due"],
+    )
     db().commit()
     return redirect(url_for("loan_detail", lid=lid))
 
@@ -11596,6 +11702,447 @@ def investor_source_remove(sid):
     return redirect(url_for("investor_portal"))
 
 
+ACH_MANDATE_TEXT = (
+    "Borrower must authorize ACH debits before a pull. "
+    "Dwolla or Stripe is used only after that authorization is on the borrower profile."
+)
+DWOLLA_SUCCESS_TOPICS = {
+    "transfer_completed",
+    "bank_transfer_completed",
+    "customer_bank_transfer_completed",
+}
+DWOLLA_FAIL_TOPICS = {
+    "transfer_failed",
+    "transfer_cancelled",
+    "bank_transfer_failed",
+    "bank_transfer_cancelled",
+    "customer_bank_transfer_failed",
+    "customer_bank_transfer_cancelled",
+}
+TEST_INVESTORS = (
+    ("Sandbox Investor A", "Test Capital A LLC", "sandbox.investor.a@example.com"),
+    ("Sandbox Investor B", "Test Capital B LLC", "sandbox.investor.b@example.com"),
+)
+
+
+def platform_mode():
+    raw = (os.environ.get("PLATFORM_MODE") or "brittco_existing").strip().lower()
+    if raw in ("whitelabel", "white_label", "white-label", "new", "new_company"):
+        return "whitelabel"
+    return "brittco_existing"
+
+
+def payments_provider():
+    explicit = (os.environ.get("PAYMENTS_PROVIDER") or "").strip().lower()
+    if explicit in ("dwolla", "stripe", "manual"):
+        return explicit
+    if dwolla_client.configured():
+        return "dwolla"
+    if stripe_secret():
+        return "stripe"
+    return "manual"
+
+
+def ach_provider_ready():
+    provider = payments_provider()
+    if provider == "dwolla":
+        return dwolla_client.configured()
+    if provider == "stripe":
+        return bool(stripe_secret())
+    return False
+
+
+def platform_dwolla_row():
+    ensure_dwolla_schema()
+    return db().execute("SELECT * FROM platform_dwolla WHERE id=1").fetchone()
+
+
+def platform_customer_url():
+    env_url = (os.environ.get("DWOLLA_MASTER_CUSTOMER_URL") or "").strip()
+    if env_url:
+        return env_url
+    return (row_val(platform_dwolla_row(), "dwolla_customer_url") or "").strip()
+
+
+def platform_funding_source_url():
+    env_url = (os.environ.get("DWOLLA_PLATFORM_FUNDING_SOURCE_URL") or "").strip()
+    if env_url:
+        return env_url
+    return (row_val(platform_dwolla_row(), "funding_source_url") or "").strip()
+
+
+def dwolla_onboarding_required():
+    """Company form is only for a new white-label platform with no customer yet."""
+    if platform_mode() != "whitelabel":
+        return False
+    if (os.environ.get("DWOLLA_MASTER_CUSTOMER_URL") or "").strip():
+        return False
+    if (row_val(platform_dwolla_row(), "dwolla_customer_url") or "").strip():
+        return False
+    return True
+
+
+def _save_platform_customer(legal_name, business_type, ein, email, url, status):
+    digits = "".join(ch for ch in (ein or "") if ch.isdigit())
+    existing = platform_dwolla_row()
+    db().execute("DELETE FROM platform_dwolla WHERE id=1")
+    db().execute(
+        """INSERT INTO platform_dwolla
+           (id, legal_name, business_type, ein_last4, email, dwolla_customer_url, status,
+            funding_source_url, funding_source_status, updated_at)
+           VALUES (1,?,?,?,?,?,?,?,?,?)""",
+        (
+            legal_name,
+            business_type,
+            digits[-4:] if digits else "",
+            email,
+            url,
+            status,
+            row_val(existing, "funding_source_url"),
+            row_val(existing, "funding_source_status"),
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    db().commit()
+
+
+def _save_platform_funding(url, status):
+    existing = platform_dwolla_row()
+    if not existing:
+        db().execute(
+            """INSERT INTO platform_dwolla
+               (id, funding_source_url, funding_source_status, updated_at)
+               VALUES (1,?,?,?)""",
+            (url, status, datetime.now().isoformat(timespec="minutes")),
+        )
+    else:
+        db().execute(
+            "UPDATE platform_dwolla SET funding_source_url=?, funding_source_status=?, updated_at=? WHERE id=1",
+            (url, status, datetime.now().isoformat(timespec="minutes")),
+        )
+    db().commit()
+
+
+def _find_ach_transfer(transfer_url):
+    if not transfer_url:
+        return None
+    row = db().execute(
+        "SELECT * FROM ach_transfers WHERE provider_ref=? ORDER BY id DESC LIMIT 1",
+        (transfer_url,),
+    ).fetchone()
+    if row:
+        return row
+    tail = transfer_url.rstrip("/").split("/")[-1]
+    if not tail:
+        return None
+    return db().execute(
+        "SELECT * FROM ach_transfers WHERE provider_ref LIKE ? ORDER BY id DESC LIMIT 1",
+        ("%" + tail,),
+    ).fetchone()
+
+
+def settle_dwolla_transfer(transfer_url, topic):
+    """When Dwolla reports a transfer complete, post the same ledger entry as Save payment."""
+    ensure_dwolla_schema()
+    row = _find_ach_transfer(transfer_url)
+    if not row:
+        return False
+    if row_val(row, "payment_id"):
+        db().execute(
+            "UPDATE ach_transfers SET status=?, provider_event=? WHERE id=?",
+            ("processed", topic, row["id"]),
+        )
+        db().commit()
+        return True
+    lid = row["loan_id"]
+    if not lid:
+        db().execute(
+            "UPDATE ach_transfers SET status=?, provider_event=? WHERE id=?",
+            ("processed", topic, row["id"]),
+        )
+        db().commit()
+        return False
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        return False
+    pay_id = apply_collected_payment(
+        loan,
+        money(row["amount"]),
+        "Interest",
+        "ACH Dwolla processed",
+        date.today().isoformat(),
+    )
+    db().execute(
+        "UPDATE ach_transfers SET status=?, provider_event=?, payment_id=? WHERE id=?",
+        ("processed", topic, pay_id, row["id"]),
+    )
+    if row_val(row, "loan_id"):
+        try:
+            ensure_ach_plans()
+            db().execute(
+                "UPDATE loan_ach_plans SET last_run=? WHERE loan_id=? AND status='Active'",
+                (date.today().isoformat(), row["loan_id"]),
+            )
+        except sqlite3.Error:
+            pass
+    db().commit()
+    return True
+
+
+def mark_dwolla_transfer(transfer_url, status, topic):
+    ensure_dwolla_schema()
+    row = _find_ach_transfer(transfer_url)
+    if not row:
+        return
+    db().execute(
+        "UPDATE ach_transfers SET status=?, provider_event=? WHERE id=?",
+        (status, topic, row["id"]),
+    )
+    db().commit()
+
+
+def _person_names(full):
+    parts = (full or "").replace(",", " ").split()
+    if not parts:
+        return "Borrower", "Customer"
+    if len(parts) == 1:
+        return parts[0], "Customer"
+    return parts[0], " ".join(parts[1:])
+
+
+def _verify_funding_source(fs_url, sandbox_auto=False, amount1=None, amount2=None):
+    info, _loc, err = dwolla_client.get_resource(fs_url)
+    status = ((info or {}).get("status") or "").lower()
+    if err:
+        return status, err
+    if status == "verified":
+        return status, None
+    if amount1 and amount2:
+        _parsed, _loc, verr = dwolla_client.verify_micro_deposits(fs_url, amount1, amount2)
+        info, _loc, err = dwolla_client.get_resource(fs_url)
+        status = ((info or {}).get("status") or status).lower()
+        return status, verr or err
+    if sandbox_auto and dwolla_client.env_name() != "production":
+        dwolla_client.initiate_micro_deposits(fs_url)
+        _parsed, _loc, verr = dwolla_client.verify_micro_deposits(fs_url, "0.01", "0.02")
+        info, _loc, err = dwolla_client.get_resource(fs_url)
+        status = ((info or {}).get("status") or status).lower()
+        if status == "verified":
+            return status, None
+        return status, verr or err or "Bank is not verified yet."
+    dwolla_client.initiate_micro_deposits(fs_url)
+    return status or "unverified", None
+
+
+def attach_platform_bank(routing, account, bank_name, account_type):
+    if not dwolla_client.configured():
+        return "Set DWOLLA_KEY and DWOLLA_SECRET first."
+    customer = platform_customer_url()
+    if not customer:
+        if platform_mode() == "whitelabel":
+            return "Create the Dwolla company customer before adding a bank."
+        return "Set DWOLLA_MASTER_CUSTOMER_URL for the existing Brittco customer."
+    _parsed, location, err = dwolla_client.create_funding_source(
+        customer, routing, account, account_type, bank_name or "Operating"
+    )
+    if err or not location:
+        return err or "Dwolla did not return a funding source."
+    status, verr = _verify_funding_source(location, sandbox_auto=True)
+    _save_platform_funding(location, status or "unverified")
+    if (status or "") != "verified":
+        return verr or "Bank added. Verify the two micro-deposits before collecting."
+    return None
+
+
+def ensure_borrower_dwolla_source(borrower):
+    routing = (row_val(borrower, "bank_routing") or "").replace(" ", "")
+    account = (row_val(borrower, "bank_account") or "").replace(" ", "")
+    if not routing or not account:
+        return None, "Add routing and account on the borrower profile first."
+    if not row_val(borrower, "ach_authorized"):
+        return None, "Borrower must have ACH authorized on their profile."
+    email = (row_val(borrower, "email") or "").strip().lower() or ("borrower%s@example.com" % borrower["id"])
+    cust = (row_val(borrower, "dwolla_customer_url") or "").strip()
+    if not cust:
+        first, last = _person_names(row_val(borrower, "name"))
+        _parsed, location, err = dwolla_client.create_unverified_customer(first, last, email)
+        if err or not location:
+            location, found_err = dwolla_client.find_customer_by_email(email)
+            if not location:
+                return None, err or found_err or "Could not create the borrower in Dwolla."
+        cust = location
+        db().execute("UPDATE borrowers SET dwolla_customer_url=? WHERE id=?", (cust, borrower["id"]))
+        db().commit()
+    fs = (row_val(borrower, "dwolla_funding_source_url") or "").strip()
+    if not fs:
+        _parsed, location, err = dwolla_client.create_funding_source(
+            cust,
+            routing,
+            account,
+            row_val(borrower, "bank_account_type") or "checking",
+            row_val(borrower, "bank_name") or "Borrower bank",
+        )
+        if err or not location:
+            return None, err or "Could not add the borrower bank in Dwolla."
+        fs = location
+        db().execute(
+            "UPDATE borrowers SET dwolla_funding_source_url=?, dwolla_fs_status=? WHERE id=?",
+            (fs, "unverified", borrower["id"]),
+        )
+        db().commit()
+    status, err = _verify_funding_source(fs, sandbox_auto=True)
+    db().execute(
+        "UPDATE borrowers SET dwolla_fs_status=? WHERE id=?",
+        (status or "unverified", borrower["id"]),
+    )
+    db().commit()
+    if (status or "") != "verified":
+        if dwolla_client.env_name() == "production":
+            return None, "Dwolla sent micro-deposits. Enter the two amounts on the loan page, then collect again."
+        return None, err or "Borrower bank is not verified in Dwolla yet."
+    return fs, None
+
+
+def collect_dwolla_once(loan, plan, borrower):
+    if not dwolla_client.configured():
+        return False, "Set DWOLLA_KEY and DWOLLA_SECRET."
+    amt = money(plan["amount"] if plan else 0)
+    if amt <= 0:
+        return False, "Plan amount is missing."
+    dest = platform_funding_source_url()
+    if not dest:
+        if platform_mode() == "whitelabel":
+            return False, "Add the company bank on Dwolla onboarding before collecting."
+        return False, "Set DWOLLA_PLATFORM_FUNDING_SOURCE_URL or add the company bank on the ACH page."
+    src, err = ensure_borrower_dwolla_source(borrower)
+    if err:
+        return False, err
+    _parsed, location, err = dwolla_client.create_transfer(
+        src,
+        dest,
+        amt,
+        {
+            "loanId": loan["id"],
+            "borrowerId": loan["borrower_id"],
+            "loanNumber": row_val(loan, "loan_number"),
+        },
+    )
+    if err or not location:
+        return False, err or "Dwolla did not return a transfer."
+    ensure_dwolla_schema()
+    db().execute(
+        """INSERT INTO ach_transfers
+           (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, provider, provider_ref)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            None,
+            loan["borrower_id"],
+            loan["id"],
+            "Debit borrower (loan payment)",
+            amt,
+            "pending",
+            "Dwolla",
+            location,
+            datetime.now().isoformat(timespec="minutes"),
+            "dwolla",
+            location,
+        ),
+    )
+    if plan and row_val(plan, "id"):
+        db().execute(
+            "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
+            (date.today().isoformat(), plan["id"]),
+        )
+    db().commit()
+    body, _loc, gerr = dwolla_client.get_resource(location)
+    status = ((body or {}).get("status") or "pending") if not gerr else "pending"
+    if status in ("processed", "completed"):
+        settle_dwolla_transfer(location, "transfer_completed")
+        return True, "processed"
+    db().execute("UPDATE ach_transfers SET status=? WHERE provider_ref=?", (status, location))
+    db().commit()
+    return True, status
+
+
+def submit_platform_customer(form):
+    if not dwolla_client.configured():
+        return False, "Set DWOLLA_KEY and DWOLLA_SECRET on the host first."
+    try:
+        body, owner = dwolla_client.business_customer_body(form)
+    except ValueError as exc:
+        return False, str(exc)
+    master = (os.environ.get("DWOLLA_MASTER_CUSTOMER_URL") or "").strip()
+    existing = "" if master else (row_val(platform_dwolla_row(), "dwolla_customer_url") or "").strip()
+    if existing:
+        _parsed, _loc, err = dwolla_client.update_customer(existing, body)
+        location = existing
+    else:
+        _parsed, location, err = dwolla_client.create_business_customer(body)
+        if err and "exist" in err.lower():
+            location, found_err = dwolla_client.find_customer_by_email(body["email"])
+            err = None if location else (found_err or err)
+    if err or not location:
+        return False, err or "Dwolla did not return a customer."
+    notes = []
+    if owner:
+        _parsed, _loc, oerr = dwolla_client.add_beneficial_owner(location, owner)
+        if oerr and "already" not in oerr.lower() and "exist" not in oerr.lower():
+            notes.append("Beneficial owner: " + oerr)
+    _parsed, _loc, cerr = dwolla_client.certify_beneficial_ownership(location)
+    if cerr and "already" not in cerr.lower() and "certified" not in cerr.lower():
+        notes.append("Ownership certification: " + cerr)
+    status = "created"
+    info, _loc, gerr = dwolla_client.get_resource(location)
+    if not gerr and info:
+        status = info.get("status") or status
+    _save_platform_customer(
+        body.get("businessName"),
+        body.get("businessType"),
+        (form.get("ein") or ""),
+        body.get("email"),
+        location,
+        status,
+    )
+    msg = "Dwolla customer saved (%s)." % status
+    if notes:
+        msg += " " + " ".join(notes)
+    return True, msg
+
+
+def create_test_investors():
+    """Create or rotate two sandbox investor logins. Returns one-time passwords."""
+    creds = []
+    for name, entity, email in TEST_INVESTORS:
+        password = secrets.token_urlsafe(9)
+        row = db().execute("SELECT id FROM investors WHERE email=?", (email,)).fetchone()
+        if row:
+            db().execute(
+                "UPDATE investors SET password=?, name=?, entity_name=?, notes=? WHERE id=?",
+                (password, name, entity, "Sandbox test investor for program testing.", row["id"]),
+            )
+            iid = row["id"]
+        else:
+            db().execute(
+                """INSERT INTO investors
+                   (name, entity_name, email, phone, notes, ach_status, password, capital_available)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    name,
+                    entity,
+                    email,
+                    "",
+                    "Sandbox test investor for program testing.",
+                    "Not connected",
+                    password,
+                    0,
+                ),
+            )
+            iid = db().execute("SELECT id FROM investors WHERE email=?", (email,)).fetchone()["id"]
+        creds.append({"id": iid, "name": name, "email": email, "password": password})
+    db().commit()
+    return creds
+
+
 def ensure_ach_plans():
     db().execute(
         """CREATE TABLE IF NOT EXISTS loan_ach_plans (
@@ -11755,17 +12302,20 @@ def stripe_customer_and_bank(borrower):
 
 
 def collect_ach_once(loan, plan, borrower):
+    ensure_dwolla_schema()
+    if payments_provider() == "dwolla":
+        return collect_dwolla_once(loan, plan, borrower)
     amt = money(plan["amount"] if plan else 0)
     if amt <= 0:
         return False, "Plan amount is missing."
     cents = int(round(amt * 100))
     cus = row_val(plan, "stripe_customer") if plan else None
     pm = row_val(plan, "stripe_pm") if plan else None
-    if stripe_secret() and (not cus or not pm):
+    if payments_provider() == "stripe" and stripe_secret() and (not cus or not pm):
         cus, pm, err = stripe_customer_and_bank(borrower)
         if err:
             return False, err
-        if plan:
+        if plan and row_val(plan, "id"):
             db().execute(
                 "UPDATE loan_ach_plans SET stripe_customer=?, stripe_pm=? WHERE id=?",
                 (cus, pm, plan["id"]),
@@ -11773,7 +12323,7 @@ def collect_ach_once(loan, plan, borrower):
     status = "Recorded — collect at bank"
     vendor = "Manual"
     stripe_id = ""
-    if stripe_secret() and cus and pm:
+    if payments_provider() == "stripe" and stripe_secret() and cus and pm:
         accepted = int(datetime.now().timestamp())
         pi, err = stripe_post(
             "/payment_intents",
@@ -11797,8 +12347,8 @@ def collect_ach_once(loan, plan, borrower):
         vendor = "Stripe"
     db().execute(
         """INSERT INTO ach_transfers
-           (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+           (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, provider, provider_ref)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             None,
             loan["borrower_id"],
@@ -11809,6 +12359,8 @@ def collect_ach_once(loan, plan, borrower):
             vendor,
             stripe_id,
             datetime.now().isoformat(timespec="minutes"),
+            "stripe" if vendor == "Stripe" else "manual",
+            stripe_id,
         ),
     )
     db().execute(
@@ -11821,7 +12373,7 @@ def collect_ach_once(loan, plan, borrower):
             "ACH %s %s" % (vendor, status),
         ),
     )
-    if plan:
+    if plan and row_val(plan, "id"):
         db().execute(
             "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
             (date.today().isoformat(), plan["id"]),
@@ -12016,7 +12568,7 @@ def loan_ach_plan_save(lid):
         return redirect(url_for("loan_detail", lid=lid))
     cus = pm = None
     warn = None
-    if stripe_secret():
+    if payments_provider() == "stripe" and stripe_secret():
         cus, pm, warn = stripe_customer_and_bank(b)
     db().execute("UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status=?", ("Stopped", lid, "Active"))
     db().execute(
@@ -12037,9 +12589,20 @@ def loan_ach_plan_save(lid):
         ),
     )
     db().commit()
+    provider = payments_provider()
+    if warn:
+        tail = " " + provider.title() + ": " + warn
+    elif provider == "dwolla" and dwolla_client.configured():
+        tail = " Dwolla will pull this amount on collect."
+    elif cus:
+        tail = " Stripe customer ready."
+    elif provider == "stripe":
+        tail = " Stripe key not set — plan is on file for manual collect."
+    else:
+        tail = " Plan is on file for manual collect."
     session["last_invite_note"] = (
         "ACH plan saved: $%.2f on day %s each month through %s." % (amt, day, end or "you stop it")
-        + ((" Stripe: " + warn) if warn else (" Stripe customer ready." if cus else " Stripe key not set — plan is on file for manual collect."))
+        + tail
     )
     return redirect(url_for("loan_detail", lid=lid))
 
@@ -12068,43 +12631,69 @@ def loan_ach_collect(lid):
     return redirect(url_for("loan_detail", lid=lid))
 
 
+def _plan_for_amount(plan, amount):
+    data = {}
+    if plan is not None:
+        try:
+            data = {key: plan[key] for key in plan.keys()}
+        except Exception:
+            data = {}
+    if amount:
+        data["amount"] = amount
+    return data
+
+
 @app.route("/ach", methods=["GET", "POST"])
 @staff_required
 def ach():
+    ensure_dwolla_schema()
     if request.method == "POST":
         f = request.form
-        vendor = "Dwolla" if os.environ.get("ACH_API_KEY") else "Manual / pending bank"
         lid = int(f["loan_id"]) if f.get("loan_id") else None
         bid = int(f["borrower_id"]) if f.get("borrower_id") else None
         if lid and not bid:
             row = db().execute("SELECT borrower_id FROM loans WHERE id=?", (lid,)).fetchone()
             bid = row["borrower_id"] if row else None
+        provider = payments_provider()
+        if provider in ("dwolla", "stripe") and lid:
+            loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+            borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone() if loan else None
+            if not loan or not borrower:
+                session["last_invite_note"] = "Choose a loan that is still on file."
+                return redirect(url_for("ach"))
+            ok, msg = collect_ach_once(loan, _plan_for_amount(loan_ach_plan(lid), money(f.get("amount"))), borrower)
+            session["last_invite_note"] = ("ACH sent: " + msg) if ok else ("ACH did not send: " + msg)
+            return redirect(url_for("ach"))
         db().execute(
             """INSERT INTO ach_transfers
-            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (investor_id, borrower_id, loan_id, direction, amount, status, vendor, notes, created_at, provider)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 None,
                 bid,
                 lid,
                 "Debit borrower (loan payment)",
                 money(f.get("amount")),
-                "Queued" if os.environ.get("ACH_API_KEY") else "Recorded — collect at bank or connect processor",
-                vendor,
+                "Recorded — collect at bank or connect processor",
+                "Manual",
                 f.get("notes"),
                 datetime.now().isoformat(timespec="minutes"),
+                "manual",
             ),
         )
         db().commit()
+        session["last_invite_note"] = "Collection recorded. No processor call was made."
         return redirect(url_for("ach"))
     transfers = db().execute(
-        """SELECT t.*, b.name AS borrower_name, l.loan_number
+        """SELECT t.*, b.name AS borrower_name, i.name AS investor_name, l.loan_number
            FROM ach_transfers t
            LEFT JOIN borrowers b ON b.id=t.borrower_id
+           LEFT JOIN investors i ON i.id=t.investor_id
            LEFT JOIN loans l ON l.id=t.loan_id
            ORDER BY t.id DESC"""
     ).fetchall()
     borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
     loans = db().execute(
         """SELECT l.id, l.loan_number, l.property_address, b.name AS borrower_name
            FROM loans l JOIN borrowers b ON b.id=l.borrower_id
@@ -12116,9 +12705,197 @@ def ach():
         nav="ach",
         transfers=transfers,
         borrowers=borrowers,
+        investors=investors,
         loans=loans,
-        vendor_ready=bool(os.environ.get("ACH_API_KEY")),
+        vendor_ready=ach_provider_ready(),
+        stripe_ready=bool(stripe_secret()),
+        dwolla_ready=dwolla_client.configured(),
+        dwolla_env=dwolla_client.env_name(),
+        payments_provider=payments_provider(),
+        platform_mode=platform_mode(),
+        platform_customer=platform_customer_url(),
+        platform_funding_source=platform_funding_source_url(),
+        mandate_text=ACH_MANDATE_TEXT,
+        webhook_url=public_base() + "/webhooks/dwolla",
+        flash=session.pop("last_invite_note", None),
     )
+
+
+@app.route("/ach/investor-payout", methods=["POST"])
+@staff_required
+def ach_investor_payout():
+    ensure_dwolla_schema()
+    f = request.form
+    iid = int(f["investor_id"]) if f.get("investor_id") else None
+    db().execute(
+        """INSERT INTO ach_transfers
+           (investor_id, direction, amount, status, vendor, notes, created_at, provider)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            iid,
+            "Credit investor (log only)",
+            money(f.get("amount")),
+            "Logged — not sent",
+            "Manual",
+            f.get("notes"),
+            datetime.now().isoformat(timespec="minutes"),
+            "manual",
+        ),
+    )
+    db().commit()
+    session["last_invite_note"] = "Investor credit logged. Money was not sent."
+    return redirect(url_for("ach"))
+
+
+@app.route("/ach/platform-bank", methods=["POST"])
+@staff_required
+def ach_platform_bank():
+    err = attach_platform_bank(
+        request.form.get("routing"),
+        request.form.get("account"),
+        request.form.get("bank_name"),
+        request.form.get("bank_account_type"),
+    )
+    session["last_invite_note"] = err or "Company bank saved in Dwolla."
+    return redirect(url_for("ach"))
+
+
+@app.route("/loans/<int:lid>/ach-verify-bank", methods=["POST"])
+@staff_required
+def loan_ach_verify_bank(lid):
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone() if loan else None
+    fs = row_val(borrower, "dwolla_funding_source_url") if borrower else ""
+    if not fs:
+        session["last_invite_note"] = "Collect once so Dwolla can create the borrower bank, then enter the deposits."
+        return redirect(url_for("loan_detail", lid=lid))
+    status, err = _verify_funding_source(
+        fs,
+        amount1=request.form.get("amount1") or "0.01",
+        amount2=request.form.get("amount2") or "0.02",
+    )
+    db().execute(
+        "UPDATE borrowers SET dwolla_fs_status=? WHERE id=?",
+        (status or "unverified", borrower["id"]),
+    )
+    db().commit()
+    if status == "verified":
+        session["last_invite_note"] = "Borrower bank verified in Dwolla."
+    else:
+        session["last_invite_note"] = "Bank was not verified: " + (err or status or "try the amounts again")
+    return redirect(url_for("loan_detail", lid=lid))
+
+
+@app.route("/dwolla/onboarding", methods=["GET", "POST"])
+@staff_required
+def dwolla_onboarding():
+    if platform_mode() != "whitelabel":
+        session["last_invite_note"] = (
+            "Company onboarding is off for this platform. "
+            "Brittco uses PLATFORM_MODE=brittco_existing and DWOLLA_MASTER_CUSTOMER_URL."
+        )
+        return redirect(url_for("staff_tools"))
+    ensure_dwolla_schema()
+    error = None
+    if request.method == "POST":
+        action = request.form.get("action") or "customer"
+        if action == "bank":
+            error = attach_platform_bank(
+                request.form.get("routing"),
+                request.form.get("account"),
+                request.form.get("bank_name"),
+                request.form.get("bank_account_type"),
+            )
+            if not error:
+                session["last_invite_note"] = "Company bank saved."
+                return redirect(url_for("dwolla_onboarding"))
+        elif action == "verify_bank":
+            fs = platform_funding_source_url()
+            if not fs:
+                error = "Add the company bank first."
+            else:
+                status, verr = _verify_funding_source(
+                    fs,
+                    amount1=request.form.get("amount1"),
+                    amount2=request.form.get("amount2"),
+                )
+                _save_platform_funding(fs, status or "unverified")
+                if status == "verified":
+                    session["last_invite_note"] = "Company bank verified."
+                    return redirect(url_for("dwolla_onboarding"))
+                error = verr or "Those amounts did not verify the bank."
+        else:
+            ok, msg = submit_platform_customer(request.form)
+            if ok:
+                session["last_invite_note"] = msg
+                return redirect(url_for("dwolla_onboarding"))
+            error = msg
+    classifications = []
+    if dwolla_client.configured():
+        classifications, _err = dwolla_client.list_business_classifications()
+    row = platform_dwolla_row()
+    form = request.form if request.method == "POST" else {}
+    return render_template(
+        "dwolla_onboard.html",
+        title="Company ACH setup",
+        nav="tools",
+        error=error,
+        flash=session.pop("last_invite_note", None),
+        form=form,
+        classifications=classifications or [],
+        business_types=(
+            ("llc", "LLC"),
+            ("corporation", "Corporation"),
+            ("partnership", "Partnership"),
+            ("soleProprietorship", "Sole proprietorship"),
+        ),
+        dwolla_ready=dwolla_client.configured(),
+        customer_url=platform_customer_url(),
+        customer_status=row_val(row, "status"),
+        funding_url=platform_funding_source_url(),
+        funding_status=row_val(row, "funding_source_status"),
+    )
+
+
+@app.route("/dwolla/onboarding/dismiss", methods=["POST"])
+@staff_required
+def dwolla_onboarding_dismiss():
+    session["hide_dwolla_modal"] = 1
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+@app.route("/webhooks/dwolla", methods=["POST"])
+def dwolla_webhook():
+    raw = request.get_data() or b""
+    secret = (os.environ.get("DWOLLA_WEBHOOK_SECRET") or "").strip()
+    signature = request.headers.get("X-Request-Signature-SHA-256") or ""
+    if not dwolla_client.signature_ok(secret, raw, signature):
+        return "invalid signature", 401
+    try:
+        event = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return "bad json", 400
+    topic = event.get("topic") or ""
+    resource = ((event.get("_links") or {}).get("resource") or {}).get("href") or ""
+    if topic in DWOLLA_SUCCESS_TOPICS:
+        settle_dwolla_transfer(resource, topic)
+    elif topic in DWOLLA_FAIL_TOPICS:
+        mark_dwolla_transfer(resource, "failed" if "failed" in topic else "cancelled", topic)
+    elif topic.startswith("customer_") and resource:
+        current = ""
+        try:
+            current = platform_customer_url()
+        except Exception:
+            current = ""
+        if current and resource.rstrip("/") == current.rstrip("/"):
+            row = platform_dwolla_row()
+            if row:
+                db().execute(
+                    "UPDATE platform_dwolla SET status=?, updated_at=? WHERE id=1",
+                    (topic.replace("customer_", ""), datetime.now().isoformat(timespec="minutes")),
+                )
+                db().commit()
+    return {"ok": True}
 
 
 @app.route("/deals/<int:did>/decision", methods=["POST"])
@@ -13132,6 +13909,15 @@ def admin_form_edit(key):
 
 
 if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "seed-test-investors":
+        init_db()
+        with app.app_context():
+            for row in create_test_investors():
+                print("%s\t%s\t%s" % (row["name"], row["email"], row["password"]))
+            print("Passwords are shown once and are not written to git.")
+        raise SystemExit(0)
     init_db()
     print("Brittco Capital Inc system is running at http://127.0.0.1:5050")
     app.run(host="0.0.0.0", port=5050, debug=False)

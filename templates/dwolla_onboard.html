@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">White-label ACH</div>
+    <h2>Company ACH setup</h2>
+  </div>
+</div>
+{% if error %}<p class="flash" style="background:#fde8e8;color:#8a2b2b">{{ error }}</p>{% endif %}
+
+<div class="card">
+  <h3>Setup guide</h3>
+  <p class="hint">Dwolla does not embed a tutorial here. Follow these four steps. Sandbox is the default until <code>DWOLLA_ENV=production</code>.</p>
+  <div class="steps">
+    <div class="step"><strong>1 · Company</strong> Legal name, EIN, address, and controller. This creates a Dwolla business customer. <a href="https://developers.dwolla.com/docs/balance/api-reference/customers/create" target="_blank" rel="noopener">Customer docs</a></div>
+    <div class="step"><strong>2 · Company bank</strong> Add the operating account Dwolla will deposit collections into, then verify it. <a href="https://developers.dwolla.com/docs/balance/api-reference/funding-sources/create" target="_blank" rel="noopener">Funding source docs</a></div>
+    <div class="step"><strong>3 · First bank link</strong> On a borrower, save routing and account and check ACH authorized (or email the ACH form from the loan). The first collect creates that person’s Dwolla customer and bank.</div>
+    <div class="step"><strong>4 · First ACH</strong> Open the loan, save the ACH plan, and choose Collect this payment now. When Dwolla reports the transfer complete, the loan ledger posts automatically. Point Dwolla webhooks at <code>/webhooks/dwolla</code>. <a href="https://developers.dwolla.com/docs/balance/webhooks/process" target="_blank" rel="noopener">Webhook docs</a></div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Step 1 · Company information</h3>
+  {% if customer_url %}
+  <p class="hint">Dwolla customer is on file. Status: <strong>{{ customer_status or "unknown" }}</strong>. Submit again only to send corrections.</p>
+  {% else %}
+  <p class="hint">Minimum fields Dwolla asks for on a verified business customer. Social Security number and the full EIN are sent to Dwolla and are not stored in this app.</p>
+  {% endif %}
+  {% if not dwolla_ready %}
+  <p class="flash" style="background:#fff4d6;color:#8a6a00">Add DWOLLA_KEY and DWOLLA_SECRET on the host before submitting. Nothing is sent until those are set.</p>
+  {% endif %}
+  <form method="post" class="form-grid">
+    <input type="hidden" name="action" value="customer">
+    <div class="span-2"><label>Legal business name</label><input name="business_name" required value="{{ form.business_name or '' }}"></div>
+    <div><label>Business type</label>
+      <select name="business_type" required>
+        {% for value, label in business_types %}
+        <option value="{{ value }}" {% if form.business_type==value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>EIN / tax ID</label><input name="ein" inputmode="numeric" placeholder="00-0000000" value="{{ form.ein or '' }}"><span class="hint">Required except sole proprietors.</span></div>
+    <div class="span-2"><label>Industry (Dwolla business classification)</label>
+      {% if classifications %}
+      <select name="business_classification" required>
+        <option value="">Select…</option>
+        {% for c in classifications %}
+        <option value="{{ c.id }}" {% if form.business_classification==c.id %}selected{% endif %}>{{ c.label }}</option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <input name="business_classification" required placeholder="Classification id" value="{{ form.business_classification or '' }}">
+      <span class="hint">Loaded from Dwolla when the API keys are set. <a href="https://developers.dwolla.com/docs/balance/api-reference/customers/business-classifications" target="_blank" rel="noopener">Classification list</a></span>
+      {% endif %}
+    </div>
+    <div class="span-2"><label>Business email</label><input name="email" type="email" required value="{{ form.email or '' }}"></div>
+    <div class="span-2"><label>Street</label><input name="address1" required value="{{ form.address1 or '' }}"></div>
+    <div><label>City</label><input name="city" required value="{{ form.city or '' }}"></div>
+    <div><label>State</label><input name="state" required maxlength="2" placeholder="MO" value="{{ form.state or '' }}"></div>
+    <div><label>ZIP</label><input name="postal_code" required value="{{ form.postal_code or '' }}"></div>
+    <div class="span-2"><h3>Controller</h3><p class="hint">The person Dwolla verifies for this business. Sandbox accepts a test SSN such as 123-45-6789.</p></div>
+    <div><label>First name</label><input name="controller_first" required value="{{ form.controller_first or '' }}"></div>
+    <div><label>Last name</label><input name="controller_last" required value="{{ form.controller_last or '' }}"></div>
+    <div><label>Title</label><input name="controller_title" value="{{ form.controller_title or 'Owner' }}"></div>
+    <div><label>Date of birth</label><input name="controller_dob" type="date" required value="{{ form.controller_dob or '' }}"></div>
+    <div><label>SSN</label><input name="controller_ssn" required autocomplete="off" placeholder="9 digits"></div>
+    <div><label>Ownership %</label><input name="ownership_pct" type="number" min="0" max="100" step="1" value="{{ form.ownership_pct or '100' }}"><span class="hint">25% or more is added as the beneficial owner, then ownership is certified.</span></div>
+    <div class="span-2"><label><input type="checkbox" name="controller_same_address" value="1" checked> Controller uses the business address</label></div>
+    <div class="span-2"><button class="btn" type="submit">Create Dwolla customer</button></div>
+  </form>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Step 2 · Verify the company bank</h3>
+  {% if not customer_url %}
+  <p class="hint">Submit company information first. The bank is attached to that Dwolla customer.</p>
+  {% else %}
+  <p class="hint">Funding source: {{ funding_status or "not added yet" }}. In sandbox, amounts 0.01 and 0.02 verify the account after you add it.</p>
+  <form method="post" class="form-grid">
+    <input type="hidden" name="action" value="bank">
+    <div><label>Bank name</label><input name="bank_name" required placeholder="Operating account"></div>
+    <div><label>Account type</label>
+      <select name="bank_account_type"><option value="checking">Checking</option><option value="savings">Savings</option></select>
+    </div>
+    <div><label>Routing number</label><input name="routing" required inputmode="numeric" placeholder="222222226"></div>
+    <div><label>Account number</label><input name="account" required inputmode="numeric" autocomplete="off"></div>
+    <div class="span-2"><button class="btn" type="submit">Add bank and verify in sandbox</button></div>
+  </form>
+  {% if funding_url and funding_status != 'verified' %}
+  <form method="post" class="form-grid" style="margin-top:12px">
+    <input type="hidden" name="action" value="verify_bank">
+    <div><label>Micro-deposit amount 1</label><input name="amount1" required placeholder="0.01"></div>
+    <div><label>Micro-deposit amount 2</label><input name="amount2" required placeholder="0.02"></div>
+    <div class="span-2"><button class="btn ghost" type="submit">Verify deposits</button></div>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>Steps 3 and 4</h3>
+  <p class="hint">Link a borrower bank from the borrower profile, then collect from the loan page. Investor portal logins for program testing are created under Tools.</p>
+  <p>
+    <a class="btn ghost" href="{{ url_for('borrowers') }}">Borrowers</a>
+    <a class="btn ghost" href="{{ url_for('loans') }}">Loans</a>
+    <a class="btn ghost" href="{{ url_for('ach') }}">ACH log</a>
+  </p>
+</div>
+{% endblock %}

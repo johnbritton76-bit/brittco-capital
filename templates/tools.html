@@ -58,6 +58,29 @@
   </form>
 </div>
 
+<div class="card" style="margin-top:14px;max-width:640px">
+  <h3>Test investors</h3>
+  <p class="hint">
+    Creates two sandbox investor portal logins for program testing
+    (Sandbox Investor A and Sandbox Investor B). A random password is shown once on this page
+    and is not written into git. Running it again rotates those passwords.
+    {% if dwolla_env == 'production' %}These logins work on the live portal. Copy the passwords before you leave this page.{% endif %}
+  </p>
+  {% if test_investor_creds %}
+  <table class="table">
+    <tr><th>Name</th><th>Email</th><th>One-time password</th></tr>
+    {% for row in test_investor_creds %}
+    <tr><td>{{ row.name }}</td><td>{{ row.email }}</td><td><code>{{ row.password }}</code></td></tr>
+    {% endfor %}
+  </table>
+  <p class="hint">Copy these now. They will not be shown again.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('tools_seed_test_investors') }}">
+    <button class="btn" type="submit">Create two test investors</button>
+  </form>
+  <p class="hint">Command line (prints the same one-time passwords): <code>python app.py seed-test-investors</code></p>
+</div>
+
 <script>
 (function () {
   var party = document.getElementById("party");
