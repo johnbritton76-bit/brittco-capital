@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import tempfile
+from unittest.mock import patch
 
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="brittco-dwolla-")
 os.environ["SECRET_KEY"] = "test-secret"
@@ -60,6 +61,82 @@ def test_business_payload_requires_ein_for_llc():
         assert "EIN" in str(exc)
     else:
         raise AssertionError("expected EIN to be required")
+
+
+class _TokenResponse:
+    def __init__(self, payload, location=None):
+        self._payload = payload
+        self.headers = {"Location": location} if location else {}
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _reset_token_cache():
+    dwolla_client._token_cache["token"] = ""
+    dwolla_client._token_cache["exp"] = 0.0
+
+
+def test_token_request_accept_is_json_not_hal():
+    os.environ["DWOLLA_KEY"] = "test-key"
+    os.environ["DWOLLA_SECRET"] = "test-secret"
+    os.environ["DWOLLA_ENV"] = "sandbox"
+    _reset_token_cache()
+    seen = {}
+
+    def fake_urlopen(req, timeout=30):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["accept"] = req.get_header("Accept")
+        seen["authorization"] = req.get_header("Authorization") or ""
+        seen["body"] = req.data
+        return _TokenResponse(b'{"access_token":"sandbox-token","expires_in":3600}')
+
+    try:
+        with patch("urllib.request.urlopen", fake_urlopen):
+            token, err = dwolla_client.access_token(force=True)
+        assert err is None, err
+        assert token == "sandbox-token"
+        assert seen["method"] == "POST"
+        assert seen["url"] == "https://api-sandbox.dwolla.com/token"
+        assert seen["accept"] == "application/json"
+        assert seen["accept"] != dwolla_client.ACCEPT
+        assert "grant_type=client_credentials" in seen["body"].decode("utf-8")
+        assert seen["authorization"].startswith("Basic ")
+    finally:
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
+        _reset_token_cache()
+
+
+def test_api_requests_keep_hal_accept():
+    os.environ["DWOLLA_ENV"] = "sandbox"
+    dwolla_client._token_cache["token"] = "cached-token"
+    dwolla_client._token_cache["exp"] = 10**12
+    seen = {}
+
+    def fake_urlopen(req, timeout=30):
+        seen["url"] = req.full_url
+        seen["accept"] = req.get_header("Accept")
+        seen["authorization"] = req.get_header("Authorization") or ""
+        return _TokenResponse(b'{"id":"cust"}')
+
+    try:
+        with patch("urllib.request.urlopen", fake_urlopen):
+            parsed, _loc, err = dwolla_client.api("GET", "/customers/abc")
+        assert err is None, err
+        assert parsed["id"] == "cust"
+        assert seen["url"] == "https://api-sandbox.dwolla.com/customers/abc"
+        assert seen["accept"] == dwolla_client.ACCEPT
+        assert seen["authorization"] == "Bearer cached-token"
+    finally:
+        _reset_token_cache()
 
 
 def test_signature_round_trip():

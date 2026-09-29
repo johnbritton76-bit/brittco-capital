@@ -16,6 +16,8 @@ import urllib.request
 import uuid
 
 ACCEPT = "application/vnd.dwolla.v1.hal+json"
+# /token rejects the HAL type above and reports a fake Authorization error.
+TOKEN_ACCEPT = "application/json"
 BUSINESS_TYPES = ("corporation", "llc", "partnership", "soleProprietorship")
 
 _token_cache = {"token": "", "exp": 0.0}
@@ -218,7 +220,7 @@ def access_token(force=False):
         "POST",
         api_base() + "/token",
         form={"grant_type": "client_credentials"},
-        headers={"Authorization": "Basic " + basic, "Accept": ACCEPT},
+        headers={"Authorization": "Basic " + basic, "Accept": TOKEN_ACCEPT},
     )
     if err:
         return None, err
