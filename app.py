@@ -28,6 +28,10 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from forms_catalog import DEFAULTS as FORM_DEFAULTS
+from amortization import (
+    amortization_workbook,
+    filename_for_loan,
+)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR") or ("/data" if os.path.isdir("/data") else APP_DIR)
@@ -9715,6 +9719,218 @@ def loan_detail(lid):
         ).fetchall(),
         snap=property_snapshot(loan["property_address"]),
     )
+
+
+
+
+# ---------- Tools: amortization spreadsheet ----------
+
+def _loan_payments(lid):
+    return db().execute(
+        "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on, id", (lid,)
+    ).fetchall()
+
+
+def _borrower_name_for_loan(loan):
+    if not loan:
+        return ""
+    b = db().execute("SELECT name FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
+    return (b["name"] if b else "") or ""
+
+
+def _loans_for_borrower(bid):
+    return db().execute(
+        """SELECT id, loan_number, property_address, current_balance, status, borrower_id
+           FROM loans
+           WHERE borrower_id=? AND COALESCE(archived,0)=0
+             AND status NOT IN ('Written Off')
+           ORDER BY id DESC""",
+        (bid,),
+    ).fetchall()
+
+
+def _loans_for_investor(iid):
+    return db().execute(
+        """SELECT l.id, l.loan_number, l.property_address, l.current_balance, l.status, l.borrower_id
+           FROM loans l
+           JOIN participations p ON p.loan_id=l.id
+           WHERE p.investor_id=? AND COALESCE(l.archived,0)=0
+             AND l.status NOT IN ('Written Off')
+           GROUP BY l.id
+           ORDER BY l.id DESC""",
+        (iid,),
+    ).fetchall()
+
+
+def _staff_may_download_loan(loan, borrower_id=None, investor_id=None):
+    """Staff may download any loan; optional party filters must match."""
+    if not loan:
+        return False
+    if borrower_id:
+        try:
+            if int(loan["borrower_id"]) != int(borrower_id):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if investor_id:
+        row = db().execute(
+            "SELECT 1 FROM participations WHERE loan_id=? AND investor_id=?",
+            (loan["id"], investor_id),
+        ).fetchone()
+        if not row:
+            return False
+    return True
+
+
+def _xlsx_response(loan):
+    pays = _loan_payments(loan["id"])
+    data, _num = amortization_workbook(
+        loan,
+        borrower_name=_borrower_name_for_loan(loan),
+        payments=pays,
+    )
+    name = filename_for_loan(loan)
+    return send_file(
+        BytesIO(data),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=name,
+    )
+
+
+@app.route("/tools")
+@staff_required
+def staff_tools():
+    borrowers = db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall()
+    investors = db().execute("SELECT id, name FROM investors ORDER BY name").fetchall()
+    party = request.args.get("party") or "borrower"
+    bid = request.args.get("borrower_id") or ""
+    iid = request.args.get("investor_id") or ""
+    loans = []
+    selected_borrower_id = int(bid) if str(bid).isdigit() else None
+    selected_investor_id = int(iid) if str(iid).isdigit() else None
+    if party == "investor" and selected_investor_id:
+        loans = _loans_for_investor(selected_investor_id)
+    elif selected_borrower_id:
+        loans = _loans_for_borrower(selected_borrower_id)
+    return render_template(
+        "tools.html",
+        title="Tools",
+        nav="tools",
+        borrowers=borrowers,
+        investors=investors,
+        loans=loans,
+        party=party,
+        selected_borrower_id=selected_borrower_id,
+        selected_investor_id=selected_investor_id,
+        flash=session.pop("last_invite_note", None),
+        error=request.args.get("error"),
+    )
+
+
+@app.route("/tools/api/loans")
+@staff_required
+def tools_api_loans():
+    bid = request.args.get("borrower_id")
+    iid = request.args.get("investor_id")
+    rows = []
+    if iid and str(iid).isdigit():
+        rows = _loans_for_investor(int(iid))
+    elif bid and str(bid).isdigit():
+        rows = _loans_for_borrower(int(bid))
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id": r["id"],
+                "loan_number": r["loan_number"] or "",
+                "property_address": r["property_address"] or "",
+                "current_balance": float(r["current_balance"] or 0),
+                "status": r["status"] or "",
+            }
+        )
+    return jsonify(out)
+
+
+@app.route("/tools/amortization.xlsx", methods=["GET", "POST"])
+@staff_required
+def tools_amortization_xlsx():
+    src = request.form if request.method == "POST" else request.args
+    lid = src.get("loan_id")
+    if not lid or not str(lid).isdigit():
+        return redirect(url_for("staff_tools", error="Select a loan first."))
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (int(lid),)).fetchone()
+    if not loan:
+        return redirect(url_for("staff_tools", error="Loan not found."))
+    bid = src.get("borrower_id") or None
+    iid = src.get("investor_id") or None
+    if bid and not str(bid).isdigit():
+        bid = None
+    if iid and not str(iid).isdigit():
+        iid = None
+    if not _staff_may_download_loan(loan, borrower_id=bid, investor_id=iid):
+        return redirect(url_for("staff_tools", error="That loan is not available for the selected party."))
+    return _xlsx_response(loan)
+
+
+@app.route("/portal/tools")
+@borrower_required
+def portal_tools():
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
+    loans = _loans_for_borrower(session["borrower_id"])
+    return render_template(
+        "portal_tools.html",
+        b=b,
+        loans=loans,
+        flash=request.args.get("msg"),
+        error=request.args.get("error"),
+    )
+
+
+@app.route("/portal/tools/amortization.xlsx", methods=["GET", "POST"])
+@borrower_required
+def portal_amortization_xlsx():
+    src = request.form if request.method == "POST" else request.args
+    lid = src.get("loan_id")
+    if not lid or not str(lid).isdigit():
+        return redirect(url_for("portal_tools", error="Select a loan first."))
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (int(lid),)).fetchone()
+    if not loan or int(loan["borrower_id"]) != int(session["borrower_id"]):
+        return redirect(url_for("portal_tools", error="That loan is not on your file."))
+    return _xlsx_response(loan)
+
+
+@app.route("/investor/tools")
+@investor_required
+def investor_tools():
+    inv = db().execute("SELECT * FROM investors WHERE id=?", (session["investor_id"],)).fetchone()
+    loans = _loans_for_investor(session["investor_id"])
+    return render_template(
+        "investor_tools.html",
+        inv=inv,
+        loans=loans,
+        flash=request.args.get("msg"),
+        error=request.args.get("error"),
+    )
+
+
+@app.route("/investor/tools/amortization.xlsx", methods=["GET", "POST"])
+@investor_required
+def investor_amortization_xlsx():
+    src = request.form if request.method == "POST" else request.args
+    lid = src.get("loan_id")
+    if not lid or not str(lid).isdigit():
+        return redirect(url_for("investor_tools", error="Select a loan first."))
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (int(lid),)).fetchone()
+    if not loan:
+        return redirect(url_for("investor_tools", error="Loan not found."))
+    part = db().execute(
+        "SELECT 1 FROM participations WHERE loan_id=? AND investor_id=?",
+        (loan["id"], session["investor_id"]),
+    ).fetchone()
+    if not part:
+        return redirect(url_for("investor_tools", error="You do not participate in that loan."))
+    return _xlsx_response(loan)
 
 
 @app.route("/tools/property-snapshot")
