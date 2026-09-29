@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">White-label ACH</div>
+    <h2>Dwolla account setup</h2>
+  </div>
+  <a class="btn ghost" href="{{ url_for('staff_tools') }}">Back to Tools</a>
+</div>
+
+<p class="hint">
+  Use this guide when <strong>your company</strong> is connecting its own Dwolla account to this app.
+  Keys and secrets stay in the host environment (Render) — never in git.
+  {% if platform_mode == 'brittco_existing' %}
+  This install uses <code>PLATFORM_MODE=brittco_existing</code> (no company popup). Keep the Brittco customer URL in env if you already have one.
+  {% else %}
+  This install uses <code>PLATFORM_MODE=whitelabel</code>. After keys are set, finish the
+  <a href="{{ url_for('dwolla_onboarding') }}">company customer form</a> in-app.
+  {% endif %}
+</p>
+
+<div class="card" style="margin-top:8px;max-width:760px">
+  <h3>Setup steps</h3>
+  <div class="steps" style="margin-top:10px">
+    <div class="step">
+      <strong>1 · Sandbox vs Production</strong>
+      Create a Dwolla account at
+      <a href="https://accounts-sandbox.dwolla.com/sign-up" target="_blank" rel="noopener">sandbox</a>
+      first. Switch to a production Dwolla account only after sandbox ACH works.
+      Set <code>DWOLLA_ENV=sandbox</code> or <code>DWOLLA_ENV=production</code> to match.
+    </div>
+    <div class="step">
+      <strong>2 · Application Key / Secret</strong>
+      In the Dwolla Dashboard open Applications → create an application → copy the
+      <strong>Key</strong> and <strong>Secret</strong>. Those become <code>DWOLLA_KEY</code> and
+      <code>DWOLLA_SECRET</code> on the host. Do not commit them.
+    </div>
+    <div class="step">
+      <strong>3 · Webhook</strong>
+      In Dwolla, create a webhook subscription pointing at
+      <code>{{ webhook_host_hint }}/webhooks/dwolla</code>
+      (replace the host with your live app URL). Subscribe at least to
+      <code>transfer_completed</code>, <code>transfer_failed</code>, and
+      <code>transfer_cancelled</code>. Copy the webhook secret into
+      <code>DWOLLA_WEBHOOK_SECRET</code>.
+      <a href="https://developers.dwolla.com/docs/balance/webhooks/process" target="_blank" rel="noopener">Webhook docs</a>
+    </div>
+    <div class="step">
+      <strong>4 · Host environment variables</strong>
+      On Render (or your host), set:
+      <code>DWOLLA_KEY</code>, <code>DWOLLA_SECRET</code>, <code>DWOLLA_ENV</code>,
+      <code>DWOLLA_WEBHOOK_SECRET</code>, and <code>PLATFORM_MODE</code>.
+      Optional: <code>DWOLLA_MASTER_CUSTOMER_URL</code> (and
+      <code>DWOLLA_PLATFORM_FUNDING_SOURCE_URL</code>) when the business customer already exists
+      and you want to skip re-creating it. See <code>.env.example</code> in the repo — values stay out of git.
+    </div>
+    <div class="step">
+      <strong>5 · Business Verified Customer + funding source</strong>
+      {% if platform_mode == 'whitelabel' %}
+      Open <a href="{{ url_for('dwolla_onboarding') }}">Company ACH setup</a> and create the
+      Business Verified Customer, then add and verify the operating bank (funding source).
+      {% else %}
+      Paste the existing customer URL as <code>DWOLLA_MASTER_CUSTOMER_URL</code>, or add the
+      company bank on the <a href="{{ url_for('ach') }}">ACH</a> page once the customer URL is set.
+      {% endif %}
+      Sandbox bank routing <code>222222226</code>; micro-deposits <code>0.01</code> and <code>0.02</code> verify the account.
+    </div>
+    <div class="step">
+      <strong>6 · First test ACH</strong>
+      On a borrower, save routing/account and check ACH authorized (or send the ACH form).
+      Open a loan, save the ACH plan, and choose <strong>Collect this payment now</strong>.
+      When Dwolla sends <code>transfer_completed</code>, the loan ledger posts automatically.
+      Confirm the event on the <a href="{{ url_for('ach') }}">ACH log</a>.
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:14px;max-width:760px">
+  <h3>Quick reference</h3>
+  <p class="hint" style="margin-bottom:8px">Webhook URL for this install:</p>
+  <p><code>{{ webhook_url }}</code></p>
+  <p class="hint" style="margin-top:12px">
+    Mode: <strong>{{ platform_mode }}</strong>
+    · Dwolla env: <strong>{{ dwolla_env }}</strong>
+    · Keys configured: <strong>{{ "yes" if dwolla_ready else "no" }}</strong>
+  </p>
+  <p style="margin-top:12px">
+    <a class="btn ghost" href="{{ url_for('ach') }}">ACH log</a>
+    {% if platform_mode == 'whitelabel' %}
+    <a class="btn ghost" href="{{ url_for('dwolla_onboarding') }}">Company ACH setup</a>
+    {% endif %}
+    <a class="btn ghost" href="https://developers.dwolla.com/docs" target="_blank" rel="noopener">Dwolla docs</a>
+  </p>
+</div>
+{% endblock %}

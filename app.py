@@ -12786,6 +12786,25 @@ def loan_ach_verify_bank(lid):
     return redirect(url_for("loan_detail", lid=lid))
 
 
+
+@app.route("/help/dwolla-setup")
+@app.route("/tools/dwolla-setup")
+@staff_required
+def dwolla_setup():
+    """Plain numbered steps for white-label customers connecting their own Dwolla account."""
+    base = public_base() or "https://YOUR-HOST"
+    return render_template(
+        "dwolla_setup.html",
+        title="Dwolla setup",
+        nav="tools",
+        platform_mode=platform_mode(),
+        dwolla_ready=dwolla_client.configured(),
+        dwolla_env=dwolla_client.env_name(),
+        webhook_url=base + "/webhooks/dwolla",
+        webhook_host_hint="https://YOUR-HOST",
+    )
+
+
 @app.route("/dwolla/onboarding", methods=["GET", "POST"])
 @staff_required
 def dwolla_onboarding():
