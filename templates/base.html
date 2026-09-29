@@ -57,7 +57,14 @@
     </div>
     {% endif %}
     {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% if dwolla_show_banner %}
+    <div class="setup-banner">
+      This company still needs a Dwolla business profile before ACH can run in its name.
+      <a href="{{ url_for('dwolla_onboarding') }}">Enter company information</a>
+    </div>
+    {% endif %}
     {% block body %}{% endblock %}
+    {% if dwolla_show_modal %}{% include "_dwolla_modal.html" %}{% endif %}
   </main>
 </div>
 <script src="{{ url_for('static', filename='drop-files.js') }}"></script>

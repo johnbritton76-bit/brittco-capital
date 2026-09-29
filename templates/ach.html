@@ -3,26 +3,55 @@
 <div class="top"><h2>ACH loan collections</h2></div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
 <p class="hint">
-  Borrower loan-payment debits run through <strong>Stripe</strong> (US bank / ACH) when
-  <code>STRIPE_SECRET_KEY</code> is set on Render. Investor credits are <strong>logged only</strong>
-  until Stripe Connect (or a Brittco bank send) is enabled — Stripe cannot ACH-credit an
-  investor’s external bank from a plain PaymentIntent.
+  New borrower collections use <strong>{{ payments_provider }}</strong>.
+  Dwolla is preferred when <code>DWOLLA_KEY</code> and <code>DWOLLA_SECRET</code> are set.
+  Stripe stays available for older rows when <code>PAYMENTS_PROVIDER=stripe</code> or Dwolla keys are absent.
+  Investor credits are logged only until a payout bank send is turned on.
 </p>
-{% if stripe_ready or vendor_ready %}
+{% if payments_provider == 'dwolla' and dwolla_ready %}
+<p class="flash">Dwolla is ready ({{ dwolla_env }}). Authorized collections create a transfer. The loan ledger posts when the transfer completes.</p>
+{% elif payments_provider == 'stripe' and stripe_ready %}
 <p class="flash">Stripe is ready. Authorized borrower collections will create a PaymentIntent.</p>
 {% else %}
-<p class="hint">Stripe not configured yet. Collections are recorded manually until you add the Stripe env keys.</p>
+<p class="hint">No live ACH keys for the selected provider. Collections are recorded manually until the env keys are set.</p>
 {% endif %}
 <p class="hint"><strong>Mandate reminder:</strong> {{ mandate_text }}</p>
+{% if payments_provider == 'dwolla' %}
 <p class="hint">
-  Sandbox: Dashboard →
+  Sandbox bank: routing <code>222222226</code>, any account number.
+  Webhook URL: <code>{{ webhook_url }}</code>
+  (<a href="https://developers.dwolla.com/docs/balance/webhooks/process" target="_blank" rel="noopener">Dwolla webhooks</a>).
+  Subscribe to <code>transfer_completed</code>, <code>transfer_failed</code>, and <code>transfer_cancelled</code>.
+</p>
+{% if not platform_funding_source %}
+<div class="card" style="margin:12px 0">
+  <h3>Company bank for collections</h3>
+  {% if platform_customer %}
+  <p class="hint">Add the operating account that receives borrower ACH pulls. Sandbox verifies with 0.01 and 0.02.</p>
+  <form method="post" action="{{ url_for('ach_platform_bank') }}" class="form-grid">
+    <div><label>Bank name</label><input name="bank_name" required value="Operating"></div>
+    <div><label>Type</label>
+      <select name="bank_account_type"><option value="checking">Checking</option><option value="savings">Savings</option></select>
+    </div>
+    <div><label>Routing</label><input name="routing" required placeholder="222222226"></div>
+    <div><label>Account</label><input name="account" required autocomplete="off"></div>
+    <div class="span-2"><button class="btn" type="submit">Save company funding source</button></div>
+  </form>
+  {% elif platform_mode == 'whitelabel' %}
+  <p class="hint"><a href="{{ url_for('dwolla_onboarding') }}">Finish company onboarding</a> before adding a bank.</p>
+  {% else %}
+  <p class="hint">Set <code>DWOLLA_MASTER_CUSTOMER_URL</code> and <code>DWOLLA_PLATFORM_FUNDING_SOURCE_URL</code> for the existing Brittco customer, or add the funding source URL after the customer exists in Dwolla.</p>
+  {% endif %}
+</div>
+{% else %}
+<p class="hint">Company funding source is linked.</p>
+{% endif %}
+{% else %}
+<p class="hint">
+  Stripe sandbox: routing <code>110000000</code>, account <code>000123456789</code>.
   <a href="https://dashboard.stripe.com/test/payments" target="_blank" rel="noopener">Stripe test payments</a>.
-  Test routing <code>110000000</code>, account <code>000123456789</code>.
 </p>
-<p class="hint">
-  Webhooks update status automatically when Stripe settles. Use
-  <strong>Refresh from Stripe</strong> only if a row looks stuck (missed webhook).
-</p>
+{% endif %}
 
 <form method="post" class="card form-grid">
   <div><label>Borrower</label>
@@ -45,8 +74,8 @@
   <div class="span-2">
     <h3>Investor payout (log only)</h3>
     <p class="hint">
-      Requires investor <code>wire_routing</code> + <code>wire_account</code>. Does not move money in Stripe —
-      staff send via Brittco bank or enable Connect later.
+      Requires investor <code>wire_routing</code> + <code>wire_account</code> on the investor profile.
+      This only logs the credit. It does not send money.
     </p>
   </div>
   <div><label>Investor</label>
@@ -61,11 +90,11 @@
 {% endif %}
 
 <div class="card" style="margin-top:14px">
-  <h3>ACH / Stripe log</h3>
+  <h3>ACH log</h3>
   <table class="table">
     <tr>
       <th>When</th><th>Direction</th><th>Party</th><th>Loan</th><th>Amount</th>
-      <th>Vendor</th><th>Status</th><th>Stripe ID</th><th>Last event</th><th></th>
+      <th>Vendor</th><th>Status</th><th>Processor ref</th><th>Last event</th>
     </tr>
     {% for t in transfers %}
     <tr>
@@ -77,18 +106,12 @@
       <td>{{ t.vendor or "—" }}</td>
       <td>{{ t.status }}</td>
       <td>
-        {% if t.stripe_id %}
-          <span class="hint" title="{{ t.stripe_id }}">{{ t.stripe_id[:18] }}{% if t.stripe_id|length > 18 %}…{% endif %}</span>
+        {% set ref = t.provider_ref or t.notes or '' %}
+        {% if ref %}
+          <span class="hint" title="{{ ref }}">{{ ref[-24:] }}</span>
         {% else %}—{% endif %}
       </td>
-      <td><span class="hint">{{ t.stripe_event or "—" }}</span></td>
-      <td>
-        {% if t.stripe_id %}
-        <form method="post" action="{{ url_for('ach_refresh_stripe', tid=t.id) }}" style="display:inline;margin:0">
-          <button class="btn ghost" type="submit" style="padding:2px 8px;font-size:12px" title="Pull latest status from Stripe">Refresh from Stripe</button>
-        </form>
-        {% else %}—{% endif %}
-      </td>
+      <td><span class="hint">{{ t.provider_event or "—" }}</span></td>
     </tr>
     {% endfor %}
   </table>

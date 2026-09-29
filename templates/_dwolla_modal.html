@@ -1,0 +1,13 @@
+<div class="modal-back" role="dialog" aria-labelledby="dwolla-modal-title">
+  <div class="modal">
+    <div class="tag">ACH setup</div>
+    <h2 id="dwolla-modal-title" style="margin:6px 0 8px">Set up this company for ACH</h2>
+    <p class="hint">This platform does not have a Dwolla business customer yet. Enter the legal company details once so collections can run under this company’s name.</p>
+    <p>
+      <a class="btn" href="{{ url_for('dwolla_onboarding') }}">Enter company information</a>
+    </p>
+    <form method="post" action="{{ url_for('dwolla_onboarding_dismiss') }}" style="margin-top:8px">
+      <button class="btn ghost" type="submit">Remind me later</button>
+    </form>
+  </div>
+</div>
