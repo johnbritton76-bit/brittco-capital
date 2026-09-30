@@ -309,6 +309,25 @@ PARENT_URL = "https://api-sandbox.dwolla.com/transfers/12345678-90ac-f111-acd5-0
 CHILD_URL = "https://api-sandbox.dwolla.com/transfers/1352581d-3b6c-ec11-813c-f6ddd36b41b8"
 
 
+def test_customer_transfer_created_notes_row_without_ledger():
+    ref = "https://api-sandbox.dwolla.com/transfers/9b77f03d-4dbc-f111-acd5-02ab38c54207"
+    _pending_ach(ref, "DW-CREATED-ONLY")
+    ok = _post_dwolla(
+        {
+            "id": "evt-created",
+            "topic": "customer_transfer_created",
+            "resourceId": "9b77f03d-4dbc-f111-acd5-02ab38c54207",
+            "_links": {"resource": {"href": ref}},
+        }
+    )
+    assert ok.status_code == 200
+    assert _payment_count("DW-CREATED-ONLY") == 0
+    row = _ach_row(ref)
+    assert row["status"] == "pending"
+    assert row["provider_event"] == "customer_transfer_created"
+    assert not row["payment_id"]
+
+
 def test_customer_transfer_completed_posts_ledger_once():
     _pending_ach(PARENT_URL, "DW-CUST-OK")
     payload = {
@@ -468,6 +487,75 @@ def test_reconcile_posts_processed_transfer_still_pending_locally():
     assert row["status"] == "processed"
     assert row["provider_event"] == "transfer_completed"
     assert row["payment_id"]
+
+
+def test_sandbox_simulate_posts_empty_body_and_refuses_production():
+    os.environ["DWOLLA_ENV"] = "sandbox"
+    os.environ["DWOLLA_KEY"] = "key"
+    os.environ["DWOLLA_SECRET"] = "secret"
+    seen = {}
+
+    def fake_api(method, path, body=None, timeout=30):
+        seen["method"] = method
+        seen["path"] = path
+        seen["body"] = body
+        return {"total": 2}, None, None
+
+    try:
+        with patch("dwolla_client.api", fake_api):
+            total, err = dwolla_client.simulate_sandbox_bank_transfers()
+        assert err is None, err
+        assert total == 2
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/sandbox-simulations"
+        assert seen["body"] == {}
+        os.environ["DWOLLA_ENV"] = "production"
+        with patch("urllib.request.urlopen") as urlopen:
+            total, err = dwolla_client.simulate_sandbox_bank_transfers()
+        urlopen.assert_not_called()
+        assert total is None
+        assert "sandbox" in (err or "").lower()
+    finally:
+        os.environ["DWOLLA_ENV"] = "sandbox"
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
+
+
+def test_tools_sandbox_simulate_button():
+    os.environ["DWOLLA_ENV"] = "sandbox"
+    os.environ["PLATFORM_MODE"] = "brittco_existing"
+    os.environ.pop("DWOLLA_KEY", None)
+    os.environ.pop("DWOLLA_SECRET", None)
+    client = brittco.app.test_client()
+    client.post(
+        "/login",
+        data={"email": "admin@brittcocapital.com", "password": "brittco"},
+        follow_redirects=True,
+    )
+    tools = client.get("/tools")
+    page = tools.get_data(as_text=True)
+    assert "Sandbox bank transfers" in page
+    assert "sandbox-simulations" in page
+    assert "Process sandbox bank transfers" not in page
+    os.environ["DWOLLA_KEY"] = "key"
+    os.environ["DWOLLA_SECRET"] = "secret"
+    try:
+        ready = client.get("/tools")
+        assert "Process sandbox bank transfers" in ready.get_data(as_text=True)
+        with patch("dwolla_client.simulate_sandbox_bank_transfers", return_value=(4, None)) as sim:
+            done = client.post("/tools/dwolla-sandbox-simulate", follow_redirects=True)
+        sim.assert_called_once()
+        assert "Dwolla reported 4" in done.get_data(as_text=True)
+        os.environ["DWOLLA_ENV"] = "production"
+        with patch("urllib.request.urlopen") as urlopen:
+            blocked = client.post("/tools/dwolla-sandbox-simulate", follow_redirects=True)
+        urlopen.assert_not_called()
+        assert "only available when DWOLLA_ENV=sandbox" in blocked.get_data(as_text=True)
+        assert "Process sandbox bank transfers" not in blocked.get_data(as_text=True)
+    finally:
+        os.environ["DWOLLA_ENV"] = "sandbox"
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
 
 
 def test_staff_pages_hide_modal_for_existing_platform():

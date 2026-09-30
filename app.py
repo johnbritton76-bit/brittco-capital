@@ -9911,8 +9911,27 @@ def staff_tools():
         flash=session.pop("last_invite_note", None),
         error=request.args.get("error"),
         dwolla_env=dwolla_client.env_name(),
+        dwolla_ready=dwolla_client.configured(),
         test_investor_creds=session.pop("test_investor_creds", None),
     )
+
+
+@app.route("/tools/dwolla-sandbox-simulate", methods=["POST"])
+@staff_required
+def tools_dwolla_sandbox_simulate():
+    """Advance sandbox bank ACH. Production Dwolla is not called."""
+    total, err = dwolla_client.simulate_sandbox_bank_transfers()
+    if err:
+        session["last_invite_note"] = err
+    else:
+        shown = total if total is not None else "done"
+        session["last_invite_note"] = (
+            "Sandbox processed bank transfers (Dwolla reported %s). "
+            "A borrower-bank to company-bank pull needs a second click for the credit leg. "
+            "The ACH log updates when customer_transfer_completed or customer_transfer_failed arrives."
+            % shown
+        )
+    return redirect(url_for("staff_tools"))
 
 
 @app.route("/tools/test-investors", methods=["POST"])
@@ -11715,6 +11734,8 @@ ACH_MANDATE_TEXT = (
 # Borrower pulls are unverified-bank to verified-bank. Dwolla marks the transfer
 # we stored as customer_transfer_completed. customer_bank_transfer_* is a later
 # leg and carries a different transfer id (follow funding-transfer to match).
+# Sandbox bank ACH stays pending until sandbox-simulations is run; created is
+# the only event until then.
 DWOLLA_SUCCESS_TOPICS = {
     "transfer_completed",
     "customer_transfer_completed",
@@ -11730,6 +11751,10 @@ DWOLLA_FAIL_TOPICS = {
     "bank_transfer_cancelled",
     "customer_bank_transfer_failed",
     "customer_bank_transfer_cancelled",
+}
+DWOLLA_CREATED_TOPICS = {
+    "transfer_created",
+    "customer_transfer_created",
 }
 _DWOLLA_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -12000,6 +12025,23 @@ def mark_dwolla_transfer(transfer_url, status, topic):
     return mark_dwolla_row(row, status, topic)
 
 
+def note_dwolla_transfer_created(row, topic):
+    """Record the create event on a still-pending ACH row. Does not post the ledger."""
+    ensure_dwolla_schema()
+    fresh = db().execute("SELECT * FROM ach_transfers WHERE id=?", (row["id"],)).fetchone()
+    if not fresh or row_val(fresh, "payment_id"):
+        return False
+    status = (row_val(fresh, "status") or "").lower()
+    if status not in ("pending", "processing", ""):
+        return False
+    db().execute(
+        "UPDATE ach_transfers SET provider_event=? WHERE id=?",
+        (topic, fresh["id"]),
+    )
+    db().commit()
+    return True
+
+
 def apply_dwolla_transfer_event(event, topic):
     ensure_dwolla_schema()
     row = _resolve_ach_transfer(_event_transfer_refs(event))
@@ -12010,14 +12052,17 @@ def apply_dwolla_transfer_event(event, topic):
     elif topic in DWOLLA_FAIL_TOPICS:
         status = "failed" if "failed" in topic else "cancelled"
         mark_dwolla_row(row, status, topic)
+    elif topic in DWOLLA_CREATED_TOPICS:
+        note_dwolla_transfer_created(row, topic)
     return True
 
 
 def reconcile_pending_dwolla_transfers(loan_id=None, limit=25):
-    """Post or fail ACH rows whose Dwolla transfer already left pending.
+    """Post or fail ACH rows whose Dwolla transfer has already left pending.
 
-    Webhooks that returned 200 before this matching fix are not resent.
-    Opening ACH collections or the loan re-reads transfer status once.
+    A sandbox bank transfer stays pending until sandbox-simulations runs, so
+    this leaves that row alone. Opening ACH collections or the loan re-reads
+    status after Dwolla has processed or failed it.
     """
     if not dwolla_client.configured():
         return 0
@@ -13061,7 +13106,7 @@ def dwolla_webhook():
         return "bad json", 400
     topic = event.get("topic") or ""
     resource = ((event.get("_links") or {}).get("resource") or {}).get("href") or ""
-    if topic in DWOLLA_SUCCESS_TOPICS or topic in DWOLLA_FAIL_TOPICS:
+    if topic in DWOLLA_SUCCESS_TOPICS or topic in DWOLLA_FAIL_TOPICS or topic in DWOLLA_CREATED_TOPICS:
         if not apply_dwolla_transfer_event(event, topic):
             logger.warning("Dwolla webhook %s did not match an ACH row", topic)
     elif topic.startswith("customer_") and resource:

@@ -19,9 +19,14 @@
 {% if payments_provider == 'dwolla' %}
 <p class="hint">
   Sandbox bank: routing <code>222222226</code>, any account number.
-  Webhook URL: <code>{{ webhook_url }}</code>
-  (<a href="https://developers.dwolla.com/docs/balance/webhooks/process" target="_blank" rel="noopener">Dwolla webhooks</a>).
-  Subscribe to <code>transfer_completed</code>, <code>transfer_failed</code>, and <code>transfer_cancelled</code>.
+  Webhook URL: <code>{{ webhook_url }}</code>.
+  Subscribe to <code>customer_transfer_completed</code>, <code>customer_transfer_failed</code>,
+  and <code>customer_transfer_cancelled</code>.
+  {% if dwolla_env != 'production' %}
+  Sandbox leaves the transfer pending until
+  <a href="{{ url_for('staff_tools') }}">Tools → Process sandbox bank transfers</a>
+  (Dwolla <code>POST /sandbox-simulations</code>). Click twice for a bank-to-bank pull.
+  {% endif %}
 </p>
 {% if not platform_funding_source %}
 <div class="card" style="margin:12px 0">

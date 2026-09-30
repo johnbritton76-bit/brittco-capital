@@ -342,6 +342,25 @@ def create_unverified_customer(first, last, email):
     return api("POST", "/customers", body)
 
 
+def simulate_sandbox_bank_transfers():
+    """Process or fail the latest sandbox bank transfers.
+
+    Dwolla leaves sandbox bank ACH pending until this runs (or the Sandbox
+    Dashboard "Process bank transfers" button). POST /sandbox-simulations with
+    an empty body. Bank-to-bank pulls need a second call for the credit leg.
+    https://developers.dwolla.com/docs/testing#simulate-bank-transfer-processing
+    """
+    if env_name() != "sandbox":
+        return None, "Sandbox bank processing is only available when DWOLLA_ENV=sandbox."
+    if not configured():
+        return None, "Set DWOLLA_KEY and DWOLLA_SECRET."
+    parsed, _loc, err = api("POST", "/sandbox-simulations", {})
+    if err:
+        return None, err
+    total = (parsed or {}).get("total")
+    return total, None
+
+
 def create_transfer(source_url, destination_url, amount, metadata=None):
     body = {
         "_links": {
