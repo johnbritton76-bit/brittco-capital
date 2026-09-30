@@ -21,18 +21,25 @@
   </div>
   {% elif packet %}
   <p class="hint">{{ b.name if b else "" }} · Loan {{ data.loan_number or (loan.loan_number if loan else "") }} · {{ data.property or (loan.property_address if loan else "") }}</p>
-  <form method="post" id="ach-form" class="card form-grid">
+  <form method="post" id="ach-form" class="card form-grid" data-ach-form>
     <div>
-      <label>This authorization is for</label>
-      <select name="kind">
-        <option value="recurring" {% if data.kind!='single' %}selected{% endif %}>Recurring monthly payments</option>
-        <option value="single" {% if data.kind=='single' %}selected{% endif %}>One payment only</option>
+      <label>Payment mode</label>
+      <select name="kind" data-ach-mode>
+        <option value="recurring" {% if data.kind!='single' %}selected{% endif %}>Recurring payment</option>
+        <option value="single" {% if data.kind=='single' %}selected{% endif %}>One-time payment</option>
       </select>
     </div>
     <div><label>Amount</label><input name="amount" type="number" step="0.01" required value="{{ data.amount or '' }}"></div>
-    <div><label>Day of month</label><input name="day_of_month" type="number" min="1" max="28" value="{{ data.day_of_month or 1 }}"></div>
-    <div><label>Start</label><input name="start_on" type="date" value="{{ data.start_on or '' }}"></div>
-    <div><label>End (recurring)</label><input name="end_on" type="date" value="{{ data.end_on or '' }}"></div>
+    <div class="span-2" data-ach-schedule {% if data.kind=='single' %}style="display:none"{% endif %}>
+      <div class="form-grid">
+        <div><label>Debit day</label><input name="day_of_month" type="number" min="1" max="28" value="{{ data.day_of_month or 1 }}"></div>
+        <div><label>Start date</label><input name="start_on" type="date" value="{{ data.start_on or '' }}"></div>
+        <div><label>Stop date</label><input name="end_on" type="date" value="{{ data.end_on or '' }}"></div>
+        <div><label>Number of payments</label><input name="payment_count" type="number" min="1" step="1" value="{{ data.payment_count or '' }}"></div>
+      </div>
+      <p class="hint">Debits fall on the debit day, on or after the start date, through the stop date. Enter a payment count or a stop date and the other fills in.</p>
+    </div>
+    <input type="hidden" name="schedule_driver" value="end">
     <div class="span-2"><h3>Bank account to debit</h3></div>
     <div><label>Bank name</label><input name="bank_name" value="{{ data.bank_name or '' }}" required></div>
     <div>
@@ -57,6 +64,7 @@
     </div>
     <div class="span-2"><button class="btn" type="submit">Submit signed authorization</button></div>
   </form>
+  <script src="/static/ach-schedule.js"></script>
   <script>
   (function(){
     var canvas = document.getElementById("sig");

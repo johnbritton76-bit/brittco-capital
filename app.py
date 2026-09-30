@@ -9767,6 +9767,7 @@ def loan_detail(lid):
         "SELECT * FROM payoff_letters WHERE loan_id=? ORDER BY id DESC", (lid,)
     ).fetchall()
     latest = letters[0] if letters else None
+    ach_plan = loan_ach_plan(lid)
     return render_template(
         "loan_detail.html",
         title=loan["loan_number"],
@@ -9788,7 +9789,10 @@ def loan_detail(lid):
         letters=letters,
         latest_letter=latest,
         flash=session.pop("last_invite_note", None),
-        ach_plan=loan_ach_plan(lid),
+        ach_plan=ach_plan,
+        ach_kind=ach_plan_kind(ach_plan) or "recurring",
+        ach_count=ach_plan_count(ach_plan),
+        today=date.today().isoformat(),
         ach_ready=ach_provider_ready(),
         payments_provider=payments_provider(),
         ach_auths=db().execute(
@@ -12254,11 +12258,7 @@ def collect_dwolla_once(loan, plan, borrower):
             location,
         ),
     )
-    if plan and row_val(plan, "id"):
-        db().execute(
-            "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
-            (date.today().isoformat(), plan["id"]),
-        )
+    _mark_plan_collected(plan)
     db().commit()
     body, _loc, gerr = dwolla_client.get_resource(location)
     status = ((body or {}).get("status") or "pending") if not gerr else "pending"
@@ -12349,6 +12349,161 @@ def create_test_investors():
     return creds
 
 
+ACH_COUNT_MAX = 600
+
+
+def _parse_iso_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = ("" if value is None else str(value)).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def ach_debit_day(value):
+    try:
+        day = int(float(value))
+    except (TypeError, ValueError):
+        day = 1
+    return min(28, max(1, day))
+
+
+def _shift_month(year, month, delta):
+    idx = year * 12 + (month - 1) + delta
+    return idx // 12, (idx % 12) + 1
+
+
+def ach_first_debit(start, day):
+    start = _parse_iso_date(start)
+    day = ach_debit_day(day)
+    candidate = date(start.year, start.month, day)
+    if candidate < start:
+        year, month = _shift_month(start.year, start.month, 1)
+        candidate = date(year, month, day)
+    return candidate
+
+
+def ach_stop_for_count(start, day, count):
+    """Date of the Nth monthly debit on or after start."""
+    start = _parse_iso_date(start)
+    count = int(count)
+    if not start or count < 1:
+        return None
+    first = ach_first_debit(start, day)
+    year, month = _shift_month(first.year, first.month, count - 1)
+    return date(year, month, ach_debit_day(day))
+
+
+def ach_count_through(start, end, day):
+    """How many debit days fall from the first debit on or after start through end."""
+    start = _parse_iso_date(start)
+    end = _parse_iso_date(end)
+    if not start or not end:
+        return 0
+    day = ach_debit_day(day)
+    first = ach_first_debit(start, day)
+    if end < first:
+        return 0
+    if end.day >= day:
+        last = date(end.year, end.month, day)
+    else:
+        year, month = _shift_month(end.year, end.month, -1)
+        last = date(year, month, day)
+    if last < first:
+        return 0
+    return (last.year - first.year) * 12 + (last.month - first.month) + 1
+
+
+def normalize_ach_kind(raw):
+    kind = (raw or "recurring").strip().lower()
+    if kind in ("single", "one-time", "onetime", "one_time"):
+        return "single"
+    return "recurring"
+
+
+def resolve_ach_schedule(start_raw, end_raw, day_raw, count_raw, driver):
+    """Keep stop date and payment count aligned. Returns ISO start, ISO end, day, count, error."""
+    day = ach_debit_day(day_raw)
+    start = _parse_iso_date(start_raw) or date.today()
+    end = _parse_iso_date(end_raw)
+    try:
+        count = int(float(count_raw)) if str(count_raw or "").strip() else 0
+    except (TypeError, ValueError):
+        count = 0
+    if count > ACH_COUNT_MAX:
+        return None, None, day, 0, "Number of payments must be %s or fewer." % ACH_COUNT_MAX
+    which = "count" if (driver or "").strip().lower() == "count" else "end"
+    if which == "count" and count < 1 and end:
+        which = "end"
+    if which == "end" and not end and count >= 1:
+        which = "count"
+    if which == "count":
+        if count < 1:
+            return None, None, day, 0, "Enter a number of payments or a stop date."
+        stop = ach_stop_for_count(start, day, count)
+        return start.isoformat(), stop.isoformat(), day, count, None
+    if not end:
+        return None, None, day, 0, "Enter a stop date or a number of payments."
+    counted = ach_count_through(start, end, day)
+    if counted < 1:
+        return None, None, day, 0, "Stop date is before the first debit. Move the stop date or the debit day."
+    if counted > ACH_COUNT_MAX:
+        return None, None, day, 0, "That date range is more than %s payments." % ACH_COUNT_MAX
+    return start.isoformat(), end.isoformat(), day, counted, None
+
+
+def ach_plan_kind(plan):
+    """Blank kind on an existing row stays recurring so current Active plans keep their meaning."""
+    if not plan:
+        return ""
+    raw = (row_val(plan, "kind") or "").strip().lower()
+    if raw in ("single", "one-time", "onetime", "one_time"):
+        return "single"
+    return "recurring"
+
+
+def ach_plan_count(plan):
+    if not plan:
+        return None
+    if ach_plan_kind(plan) == "single":
+        return 1
+    raw = row_val(plan, "payment_count")
+    if raw not in ("", None):
+        try:
+            counted = int(float(raw))
+            if counted > 0:
+                return counted
+        except (TypeError, ValueError):
+            pass
+    if not row_val(plan, "start_on") or not row_val(plan, "end_on"):
+        return None
+    counted = ach_count_through(row_val(plan, "start_on"), row_val(plan, "end_on"), row_val(plan, "day_of_month") or 1)
+    return counted if counted > 0 else None
+
+
+def _mark_plan_collected(plan):
+    """Record the pull. A one-time plan closes so it does not stay an open Active schedule."""
+    if not plan or not row_val(plan, "id"):
+        return
+    today = date.today().isoformat()
+    if ach_plan_kind(plan) == "single":
+        db().execute(
+            "UPDATE loan_ach_plans SET last_run=?, status=? WHERE id=?",
+            (today, "Collected", plan["id"]),
+        )
+    else:
+        db().execute(
+            "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
+            (today, plan["id"]),
+        )
+
+
 def ensure_ach_plans():
     db().execute(
         """CREATE TABLE IF NOT EXISTS loan_ach_plans (
@@ -12363,9 +12518,16 @@ def ensure_ach_plans():
             stripe_pm TEXT,
             last_run TEXT,
             created_at TEXT,
-            note TEXT
+            note TEXT,
+            kind TEXT,
+            payment_count INTEGER
         )"""
     )
+    cols = [r[1] for r in db().execute("PRAGMA table_info(loan_ach_plans)").fetchall()]
+    if "kind" not in cols:
+        db().execute("ALTER TABLE loan_ach_plans ADD COLUMN kind TEXT")
+    if "payment_count" not in cols:
+        db().execute("ALTER TABLE loan_ach_plans ADD COLUMN payment_count INTEGER")
     db().commit()
 
 
@@ -12400,10 +12562,15 @@ def ach_auth_pdf(b, loan, data):
         "Email: %s" % (row_val(b, "email") or ""),
         "Loan: %s" % (row_val(loan, "loan_number") or loan["id"] if loan else ""),
         "Property: %s" % (row_val(loan, "property_address") or "" if loan else ""),
-        "Kind: %s" % (data.get("kind") or "recurring"),
+        "Kind: %s" % ("One-time payment" if normalize_ach_kind(data.get("kind")) == "single" else "Recurring payment"),
         "Amount: $%s" % (data.get("amount") or ""),
-        "Day of month: %s" % (data.get("day_of_month") or ""),
-        "Start: %s   End: %s" % (data.get("start_on") or "", data.get("end_on") or "until stopped"),
+        "Debit day: %s" % (data.get("day_of_month") or ""),
+        "Start: %s   Stop: %s   Payments: %s"
+        % (
+            data.get("start_on") or "",
+            data.get("end_on") or ("one debit" if normalize_ach_kind(data.get("kind")) == "single" else "until stopped"),
+            data.get("payment_count") or ("1" if normalize_ach_kind(data.get("kind")) == "single" else ""),
+        ),
         "Bank: %s" % (data.get("bank_name") or row_val(b, "bank_name") or ""),
         "Routing: %s" % (data.get("bank_routing") or row_val(b, "bank_routing") or ""),
         "Account: ****%s" % ((data.get("bank_account") or row_val(b, "bank_account") or "")[-4:]),
@@ -12579,11 +12746,7 @@ def collect_ach_once(loan, plan, borrower):
             "ACH %s %s" % (vendor, status),
         ),
     )
-    if plan and row_val(plan, "id"):
-        db().execute(
-            "UPDATE loan_ach_plans SET last_run=? WHERE id=?",
-            (date.today().isoformat(), plan["id"]),
-        )
+    _mark_plan_collected(plan)
     db().commit()
     return True, status
 
@@ -12596,15 +12759,30 @@ def loan_ach_auth_send(lid):
     if not loan:
         return redirect(url_for("loans"))
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
-    kind = (request.form.get("kind") or "recurring").lower()
-    if kind not in ("single", "recurring"):
-        kind = "recurring"
+    kind = normalize_ach_kind(request.form.get("kind"))
+    if kind == "single":
+        start_on = date.today().isoformat()
+        end_on = start_on
+        day = ach_debit_day(date.today().day)
+        count = 1
+    else:
+        start_on, end_on, day, count, err = resolve_ach_schedule(
+            request.form.get("start_on"),
+            request.form.get("end_on") or row_val(loan, "maturity_date"),
+            request.form.get("day_of_month") or "1",
+            request.form.get("payment_count"),
+            request.form.get("schedule_driver"),
+        )
+        if err:
+            session["last_invite_note"] = err
+            return redirect(url_for("loan_detail", lid=lid))
     payload = {
         "kind": kind,
         "amount": request.form.get("amount") or "",
-        "day_of_month": request.form.get("day_of_month") or "1",
-        "start_on": request.form.get("start_on") or date.today().isoformat(),
-        "end_on": request.form.get("end_on") or (row_val(loan, "maturity_date") or ""),
+        "day_of_month": str(day),
+        "start_on": start_on,
+        "end_on": end_on,
+        "payment_count": str(count),
         "bank_name": row_val(b, "bank_name") or "",
         "bank_routing": row_val(b, "bank_routing") or "",
         "bank_account": row_val(b, "bank_account") or "",
@@ -12660,14 +12838,43 @@ def ach_auth_fill(token):
     data = json.loads(row["payload"] or "{}")
     if request.method == "POST":
         for key in (
-            "kind", "amount", "day_of_month", "start_on", "end_on",
+            "kind", "amount", "day_of_month", "start_on", "end_on", "payment_count",
             "bank_name", "bank_routing", "bank_account", "bank_account_type",
             "signed_name",
         ):
             if request.form.get(key) not in (None,):
                 data[key] = request.form.get(key)
+        data["schedule_driver"] = request.form.get("schedule_driver") or data.get("schedule_driver") or ""
         data["signature"] = request.form.get("signature") or ""
         data["signed_at"] = datetime.now().isoformat(timespec="minutes")
+        kind = normalize_ach_kind(data.get("kind"))
+        data["kind"] = kind
+        if kind == "single":
+            start_on = (_parse_iso_date(data.get("start_on")) or date.today()).isoformat()
+            end_on = start_on
+            day = ach_debit_day(data.get("day_of_month") or date.today().day)
+            count = 1
+        else:
+            start_on, end_on, day, count, sched_err = resolve_ach_schedule(
+                data.get("start_on"),
+                data.get("end_on"),
+                data.get("day_of_month") or "1",
+                data.get("payment_count"),
+                data.get("schedule_driver") or "end",
+            )
+            if sched_err:
+                return render_template(
+                    "ach_auth.html",
+                    error=sched_err,
+                    packet=row,
+                    data=data,
+                    loan=loan,
+                    b=b,
+                )
+        data["start_on"] = start_on
+        data["end_on"] = end_on
+        data["day_of_month"] = str(day)
+        data["payment_count"] = str(count)
         if not data.get("signed_name") or not data.get("signature"):
             return render_template(
                 "ach_auth.html",
@@ -12708,17 +12915,19 @@ def ach_auth_fill(token):
             )
             db().execute(
                 """INSERT INTO loan_ach_plans
-                   (loan_id, amount, day_of_month, start_on, end_on, status, created_at, note)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (loan_id, amount, day_of_month, start_on, end_on, status, created_at, note, kind, payment_count)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     loan["id"],
                     money(data.get("amount")),
-                    int(float(data.get("day_of_month") or 1)),
-                    data.get("start_on") or date.today().isoformat(),
-                    data.get("end_on") if data.get("kind") != "single" else data.get("start_on"),
+                    int(data.get("day_of_month") or 1),
+                    data.get("start_on"),
+                    data.get("end_on"),
                     "Pending",
                     datetime.now().isoformat(timespec="minutes"),
-                    "Signed ACH auth · %s" % (data.get("kind") or "recurring"),
+                    "Signed ACH auth · %s" % ("one-time" if data.get("kind") == "single" else "recurring"),
+                    data.get("kind") or "recurring",
+                    int(data.get("payment_count") or 1),
                 ),
             )
         db().commit()
@@ -12741,12 +12950,25 @@ def ach_auth_fill(token):
 def loan_ach_plan_approve(lid):
     ensure_ach_plans()
     plan = loan_ach_plan(lid)
-    if not plan:
+    if not plan or row_val(plan, "status") != "Pending":
         session["last_invite_note"] = "No ACH plan waiting."
         return redirect(url_for("loan_detail", lid=lid))
-    db().execute("UPDATE loan_ach_plans SET status=? WHERE id=?", ("Active", plan["id"]))
+    if ach_plan_kind(plan) == "single":
+        start_on = row_val(plan, "start_on") or date.today().isoformat()
+        db().execute(
+            """UPDATE loan_ach_plans
+               SET status=?, kind=?, start_on=?, end_on=?, payment_count=?
+               WHERE id=?""",
+            ("Active", "single", start_on, start_on, 1, plan["id"]),
+        )
+        session["last_invite_note"] = "One-time ACH approved. Collect once — it will not repeat."
+    else:
+        db().execute(
+            "UPDATE loan_ach_plans SET status=?, kind=COALESCE(NULLIF(kind,''), 'recurring') WHERE id=?",
+            ("Active", plan["id"]),
+        )
+        session["last_invite_note"] = "Recurring ACH plan approved. Staff can collect or wait for the debit day."
     db().commit()
-    session["last_invite_note"] = "ACH plan approved. Staff can collect or wait for the due day."
     return redirect(url_for("loan_detail", lid=lid))
 
 
@@ -12759,28 +12981,68 @@ def loan_ach_plan_save(lid):
         return redirect(url_for("loans"))
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)).fetchone()
     amt = money(request.form.get("amount"))
-    try:
-        day = int(request.form.get("day_of_month") or "1")
-    except ValueError:
-        day = 1
-    day = min(28, max(1, day))
-    start = request.form.get("start_on") or date.today().isoformat()
-    end = request.form.get("end_on") or row_val(loan, "maturity_date")
+    kind = normalize_ach_kind(request.form.get("kind"))
     if amt <= 0:
         session["last_invite_note"] = "Enter the ACH amount."
         return redirect(url_for("loan_detail", lid=lid))
     if not row_val(b, "ach_authorized"):
         session["last_invite_note"] = "Check ACH authorized on the borrower profile first."
         return redirect(url_for("loan_detail", lid=lid))
+    if kind == "single":
+        ok, msg = collect_ach_once(loan, {"amount": amt, "kind": "single"}, b)
+        if not ok:
+            session["last_invite_note"] = "One-time ACH did not send: " + msg
+            return redirect(url_for("loan_detail", lid=lid))
+        today = date.today().isoformat()
+        db().execute(
+            "UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status IN ('Active','Pending')",
+            ("Stopped", lid),
+        )
+        db().execute(
+            """INSERT INTO loan_ach_plans
+               (loan_id, amount, day_of_month, start_on, end_on, status, last_run, created_at, note, kind, payment_count)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                lid,
+                amt,
+                ach_debit_day(date.today().day),
+                today,
+                today,
+                "Collected",
+                today,
+                datetime.now().isoformat(timespec="minutes"),
+                request.form.get("note") or "One-time ACH",
+                "single",
+                1,
+            ),
+        )
+        db().commit()
+        session["last_invite_note"] = (
+            "One-time ACH collected ($%.2f): %s. No recurring plan was left open." % (amt, msg)
+        )
+        return redirect(url_for("loan_detail", lid=lid))
+    start, end, day, count, err = resolve_ach_schedule(
+        request.form.get("start_on"),
+        request.form.get("end_on") or row_val(loan, "maturity_date"),
+        request.form.get("day_of_month") or "1",
+        request.form.get("payment_count"),
+        request.form.get("schedule_driver"),
+    )
+    if err:
+        session["last_invite_note"] = err
+        return redirect(url_for("loan_detail", lid=lid))
     cus = pm = None
     warn = None
     if payments_provider() == "stripe" and stripe_secret():
         cus, pm, warn = stripe_customer_and_bank(b)
-    db().execute("UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status=?", ("Stopped", lid, "Active"))
+    db().execute(
+        "UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status IN ('Active','Pending')",
+        ("Stopped", lid),
+    )
     db().execute(
         """INSERT INTO loan_ach_plans
-           (loan_id, amount, day_of_month, start_on, end_on, status, stripe_customer, stripe_pm, created_at, note)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+           (loan_id, amount, day_of_month, start_on, end_on, status, stripe_customer, stripe_pm, created_at, note, kind, payment_count)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             lid,
             amt,
@@ -12792,6 +13054,8 @@ def loan_ach_plan_save(lid):
             pm,
             datetime.now().isoformat(timespec="minutes"),
             request.form.get("note") or "",
+            "recurring",
+            count,
         ),
     )
     db().commit()
@@ -12807,7 +13071,8 @@ def loan_ach_plan_save(lid):
     else:
         tail = " Plan is on file for manual collect."
     session["last_invite_note"] = (
-        "ACH plan saved: $%.2f on day %s each month through %s." % (amt, day, end or "you stop it")
+        "Recurring ACH plan saved: $%.2f on day %s, %s payments from %s through %s."
+        % (amt, day, count, start, end)
         + tail
     )
     return redirect(url_for("loan_detail", lid=lid))
@@ -12817,7 +13082,10 @@ def loan_ach_plan_save(lid):
 @staff_required
 def loan_ach_plan_stop(lid):
     ensure_ach_plans()
-    db().execute("UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status=?", ("Stopped", lid, "Active"))
+    db().execute(
+        "UPDATE loan_ach_plans SET status=? WHERE loan_id=? AND status IN ('Active','Pending')",
+        ("Stopped", lid),
+    )
     db().commit()
     session["last_invite_note"] = "ACH plan stopped. No more automatic pulls."
     return redirect(url_for("loan_detail", lid=lid))
@@ -12832,8 +13100,12 @@ def loan_ach_collect(lid):
     plan = loan_ach_plan(lid)
     if not loan or not b:
         return redirect(url_for("loans"))
+    kind = ach_plan_kind(plan)
     ok, msg = collect_ach_once(loan, plan, b)
-    session["last_invite_note"] = ("ACH sent: " + msg) if ok else ("ACH did not send: " + msg)
+    if ok and kind == "single":
+        session["last_invite_note"] = "One-time ACH sent: %s. No recurring plan was left open." % msg
+    else:
+        session["last_invite_note"] = ("ACH sent: " + msg) if ok else ("ACH did not send: " + msg)
     return redirect(url_for("loan_detail", lid=lid))
 
 
