@@ -233,7 +233,7 @@ def access_token(force=False):
     return token, None
 
 
-def api(method, path_or_url, body=None):
+def api(method, path_or_url, body=None, timeout=30):
     token, err = access_token()
     if err:
         return None, None, err
@@ -246,6 +246,7 @@ def api(method, path_or_url, body=None):
         url,
         body=body if method != "GET" else None,
         headers=headers,
+        timeout=timeout,
     )
     if err and "expired" in (err or "").lower():
         token, err2 = access_token(force=True)
@@ -257,6 +258,7 @@ def api(method, path_or_url, body=None):
             url,
             body=body if method != "GET" else None,
             headers=headers,
+            timeout=timeout,
         )
     return parsed, location, err
 
@@ -269,8 +271,8 @@ def update_customer(customer_url, payload):
     return api("POST", customer_url, payload)
 
 
-def get_resource(url):
-    return api("GET", url)
+def get_resource(url, timeout=30):
+    return api("GET", url, timeout=timeout)
 
 
 def find_customer_by_email(email):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
 import json
+import logging
 import os
 import re
 import csv
@@ -56,6 +57,7 @@ CLOSING_DEFAULTS = [
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "brittco-local-dev-key-change-before-hosting")
+logger = logging.getLogger(__name__)
 
 
 def db():
@@ -9698,6 +9700,10 @@ def loan_detail(lid):
         ).fetchone()
     except Exception:
         pass
+    try:
+        reconcile_pending_dwolla_transfers(loan_id=lid)
+    except Exception:
+        logger.exception("Dwolla reconcile failed")
     payments = db().execute(
         "SELECT * FROM payments WHERE loan_id=? ORDER BY paid_on DESC, id DESC", (lid,)
     ).fetchall()
@@ -11706,19 +11712,28 @@ ACH_MANDATE_TEXT = (
     "Borrower must authorize ACH debits before a pull. "
     "Dwolla or Stripe is used only after that authorization is on the borrower profile."
 )
+# Borrower pulls are unverified-bank to verified-bank. Dwolla marks the transfer
+# we stored as customer_transfer_completed. customer_bank_transfer_* is a later
+# leg and carries a different transfer id (follow funding-transfer to match).
 DWOLLA_SUCCESS_TOPICS = {
     "transfer_completed",
+    "customer_transfer_completed",
     "bank_transfer_completed",
     "customer_bank_transfer_completed",
 }
 DWOLLA_FAIL_TOPICS = {
     "transfer_failed",
     "transfer_cancelled",
+    "customer_transfer_failed",
+    "customer_transfer_cancelled",
     "bank_transfer_failed",
     "bank_transfer_cancelled",
     "customer_bank_transfer_failed",
     "customer_bank_transfer_cancelled",
 }
+_DWOLLA_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 TEST_INVESTORS = (
     ("Sandbox Investor A", "Test Capital A LLC", "sandbox.investor.a@example.com"),
     ("Sandbox Investor B", "Test Capital B LLC", "sandbox.investor.b@example.com"),
@@ -11823,17 +11838,23 @@ def _save_platform_funding(url, status):
     db().commit()
 
 
+def _dwolla_ref_tail(value):
+    return (value or "").strip().rstrip("/").split("/")[-1]
+
+
 def _find_ach_transfer(transfer_url):
+    """Match a stored transfer URL. The ACH page shows only the last 24 characters."""
     if not transfer_url:
         return None
+    ref = transfer_url.strip()
     row = db().execute(
         "SELECT * FROM ach_transfers WHERE provider_ref=? ORDER BY id DESC LIMIT 1",
-        (transfer_url,),
+        (ref,),
     ).fetchone()
     if row:
         return row
-    tail = transfer_url.rstrip("/").split("/")[-1]
-    if not tail:
+    tail = _dwolla_ref_tail(ref)
+    if not _DWOLLA_ID_RE.match(tail):
         return None
     return db().execute(
         "SELECT * FROM ach_transfers WHERE provider_ref LIKE ? ORDER BY id DESC LIMIT 1",
@@ -11841,12 +11862,67 @@ def _find_ach_transfer(transfer_url):
     ).fetchone()
 
 
-def settle_dwolla_transfer(transfer_url, topic):
-    """When Dwolla reports a transfer complete, post the same ledger entry as Save payment."""
+def _event_transfer_refs(event):
+    links = (event or {}).get("_links") or {}
+    resource = ((links.get("resource") or {}).get("href") or "").strip()
+    refs = []
+    if resource:
+        refs.append(resource)
+    resource_id = ((event or {}).get("resourceId") or "").strip()
+    if resource_id and _dwolla_ref_tail(resource).lower() != resource_id.lower():
+        refs.append(resource_id)
+    return refs
+
+
+def _linked_transfer_refs(transfer_url):
+    """Parent transfer URL on a bank-leg webhook (funding-transfer)."""
+    if not transfer_url or not str(transfer_url).startswith("http"):
+        return []
+    if not dwolla_client.configured():
+        return []
+    try:
+        body, _loc, err = dwolla_client.get_resource(transfer_url, timeout=10)
+    except Exception:
+        logger.exception("Dwolla transfer lookup failed")
+        return []
+    if err or not isinstance(body, dict):
+        return []
+    links = body.get("_links") or {}
+    out = []
+    for key in ("funding-transfer", "funded-transfer"):
+        href = ((links.get(key) or {}).get("href") or "").strip()
+        if href:
+            out.append(href)
+    return out
+
+
+def _resolve_ach_transfer(refs):
+    seen = []
+    for ref in refs or []:
+        if not ref or ref in seen:
+            continue
+        seen.append(ref)
+        row = _find_ach_transfer(ref)
+        if row:
+            return row
+    for ref in list(seen):
+        for linked in _linked_transfer_refs(ref):
+            if linked in seen:
+                continue
+            seen.append(linked)
+            row = _find_ach_transfer(linked)
+            if row:
+                return row
+    return None
+
+
+def settle_dwolla_row(row, topic):
+    """Post the ledger once when Dwolla says this ACH transfer completed."""
     ensure_dwolla_schema()
-    row = _find_ach_transfer(transfer_url)
-    if not row:
+    fresh = db().execute("SELECT * FROM ach_transfers WHERE id=?", (row["id"],)).fetchone()
+    if not fresh:
         return False
+    row = fresh
     if row_val(row, "payment_id"):
         db().execute(
             "UPDATE ach_transfers SET status=?, provider_event=? WHERE id=?",
@@ -11889,16 +11965,101 @@ def settle_dwolla_transfer(transfer_url, topic):
     return True
 
 
-def mark_dwolla_transfer(transfer_url, status, topic):
-    ensure_dwolla_schema()
+def settle_dwolla_transfer(transfer_url, topic):
+    """When Dwolla reports a transfer complete, post the same ledger entry as Save payment."""
     row = _find_ach_transfer(transfer_url)
     if not row:
-        return
+        return False
+    return settle_dwolla_row(row, topic)
+
+
+def mark_dwolla_row(row, status, topic):
+    ensure_dwolla_schema()
+    fresh = db().execute("SELECT * FROM ach_transfers WHERE id=?", (row["id"],)).fetchone()
+    if not fresh:
+        return False
+    if row_val(fresh, "payment_id"):
+        db().execute(
+            "UPDATE ach_transfers SET provider_event=? WHERE id=?",
+            (topic, fresh["id"]),
+        )
+        db().commit()
+        return True
     db().execute(
         "UPDATE ach_transfers SET status=?, provider_event=? WHERE id=?",
-        (status, topic, row["id"]),
+        (status, topic, fresh["id"]),
     )
     db().commit()
+    return True
+
+
+def mark_dwolla_transfer(transfer_url, status, topic):
+    row = _find_ach_transfer(transfer_url)
+    if not row:
+        return False
+    return mark_dwolla_row(row, status, topic)
+
+
+def apply_dwolla_transfer_event(event, topic):
+    ensure_dwolla_schema()
+    row = _resolve_ach_transfer(_event_transfer_refs(event))
+    if not row:
+        return False
+    if topic in DWOLLA_SUCCESS_TOPICS:
+        settle_dwolla_row(row, topic)
+    elif topic in DWOLLA_FAIL_TOPICS:
+        status = "failed" if "failed" in topic else "cancelled"
+        mark_dwolla_row(row, status, topic)
+    return True
+
+
+def reconcile_pending_dwolla_transfers(loan_id=None, limit=25):
+    """Post or fail ACH rows whose Dwolla transfer already left pending.
+
+    Webhooks that returned 200 before this matching fix are not resent.
+    Opening ACH collections or the loan re-reads transfer status once.
+    """
+    if not dwolla_client.configured():
+        return 0
+    ensure_dwolla_schema()
+    sql = """SELECT * FROM ach_transfers
+             WHERE lower(COALESCE(provider, ''))='dwolla'
+               AND provider_ref IS NOT NULL AND TRIM(provider_ref) != ''
+               AND payment_id IS NULL
+               AND lower(COALESCE(status, '')) IN ('pending', 'processing')"""
+    params = []
+    if loan_id:
+        sql += " AND loan_id=?"
+        params.append(loan_id)
+    sql += " ORDER BY id ASC LIMIT ?"
+    params.append(int(limit))
+    try:
+        rows = db().execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return 0
+    changed = 0
+    for row in rows:
+        ref = (row_val(row, "provider_ref") or "").strip()
+        if not ref.startswith("http"):
+            continue
+        try:
+            body, _loc, err = dwolla_client.get_resource(ref, timeout=10)
+        except Exception:
+            logger.exception("Dwolla reconcile lookup failed")
+            continue
+        if err or not isinstance(body, dict):
+            continue
+        status = (body.get("status") or "").lower()
+        if status in ("processed", "completed"):
+            if settle_dwolla_row(row, "transfer_completed"):
+                changed += 1
+        elif status == "failed":
+            if mark_dwolla_row(row, "failed", "transfer_failed"):
+                changed += 1
+        elif status in ("cancelled", "canceled"):
+            if mark_dwolla_row(row, "cancelled", "transfer_cancelled"):
+                changed += 1
+    return changed
 
 
 def _person_names(full):
@@ -12684,6 +12845,10 @@ def ach():
         db().commit()
         session["last_invite_note"] = "Collection recorded. No processor call was made."
         return redirect(url_for("ach"))
+    try:
+        reconcile_pending_dwolla_transfers()
+    except Exception:
+        logger.exception("Dwolla reconcile failed")
     transfers = db().execute(
         """SELECT t.*, b.name AS borrower_name, i.name AS investor_name, l.loan_number
            FROM ach_transfers t
@@ -12896,10 +13061,9 @@ def dwolla_webhook():
         return "bad json", 400
     topic = event.get("topic") or ""
     resource = ((event.get("_links") or {}).get("resource") or {}).get("href") or ""
-    if topic in DWOLLA_SUCCESS_TOPICS:
-        settle_dwolla_transfer(resource, topic)
-    elif topic in DWOLLA_FAIL_TOPICS:
-        mark_dwolla_transfer(resource, "failed" if "failed" in topic else "cancelled", topic)
+    if topic in DWOLLA_SUCCESS_TOPICS or topic in DWOLLA_FAIL_TOPICS:
+        if not apply_dwolla_transfer_event(event, topic):
+            logger.warning("Dwolla webhook %s did not match an ACH row", topic)
     elif topic.startswith("customer_") and resource:
         current = ""
         try:

@@ -243,6 +243,233 @@ def test_webhook_posts_payment_once():
         assert row["payment_id"]
 
 
+def _sign(raw):
+    return hmac.new(b"whsec-test", raw, hashlib.sha256).hexdigest()
+
+
+def _post_dwolla(payload):
+    raw = json.dumps(payload).encode()
+    client = brittco.app.test_client()
+    return client.post(
+        "/webhooks/dwolla",
+        data=raw,
+        headers={"X-Request-Signature-SHA-256": _sign(raw), "Content-Type": "application/json"},
+    )
+
+
+def _pending_ach(provider_ref, loan_number, amount=1):
+    with brittco.app.app_context():
+        borrower = brittco.db().execute("SELECT id FROM borrowers LIMIT 1").fetchone()
+        cur = brittco.db().execute(
+            """INSERT INTO loans
+               (borrower_id, loan_number, current_balance, original_principal, rate, status)
+               VALUES (?,?,?,?,?,?)""",
+            (borrower["id"], loan_number, 50000, 50000, 12, "Active"),
+        )
+        lid = cur.lastrowid
+        brittco.ensure_dwolla_schema()
+        brittco.db().execute(
+            """INSERT INTO ach_transfers
+               (borrower_id, loan_id, direction, amount, status, vendor, provider, provider_ref, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                borrower["id"],
+                lid,
+                "Debit borrower (loan payment)",
+                amount,
+                "pending",
+                "Dwolla",
+                "dwolla",
+                provider_ref,
+                "2026-09-29T21:32",
+            ),
+        )
+        brittco.db().commit()
+        return lid
+
+
+def _payment_count(loan_number):
+    with brittco.app.app_context():
+        return brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM payments WHERE loan_id=(SELECT id FROM loans WHERE loan_number=?)",
+            (loan_number,),
+        ).fetchone()["c"]
+
+
+def _ach_row(provider_ref):
+    with brittco.app.app_context():
+        return brittco.db().execute(
+            "SELECT status, provider_event, payment_id FROM ach_transfers WHERE provider_ref=?",
+            (provider_ref,),
+        ).fetchone()
+
+
+# UI shows provider_ref[-24:], which for this URL is c-f111-acd5-02ab38c54207.
+PARENT_URL = "https://api-sandbox.dwolla.com/transfers/12345678-90ac-f111-acd5-02ab38c54207"
+CHILD_URL = "https://api-sandbox.dwolla.com/transfers/1352581d-3b6c-ec11-813c-f6ddd36b41b8"
+
+
+def test_customer_transfer_completed_posts_ledger_once():
+    _pending_ach(PARENT_URL, "DW-CUST-OK")
+    payload = {
+        "id": "evt-cust-ok",
+        "topic": "customer_transfer_completed",
+        "resourceId": "12345678-90ac-f111-acd5-02ab38c54207",
+        "_links": {"resource": {"href": PARENT_URL}},
+    }
+    with patch("dwolla_client.get_resource") as get_resource:
+        ok = _post_dwolla(payload)
+        again = _post_dwolla(payload)
+        get_resource.assert_not_called()
+    assert ok.status_code == 200
+    assert again.status_code == 200
+    assert _payment_count("DW-CUST-OK") == 1
+    row = _ach_row(PARENT_URL)
+    assert row["status"] == "processed"
+    assert row["provider_event"] == "customer_transfer_completed"
+    assert row["payment_id"]
+
+
+def test_customer_transfer_failed_marks_row_without_ledger():
+    ref = "https://api-sandbox.dwolla.com/transfers/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _pending_ach(ref, "DW-CUST-FAIL")
+    ok = _post_dwolla(
+        {
+            "id": "evt-cust-fail",
+            "topic": "customer_transfer_failed",
+            "resourceId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "_links": {"resource": {"href": ref}},
+        }
+    )
+    assert ok.status_code == 200
+    assert _payment_count("DW-CUST-FAIL") == 0
+    row = _ach_row(ref)
+    assert row["status"] == "failed"
+    assert row["provider_event"] == "customer_transfer_failed"
+    assert not row["payment_id"]
+
+
+def test_bank_leg_completed_follows_funding_transfer():
+    parent = "https://api-sandbox.dwolla.com/transfers/cd4a2cb3-3a6c-ec11-813c-f6ddd36b41b8"
+    _pending_ach(parent, "DW-BANK-LEG")
+
+    def fake_get(url, timeout=30):
+        assert url == CHILD_URL
+        return (
+            {
+                "_links": {
+                    "funding-transfer": {"href": parent},
+                    "self": {"href": CHILD_URL},
+                },
+                "status": "processed",
+            },
+            None,
+            None,
+        )
+
+    os.environ["DWOLLA_KEY"] = "key"
+    os.environ["DWOLLA_SECRET"] = "secret"
+    try:
+        with patch("dwolla_client.get_resource", fake_get):
+            ok = _post_dwolla(
+                {
+                    "id": "evt-bank",
+                    "topic": "customer_bank_transfer_completed",
+                    "resourceId": "1352581d-3b6c-ec11-813c-f6ddd36b41b8",
+                    "_links": {"resource": {"href": CHILD_URL}},
+                }
+            )
+            again = _post_dwolla(
+                {
+                    "id": "evt-bank-2",
+                    "topic": "customer_bank_transfer_completed",
+                    "resourceId": "1352581d-3b6c-ec11-813c-f6ddd36b41b8",
+                    "_links": {"resource": {"href": CHILD_URL}},
+                }
+            )
+    finally:
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
+    assert ok.status_code == 200
+    assert again.status_code == 200
+    assert _payment_count("DW-BANK-LEG") == 1
+    row = _ach_row(parent)
+    assert row["status"] == "processed"
+    assert row["provider_event"] == "customer_bank_transfer_completed"
+    assert row["payment_id"]
+
+
+def test_bank_leg_failure_keeps_posted_payment():
+    parent = "https://api-sandbox.dwolla.com/transfers/cccccccc-dddd-eeee-ffff-000000000001"
+    _pending_ach(parent, "DW-NO-UNDO")
+    ok = _post_dwolla(
+        {
+            "id": "evt-ok-first",
+            "topic": "customer_transfer_completed",
+            "resourceId": "cccccccc-dddd-eeee-ffff-000000000001",
+            "_links": {"resource": {"href": parent}},
+        }
+    )
+    assert ok.status_code == 200
+
+    def fake_get(url, timeout=30):
+        return (
+            {"_links": {"funding-transfer": {"href": parent}}, "status": "failed"},
+            None,
+            None,
+        )
+
+    os.environ["DWOLLA_KEY"] = "key"
+    os.environ["DWOLLA_SECRET"] = "secret"
+    try:
+        with patch("dwolla_client.get_resource", fake_get):
+            failed = _post_dwolla(
+                {
+                    "id": "evt-bank-fail",
+                    "topic": "customer_bank_transfer_failed",
+                    "resourceId": "1352581d-3b6c-ec11-813c-f6ddd36b41b8",
+                    "_links": {"resource": {"href": CHILD_URL}},
+                }
+            )
+    finally:
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
+    assert failed.status_code == 200
+    assert _payment_count("DW-NO-UNDO") == 1
+    row = _ach_row(parent)
+    assert row["status"] == "processed"
+    assert row["provider_event"] == "customer_bank_transfer_failed"
+    assert row["payment_id"]
+
+
+def test_reconcile_posts_processed_transfer_still_pending_locally():
+    ref = "https://api-sandbox.dwolla.com/transfers/bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    _pending_ach(ref, "DW-RECON", amount=1)
+
+    def fake_get(url, timeout=30):
+        if url == ref:
+            return ({"id": url.rsplit("/", 1)[-1], "status": "processed"}, None, None)
+        return ({"status": "pending"}, None, None)
+
+    os.environ["DWOLLA_KEY"] = "key"
+    os.environ["DWOLLA_SECRET"] = "secret"
+    try:
+        with patch("dwolla_client.get_resource", fake_get):
+            with brittco.app.app_context():
+                changed = brittco.reconcile_pending_dwolla_transfers(loan_id=None)
+                again = brittco.reconcile_pending_dwolla_transfers()
+    finally:
+        os.environ.pop("DWOLLA_KEY", None)
+        os.environ.pop("DWOLLA_SECRET", None)
+    assert changed == 1
+    assert again == 0
+    assert _payment_count("DW-RECON") == 1
+    row = _ach_row(ref)
+    assert row["status"] == "processed"
+    assert row["provider_event"] == "transfer_completed"
+    assert row["payment_id"]
+
+
 def test_staff_pages_hide_modal_for_existing_platform():
     os.environ["PLATFORM_MODE"] = "brittco_existing"
     client = brittco.app.test_client()
