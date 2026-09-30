@@ -40,8 +40,9 @@
       In Dwolla, create a webhook subscription pointing at
       <code>{{ webhook_host_hint }}/webhooks/dwolla</code>
       (replace the host with your live app URL). Subscribe at least to
-      <code>transfer_completed</code>, <code>transfer_failed</code>, and
-      <code>transfer_cancelled</code>. Copy the webhook secret into
+      <code>customer_transfer_created</code>, <code>customer_transfer_completed</code>,
+      <code>customer_transfer_failed</code>, and <code>customer_transfer_cancelled</code>
+      (plus the <code>customer_bank_transfer_*</code> topics). Copy the webhook secret into
       <code>DWOLLA_WEBHOOK_SECRET</code>.
       <a href="https://developers.dwolla.com/docs/balance/webhooks/process" target="_blank" rel="noopener">Webhook docs</a>
     </div>
@@ -69,7 +70,10 @@
       <strong>6 · First test ACH</strong>
       On a borrower, save routing/account and check ACH authorized (or send the ACH form).
       Open a loan, save the ACH plan, and choose <strong>Collect this payment now</strong>.
-      When Dwolla sends <code>transfer_completed</code>, the loan ledger posts automatically.
+      Sandbox bank ACH stays <strong>pending</strong> after it is created. Dwolla does not
+      move it until you process bank transfers: Tools → Process sandbox bank transfers, or
+      the same button in the Sandbox Dashboard. Do that twice for a bank-to-bank pull.
+      When <code>customer_transfer_completed</code> arrives, the loan ledger posts.
       Confirm the event on the <a href="{{ url_for('ach') }}">ACH log</a>.
     </div>
   </div>

@@ -22,6 +22,30 @@
   </p>
 </div>
 
+{% if dwolla_env != 'production' %}
+<div class="card" style="margin-top:8px;max-width:640px">
+  <h3>Sandbox bank transfers</h3>
+  <p class="hint">
+    Dwolla sandbox does not clear bank ACH. A pull stays
+    <strong>pending</strong> after <code>customer_transfer_created</code> until bank transfers
+    are processed. This posts an empty body to
+    <code>https://api-sandbox.dwolla.com/sandbox-simulations</code>
+    (same as Dashboard → Process bank transfers).
+    Dwolla then sends <code>customer_transfer_completed</code> or <code>customer_transfer_failed</code>,
+    which updates the ACH log and posts the loan ledger.
+    Click a second time for the credit leg of a borrower-bank to company-bank pull.
+    <a href="https://developers.dwolla.com/docs/testing#simulate-bank-transfer-processing" target="_blank" rel="noopener">Dwolla testing docs</a>
+  </p>
+  {% if dwolla_ready %}
+  <form method="post" action="{{ url_for('tools_dwolla_sandbox_simulate') }}">
+    <button class="btn" type="submit">Process sandbox bank transfers</button>
+  </form>
+  {% else %}
+  <p class="hint">Set <code>DWOLLA_KEY</code> and <code>DWOLLA_SECRET</code> before using this.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card" style="margin-top:8px;max-width:640px">
   <h3>Amortization schedule</h3>
   <p class="hint">

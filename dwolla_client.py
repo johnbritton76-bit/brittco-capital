@@ -233,7 +233,7 @@ def access_token(force=False):
     return token, None
 
 
-def api(method, path_or_url, body=None):
+def api(method, path_or_url, body=None, timeout=30):
     token, err = access_token()
     if err:
         return None, None, err
@@ -246,6 +246,7 @@ def api(method, path_or_url, body=None):
         url,
         body=body if method != "GET" else None,
         headers=headers,
+        timeout=timeout,
     )
     if err and "expired" in (err or "").lower():
         token, err2 = access_token(force=True)
@@ -257,6 +258,7 @@ def api(method, path_or_url, body=None):
             url,
             body=body if method != "GET" else None,
             headers=headers,
+            timeout=timeout,
         )
     return parsed, location, err
 
@@ -269,8 +271,8 @@ def update_customer(customer_url, payload):
     return api("POST", customer_url, payload)
 
 
-def get_resource(url):
-    return api("GET", url)
+def get_resource(url, timeout=30):
+    return api("GET", url, timeout=timeout)
 
 
 def find_customer_by_email(email):
@@ -338,6 +340,25 @@ def create_unverified_customer(first, last, email):
         "type": "unverified",
     }
     return api("POST", "/customers", body)
+
+
+def simulate_sandbox_bank_transfers():
+    """Process or fail the latest sandbox bank transfers.
+
+    Dwolla leaves sandbox bank ACH pending until this runs (or the Sandbox
+    Dashboard "Process bank transfers" button). POST /sandbox-simulations with
+    an empty body. Bank-to-bank pulls need a second call for the credit leg.
+    https://developers.dwolla.com/docs/testing#simulate-bank-transfer-processing
+    """
+    if env_name() != "sandbox":
+        return None, "Sandbox bank processing is only available when DWOLLA_ENV=sandbox."
+    if not configured():
+        return None, "Set DWOLLA_KEY and DWOLLA_SECRET."
+    parsed, _loc, err = api("POST", "/sandbox-simulations", {})
+    if err:
+        return None, err
+    total = (parsed or {}).get("total")
+    return total, None
 
 
 def create_transfer(source_url, destination_url, amount, metadata=None):
