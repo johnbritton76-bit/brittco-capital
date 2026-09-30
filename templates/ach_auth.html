@@ -53,8 +53,8 @@
     <div><label>Account number</label><input name="bank_account" value="{{ data.bank_account or '' }}" required></div>
     <div class="span-2">
       <p>I authorize Brittco Capital Inc to debit the account above for the amount and schedule on this form. I can revoke this authorization by written notice to Brittco before the next debit. NACHA rules apply.</p>
-      <label><input type="checkbox" name="agree" value="1"> I agree and authorize this ACH debit</label>
     </div>
+    {% include "_dwolla_terms.html" %}
     <div class="span-2"><label>Type your full legal name</label><input name="signed_name" required placeholder="Name as it should appear on the authorization"></div>
     <div class="span-2">
       <label>Sign here</label>
@@ -62,7 +62,7 @@
       <input type="hidden" name="signature" id="signature">
       <p><button type="button" class="btn ghost" id="clear-sig">Clear signature</button></p>
     </div>
-    <div class="span-2"><button class="btn" type="submit">Submit signed authorization</button></div>
+    <div class="span-2"><button class="btn" type="submit">Agree and Continue</button></div>
   </form>
   <script src="/static/ach-schedule.js"></script>
   <script>

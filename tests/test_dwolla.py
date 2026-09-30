@@ -838,3 +838,240 @@ def test_approved_one_time_closes_after_collect():
             (lid,),
         ).fetchone()["c"]
         assert active == 0
+
+
+def test_dwolla_terms_urls_match_current_legal_pages():
+    assert dwolla_client.DWOLLA_TOS_URL == "https://www.dwolla.com/legal/dwolla-account-terms-of-service"
+    assert dwolla_client.DWOLLA_PRIVACY_URL == "https://www.dwolla.com/legal/privacy"
+    assert dwolla_client.DWOLLA_TERMS_VERSION
+
+
+def test_ach_status_labels():
+    assert brittco.ach_status_bucket("completed") == "processed"
+    assert brittco.ach_status_bucket("pending") == "pending"
+    assert brittco.ach_status_bucket("failed") == "failed"
+    assert brittco.ach_status_bucket("cancelled") == "cancelled"
+    assert brittco.ach_status_bucket("Recorded — collect at bank") == "Recorded — collect at bank"
+
+
+def test_ach_auth_requires_and_records_dwolla_terms():
+    with brittco.app.app_context():
+        borrower = brittco.db().execute("SELECT * FROM borrowers ORDER BY id LIMIT 1").fetchone()
+        cur = brittco.db().execute(
+            """INSERT INTO loans (borrower_id, loan_number, property_address, status)
+               VALUES (?,?,?,?)""",
+            (borrower["id"], "DW-TOS", "1 Main", "Active"),
+        )
+        lid = cur.lastrowid
+        token = "tos-token-ach"
+        payload = {
+            "kind": "single",
+            "amount": "25.00",
+            "start_on": "2026-06-01",
+            "bank_name": "Test Bank",
+            "bank_routing": "110000000",
+            "bank_account": "000999",
+            "bank_account_type": "Checking",
+            "loan_number": "DW-TOS",
+        }
+        brittco.packet_add_loan_id()
+        brittco.db().execute(
+            """INSERT INTO form_packets
+               (token, form_key, borrower_id, loan_id, status, payload, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (token, "ach_auth", borrower["id"], lid, "Sent", json.dumps(payload), "2026-06-01T00:00"),
+        )
+        brittco.db().commit()
+        bid = borrower["id"]
+    client = brittco.app.test_client()
+    page = client.get("/ach-auth/" + token)
+    html = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert 'name="dwolla_terms"' in html
+    assert "Agree and Continue" in html
+    assert dwolla_client.DWOLLA_TOS_URL in html
+    assert dwolla_client.DWOLLA_PRIVACY_URL in html
+    assert "processed by Dwolla" in html
+    missing = client.post(
+        "/ach-auth/" + token,
+        data={
+            "kind": "single",
+            "amount": "25.00",
+            "start_on": "2026-06-01",
+            "bank_name": "Test Bank",
+            "bank_routing": "110000000",
+            "bank_account": "000999",
+            "bank_account_type": "Checking",
+            "signed_name": "Ada Lovelace",
+            "signature": "data:image/png;base64,abc",
+        },
+    )
+    assert "Terms of Service" in missing.get_data(as_text=True)
+    done = client.post(
+        "/ach-auth/" + token,
+        data={
+            "kind": "single",
+            "amount": "25.00",
+            "start_on": "2026-06-01",
+            "bank_name": "Test Bank",
+            "bank_routing": "110000000",
+            "bank_account": "000999",
+            "bank_account_type": "Checking",
+            "signed_name": "Ada Lovelace",
+            "signature": "data:image/png;base64,abc",
+            "dwolla_terms": "1",
+        },
+    )
+    assert "on file" in done.get_data(as_text=True).lower()
+    with brittco.app.app_context():
+        row = brittco.latest_dwolla_terms("borrower", bid)
+        assert row["accepted_by"] == "Ada Lovelace"
+        assert row["accepted_role"] == "borrower"
+        assert row["tos_url"] == dwolla_client.DWOLLA_TOS_URL
+        assert row["privacy_url"] == dwolla_client.DWOLLA_PRIVACY_URL
+        assert row["terms_version"] == dwolla_client.DWOLLA_TERMS_VERSION
+        assert row["context"] == "ach_auth"
+        assert row["accepted_at"]
+
+
+def test_staff_bank_link_records_who_accepted():
+    client = _staff_client()
+    with brittco.app.app_context():
+        borrower = brittco.db().execute(
+            "SELECT id, bank_routing FROM borrowers ORDER BY id LIMIT 1"
+        ).fetchone()
+        bid = borrower["id"]
+        brittco.db().execute("DELETE FROM dwolla_terms_acceptances WHERE party_id=?", (bid,))
+        brittco.db().commit()
+    blocked = client.post(
+        "/borrowers/%s/ach" % bid,
+        data={
+            "bank_name": "Operating",
+            "bank_account_type": "Checking",
+            "bank_routing": "222222226",
+            "bank_account": "999000111",
+            "ach_authorized": "1",
+        },
+        follow_redirects=True,
+    )
+    assert "Terms of Service" in blocked.get_data(as_text=True)
+    saved = client.post(
+        "/borrowers/%s/ach" % bid,
+        data={
+            "bank_name": "Operating",
+            "bank_account_type": "Checking",
+            "bank_routing": "222222226",
+            "bank_account": "999000111",
+            "ach_authorized": "1",
+            "dwolla_terms": "1",
+        },
+        follow_redirects=True,
+    )
+    page = saved.get_data(as_text=True)
+    assert "Agree and Continue" in page
+    assert dwolla_client.DWOLLA_TOS_URL in page
+    with brittco.app.app_context():
+        row = brittco.latest_dwolla_terms("borrower", bid)
+        assert row["accepted_role"] == "staff"
+        assert row["accepted_by"]
+        assert row["context"] == "borrower_bank"
+        stored = brittco.db().execute("SELECT bank_routing FROM borrowers WHERE id=?", (bid,)).fetchone()
+        assert stored["bank_routing"] == "222222226"
+
+
+def test_dwolla_customer_blocked_until_terms_accepted():
+    with brittco.app.app_context():
+        borrower = brittco.db().execute("SELECT * FROM borrowers ORDER BY id LIMIT 1").fetchone()
+        brittco.db().execute("DELETE FROM dwolla_terms_acceptances WHERE party_id=?", (borrower["id"],))
+        brittco.db().execute(
+            """UPDATE borrowers
+               SET ach_authorized=1, bank_routing=?, bank_account=?, dwolla_customer_url=NULL
+               WHERE id=?""",
+            ("110000000", "000123456789", borrower["id"]),
+        )
+        brittco.db().commit()
+        fresh = brittco.db().execute("SELECT * FROM borrowers WHERE id=?", (borrower["id"],)).fetchone()
+        _fs, err = brittco.ensure_borrower_dwolla_source(fresh)
+        assert "Terms of Service" in (err or "")
+        brittco.record_dwolla_terms_acceptance("borrower", fresh["id"], "Ada Lovelace", "borrower", "ach_auth")
+        brittco.db().commit()
+        fresh = brittco.db().execute("SELECT * FROM borrowers WHERE id=?", (borrower["id"],)).fetchone()
+        _fs, err = brittco.ensure_borrower_dwolla_source(fresh)
+        assert "Terms of Service" not in (err or "")
+        assert "DWOLLA_KEY" in (err or "")
+
+
+def test_borrower_and_investor_portals_list_ach_history():
+    with brittco.app.app_context():
+        borrower = brittco.db().execute("SELECT id FROM borrowers ORDER BY id LIMIT 1").fetchone()
+        brittco.db().execute(
+            "UPDATE borrowers SET email=?, password=? WHERE id=?",
+            ("tos.borrower@example.com", "borrower", borrower["id"]),
+        )
+        investor = brittco.db().execute("SELECT id FROM investors ORDER BY id LIMIT 1").fetchone()
+        brittco.db().execute(
+            "UPDATE investors SET email=?, password=? WHERE id=?",
+            ("tos.lender@example.com", "investor", investor["id"]),
+        )
+        cur = brittco.db().execute(
+            """INSERT INTO loans (borrower_id, loan_number, status) VALUES (?,?,?)""",
+            (borrower["id"], "DW-HIST", "Active"),
+        )
+        lid = cur.lastrowid
+        brittco.db().execute(
+            "INSERT INTO participations (investor_id, loan_id, amount) VALUES (?,?,?)",
+            (investor["id"], lid, 1000),
+        )
+        brittco.ensure_dwolla_schema()
+        brittco.db().execute(
+            """INSERT INTO ach_transfers
+               (borrower_id, loan_id, investor_id, direction, amount, status, notes, created_at, vendor)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                borrower["id"],
+                lid,
+                investor["id"],
+                "Debit borrower (loan payment)",
+                42.5,
+                "pending",
+                "June interest",
+                "2026-06-02T09:00",
+                "Dwolla",
+            ),
+        )
+        brittco.db().commit()
+    borrower_client = brittco.app.test_client()
+    borrower_client.post(
+        "/portal/login",
+        data={"email": "tos.borrower@example.com", "password": "borrower"},
+        follow_redirects=True,
+    )
+    home = borrower_client.get("/portal")
+    body = home.get_data(as_text=True)
+    assert "ACH payment history" in body
+    assert "June interest" in body
+    assert "pending" in body
+    assert "42.50" in body
+    lender = brittco.app.test_client()
+    lender.post(
+        "/investor/login",
+        data={"email": "tos.lender@example.com", "password": "investor"},
+        follow_redirects=True,
+    )
+    portal = lender.get("/investor")
+    text = portal.get_data(as_text=True)
+    assert portal.status_code == 200
+    assert "ACH payment history" in text
+    assert "June interest" in text
+    assert "pending" in text
+
+
+def test_setup_page_points_at_production_disclosures():
+    client = _staff_client()
+    page = client.get("/help/dwolla-setup")
+    html = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "Production review" in html
+    assert "Terms of Service" in html
+    tools = client.get("/tools")
+    assert "dwolla-setup" in tools.get_data(as_text=True)

@@ -491,8 +491,11 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
       {% endif %}
     </span>
   </summary>
+  <p class="hint" id="dwolla-service-disclosure">{{ dwolla_service_disclosure }}</p>
   <p class="hint">
     Uses the bank on the borrower profile. Borrower must have ACH authorized.
+    Dwolla’s Terms of Service and Privacy Policy are accepted on the borrower bank form or the signed ACH authorization before a Dwolla customer is created.
+    <a href="{{ url_for('dwolla_setup') }}">Production review notes</a>.
     {% if payments_provider == 'dwolla' %}
       New collections use Dwolla{% if ach_ready %} (keys are set){% else %} — add DWOLLA_KEY and DWOLLA_SECRET{% endif %}.
       Stripe rows already on the loan stay readable.
@@ -632,12 +635,13 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   </form>
   {% if ach_runs %}
   <table class="table" style="margin-top:12px">
-    <tr><th>When</th><th>Amount</th><th>Status</th><th>Via</th></tr>
+    <tr><th>Date</th><th>Description</th><th>Amount</th><th>Status</th><th>Via</th></tr>
     {% for t in ach_runs %}
     <tr>
       <td>{{ t.created_at }}</td>
+      <td>{{ ach_description(t) }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
-      <td>{{ t.status }}</td>
+      <td>{{ ach_status_label(t.status) }}</td>
       <td>{{ t.vendor }}</td>
     </tr>
     {% endfor %}

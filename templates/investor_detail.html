@@ -148,13 +148,13 @@
   </p>
   {% if ach %}
   <table class="table">
-    <tr><th>When</th><th>Direction</th><th>Amount</th><th>Status</th></tr>
+    <tr><th>Date</th><th>Description</th><th>Amount</th><th>Status</th></tr>
     {% for t in ach %}
     <tr>
       <td>{{ t.created_at }}</td>
-      <td>{{ t.direction or "—" }}</td>
+      <td>{{ ach_description(t) }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
-      <td>{{ t.status }}</td>
+      <td>{{ ach_status_label(t.status) }}</td>
     </tr>
     {% endfor %}
   </table>

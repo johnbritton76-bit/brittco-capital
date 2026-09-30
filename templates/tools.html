@@ -16,6 +16,8 @@
     Numbered steps for connecting <strong>your</strong> Dwolla account: sandbox vs production,
     application key/secret, webhook, host env vars, business customer + funding source, and a first test ACH.
     No secrets are stored in git.
+    Production review needs the Dwolla Terms and Privacy checkbox on bank-link and ACH authorization.
+    See <a href="{{ url_for('dwolla_setup') }}">/help/dwolla-setup</a>.
   </p>
   <p>
     <a class="btn" href="{{ url_for('dwolla_setup') }}">Open Dwolla setup tutorial</a>

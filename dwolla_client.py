@@ -19,6 +19,12 @@ ACCEPT = "application/vnd.dwolla.v1.hal+json"
 # /token rejects the HAL type above and reports a fake Authorization error.
 TOKEN_ACCEPT = "application/json"
 BUSINESS_TYPES = ("corporation", "llc", "partnership", "soleProprietorship")
+# Customer-facing documents. Checked 2026-09-30 against https://www.dwolla.com/legal/ :
+# https://www.dwolla.com/legal/tos/ 301s to the account terms URL below.
+# https://www.dwolla.com/legal/privacy/ 301s to the privacy URL (no trailing slash).
+DWOLLA_TOS_URL = "https://www.dwolla.com/legal/dwolla-account-terms-of-service"
+DWOLLA_PRIVACY_URL = "https://www.dwolla.com/legal/privacy"
+DWOLLA_TERMS_VERSION = "dwolla-account-tos-2026-09"
 
 _token_cache = {"token": "", "exp": 0.0}
 
@@ -66,6 +72,9 @@ def signature_ok(secret, raw_body, header_value):
 def business_customer_body(fields):
     """Minimum Business Verified Customer body, plus an optional beneficial owner.
 
+    Used only for Brittco's platform/master customer, not for borrowers or investors.
+    Borrowers are unverified personal customers (see create_unverified_customer) and
+    cannot hold a Dwolla balance. End-user beneficial ownership is not collected here.
     SSN and full EIN are returned only in this payload for the API call.
     Callers must not persist them.
     """
@@ -333,6 +342,11 @@ def verify_micro_deposits(fs_url, amount1="0.01", amount2="0.02"):
 
 
 def create_unverified_customer(first, last, email):
+    """Personal unverified Dwolla customer for a borrower bank-to-bank debit.
+
+    Unverified customers can send and receive ACH. They cannot hold a Dwolla
+    balance, so this app does not show a balance wallet for them.
+    """
     body = {
         "firstName": (first or "Borrower")[:50],
         "lastName": (last or "Account")[:50],

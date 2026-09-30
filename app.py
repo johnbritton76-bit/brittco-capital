@@ -1828,6 +1828,20 @@ def ensure_dwolla_schema(conn=None):
         for col, spec in cols:
             if col not in existing:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, spec))
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS dwolla_terms_acceptances (
+            id INTEGER PRIMARY KEY,
+            party_type TEXT,
+            party_id INTEGER,
+            accepted_at TEXT,
+            tos_url TEXT,
+            privacy_url TEXT,
+            terms_version TEXT,
+            accepted_by TEXT,
+            accepted_role TEXT,
+            context TEXT
+        )"""
+    )
     if conn is None:
         c.commit()
 
@@ -5055,26 +5069,21 @@ def save_borrower_from_form(f, bid=None, existing=None):
                 db().execute("UPDATE borrowers SET ein=? WHERE id=?", (ein, row[0]))
     except sqlite3.Error:
         pass
+    bank_err = None
     try:
         target = bid
         if not target:
             row = db().execute("SELECT id FROM borrowers ORDER BY id DESC LIMIT 1").fetchone()
             target = row[0] if row else None
-        if target and (f.get("bank_name") or f.get("bank_routing") or f.get("bank_account")):
-            db().execute(
-                """UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?,
-                   bank_account_type=?, ach_authorized=? WHERE id=?""",
-                (
-                    f.get("bank_name"),
-                    f.get("bank_routing"),
-                    f.get("bank_account"),
-                    f.get("bank_account_type") or "Checking",
-                    1 if f.get("ach_authorized") else row_val(existing, "ach_authorized") or 0,
-                    target,
-                ),
+        if target and (f.get("bank_name") or f.get("bank_routing") or f.get("bank_account") or f.get("ach_authorized")):
+            bank_err = save_bank_with_dwolla_terms(
+                f,
+                target,
+                existing,
+                "staff_profile" if session.get("staff_id") else "borrower_profile",
             )
     except sqlite3.Error:
-        pass
+        bank_err = None
     try:
         status = (f.get("marital_status") or "").strip()
         sname = (f.get("spouse_name") or "").strip()
@@ -5093,6 +5102,7 @@ def save_borrower_from_form(f, bid=None, existing=None):
             )
     except sqlite3.Error:
         pass
+    return bank_err
 
 
 def save_investor_profile(f, iid, existing=None):
@@ -6837,13 +6847,22 @@ def tx_public_apply():
         else:
             existing = db().execute("SELECT * FROM borrowers WHERE email=?", (email,)).fetchone()
             if existing:
-                save_borrower_from_form(f, bid=existing["id"], existing=existing)
+                bank_err = save_borrower_from_form(f, bid=existing["id"], existing=existing)
                 bid = existing["id"]
             else:
-                save_borrower_from_form(f)
+                bank_err = save_borrower_from_form(f)
                 row = db().execute("SELECT id FROM borrowers WHERE email=?", (email,)).fetchone()
                 bid = row["id"] if row else None
             db().commit()
+            if bank_err:
+                b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone() if bid else None
+                return render_template(
+                    "tx_apply.html",
+                    done=False,
+                    error=bank_err,
+                    b=b,
+                    dwolla_terms=latest_dwolla_terms("borrower", bid) if bid else None,
+                )
             link = public_base() + (url_for("borrower_detail", bid=bid) if bid else url_for("borrowers"))
             body = (
                 f"Borrower application submitted from the rate-sheet link.\n\n"
@@ -7406,8 +7425,10 @@ def borrower_invite():
 @staff_required
 def borrower_new():
     if request.method == "POST":
-        save_borrower_from_form(request.form)
+        bank_err = save_borrower_from_form(request.form)
         db().commit()
+        if bank_err:
+            session["last_invite_note"] = bank_err
         return redirect(url_for("borrowers"))
     return render_template(
         "borrower_form.html", title="New borrower", nav="newborrower", b=None
@@ -7470,6 +7491,7 @@ def borrower_detail(bid):
                WHERE t.borrower_id=? ORDER BY t.id DESC""",
             (bid,),
         ).fetchall(),
+        dwolla_terms=latest_dwolla_terms("borrower", bid),
         form_defs=load_form_defs(),
         packets=db().execute(
             "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (bid,)
@@ -8230,18 +8252,15 @@ def form_pdf(token):
 @staff_required
 def borrower_ach(bid):
     f = request.form
-    db().execute(
-        """UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?,
-           bank_account_type=?, ach_authorized=? WHERE id=?""",
-        (
-            f.get("bank_name"),
-            f.get("bank_routing"),
-            f.get("bank_account"),
-            f.get("bank_account_type"),
-            1 if f.get("ach_authorized") else 0,
-            bid,
-        ),
+    b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not b:
+        return redirect(url_for("borrowers"))
+    err = save_bank_with_dwolla_terms(
+        f, bid, b, "borrower_bank", force_terms=True, clear_auth=True
     )
+    if err:
+        session["last_invite_note"] = err
+        return redirect(url_for("borrower_detail", bid=bid))
     db().commit()
     if f.get("open_processor"):
         return redirect(os.environ.get("ACH_PORTAL_URL", "https://dashboard.dwolla.com"))
@@ -8277,14 +8296,20 @@ def borrower_edit(bid):
             except sqlite3.Error:
                 pass
         try:
-            save_borrower_from_form(request.form, bid=bid, existing=b)
+            bank_err = save_borrower_from_form(request.form, bid=bid, existing=b)
             db().commit()
+            if bank_err:
+                session["last_invite_note"] = bank_err
         except Exception:
             session["last_invite_note"] = "Profile saved the password, but another field on the form failed."
             return redirect(url_for("borrower_detail", bid=bid))
         return redirect(url_for("borrower_detail", bid=bid))
     return render_template(
-        "borrower_form.html", title="Edit borrower", nav="borrowers", b=b
+        "borrower_form.html",
+        title="Edit borrower",
+        nav="borrowers",
+        b=b,
+        dwolla_terms=latest_dwolla_terms("borrower", bid),
     )
 
 
@@ -8644,7 +8669,7 @@ def accept_invite(token):
                 missing=missing,
                 done=False,
             )
-        save_borrower_from_form(request.form, bid=b["id"], existing=b)
+        bank_err = save_borrower_from_form(request.form, bid=b["id"], existing=b)
         db().execute(
             "UPDATE invites SET used_at=? WHERE id=?",
             (datetime.now().isoformat(timespec="minutes"), inv["id"]),
@@ -8657,23 +8682,33 @@ def accept_invite(token):
         if ready:
             return render_template(
                 "invite_accept.html",
-                error=None,
+                error=bank_err,
                 inv=inv,
                 b=b,
                 missing=[],
+                dwolla_terms=latest_dwolla_terms("borrower", b["id"]),
                 done=True,
             )
         return render_template(
             "invite_accept.html",
-            error=None,
+            error=bank_err,
             inv=inv,
             b=b,
             missing=missing,
+            dwolla_terms=latest_dwolla_terms("borrower", b["id"]),
             msg="Saved. Please finish the highlighted fields.",
             done=False,
         )
     _ready, missing = profile_ready(b)
-    return render_template("invite_accept.html", error=None, inv=inv, b=b, missing=missing, done=False)
+    return render_template(
+        "invite_accept.html",
+        error=None,
+        inv=inv,
+        b=b,
+        missing=missing,
+        dwolla_terms=latest_dwolla_terms("borrower", b["id"]) if b else None,
+        done=False,
+    )
 
 
 @app.route("/portal/login", methods=["GET", "POST"])
@@ -8747,6 +8782,13 @@ def portal_home():
         help_q=help_q,
         help_a=help_a,
         help_examples=help_catalog(),
+        ach_history=db().execute(
+            """SELECT t.*, l.loan_number FROM ach_transfers t
+               LEFT JOIN loans l ON l.id=t.loan_id
+               WHERE t.borrower_id=? ORDER BY t.id DESC LIMIT 50""",
+            (b["id"],),
+        ).fetchall(),
+        dwolla_terms=latest_dwolla_terms("borrower", b["id"]),
     )
 
 
@@ -8754,8 +8796,10 @@ def portal_home():
 @borrower_required
 def portal_profile():
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
-    save_borrower_from_form(request.form, bid=b["id"], existing=b)
+    bank_err = save_borrower_from_form(request.form, bid=b["id"], existing=b)
     db().commit()
+    if bank_err:
+        return redirect(url_for("portal_home", msg=bank_err))
     return redirect(url_for("portal_home", msg="Profile saved"))
 
 
@@ -11550,6 +11594,15 @@ def investor_portal():
         help_q=help_q,
         help_a=help_a,
         feature_flash=request.args.get("feat"),
+        ach_history=db().execute(
+            """SELECT t.*, l.loan_number
+               FROM ach_transfers t
+               LEFT JOIN loans l ON l.id=t.loan_id
+               WHERE t.investor_id=?
+                  OR t.loan_id IN (SELECT loan_id FROM participations WHERE investor_id=?)
+               ORDER BY t.id DESC LIMIT 50""",
+            (inv["id"], inv["id"]),
+        ).fetchall(),
     )
 
 
@@ -11731,10 +11784,195 @@ def investor_source_remove(sid):
     return redirect(url_for("investor_portal"))
 
 
+DWOLLA_SERVICE_DISCLOSURE = (
+    "ACH payments are processed by Dwolla, Inc. Brittco Capital is the platform "
+    "requesting the debit. Funds move between bank accounts. This app does not "
+    "hold a Dwolla balance for borrowers or investors."
+)
+DWOLLA_TERMS_REQUIRED = (
+    "Check the box for Dwolla’s Terms of Service and Privacy Policy before linking this bank."
+)
 ACH_MANDATE_TEXT = (
     "Borrower must authorize ACH debits before a pull. "
     "Dwolla or Stripe is used only after that authorization is on the borrower profile."
 )
+
+
+def ach_status_bucket(status):
+    """Map processor text onto pending / processed / failed, leaving other labels as written."""
+    raw = (status or "").strip()
+    low = raw.lower()
+    if low in ("processed", "completed", "complete"):
+        return "processed"
+    if low in ("failed", "failure", "returned"):
+        return "failed"
+    if low in ("cancelled", "canceled"):
+        return "cancelled"
+    if low in ("pending", "created", "processing"):
+        return "pending"
+    if "fail" in low:
+        return "failed"
+    if "cancel" in low:
+        return "cancelled"
+    return raw or "pending"
+
+
+def ach_row_description(row):
+    notes = (row_val(row, "notes") or "").strip()
+    direction = (row_val(row, "direction") or "").strip()
+    if notes and not notes.lower().startswith("http"):
+        return notes
+    return direction or "ACH payment"
+
+
+@app.template_global("ach_description")
+def ach_description(row):
+    return ach_row_description(row)
+
+
+@app.template_global("ach_status_label")
+def ach_status_label(status):
+    return ach_status_bucket(status)
+
+
+@app.context_processor
+def inject_dwolla_legal_links():
+    try:
+        provider = payments_provider()
+    except Exception:
+        provider = "manual"
+    return {
+        "dwolla_tos_url": dwolla_client.DWOLLA_TOS_URL,
+        "dwolla_privacy_url": dwolla_client.DWOLLA_PRIVACY_URL,
+        "dwolla_service_disclosure": DWOLLA_SERVICE_DISCLOSURE,
+        "dwolla_terms_apply": provider != "stripe",
+    }
+
+
+def latest_dwolla_terms(party_type, party_id):
+    ensure_dwolla_schema()
+    if not party_id:
+        return None
+    return db().execute(
+        """SELECT * FROM dwolla_terms_acceptances
+           WHERE party_type=? AND party_id=?
+           ORDER BY id DESC LIMIT 1""",
+        (party_type, int(party_id)),
+    ).fetchone()
+
+
+def record_dwolla_terms_acceptance(party_type, party_id, accepted_by, accepted_role, context):
+    ensure_dwolla_schema()
+    db().execute(
+        """INSERT INTO dwolla_terms_acceptances
+           (party_type, party_id, accepted_at, tos_url, privacy_url, terms_version,
+            accepted_by, accepted_role, context)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            party_type,
+            int(party_id),
+            datetime.now().isoformat(timespec="minutes"),
+            dwolla_client.DWOLLA_TOS_URL,
+            dwolla_client.DWOLLA_PRIVACY_URL,
+            dwolla_client.DWOLLA_TERMS_VERSION,
+            (accepted_by or "")[:200],
+            accepted_role or "",
+            context or "",
+        ),
+    )
+
+
+def _terms_actor(fallback_name=""):
+    if session.get("staff_id"):
+        staff = current_staff()
+        who = (row_val(staff, "name") or row_val(staff, "email") or "Staff") if staff else "Staff"
+        return who, "staff"
+    if session.get("borrower_id"):
+        row = db().execute(
+            "SELECT name, email FROM borrowers WHERE id=?", (session["borrower_id"],)
+        ).fetchone()
+        who = row_val(row, "name") or row_val(row, "email") or fallback_name or "Borrower"
+        return who, "borrower"
+    return (fallback_name or "Borrower"), "borrower"
+
+
+def _bank_text(value):
+    return (value or "").strip()
+
+
+def borrower_bank_present(form):
+    return bool(
+        _bank_text(form.get("bank_name"))
+        or _bank_text(form.get("bank_routing"))
+        or _bank_text(form.get("bank_account"))
+    )
+
+
+def borrower_bank_changed(form, existing):
+    incoming_kind = _bank_text(form.get("bank_account_type")) or "Checking"
+    prior_kind = _bank_text(row_val(existing, "bank_account_type")) or "Checking"
+    pairs = (
+        (_bank_text(form.get("bank_name")), _bank_text(row_val(existing, "bank_name"))),
+        (_bank_text(form.get("bank_routing")), _bank_text(row_val(existing, "bank_routing"))),
+        (_bank_text(form.get("bank_account")), _bank_text(row_val(existing, "bank_account"))),
+        (incoming_kind, prior_kind),
+    )
+    return any(left != right for left, right in pairs)
+
+
+def _auth_flag(value):
+    return 1 if str(value or "").strip() not in ("", "0", "None", "False", "false") else 0
+
+
+def save_bank_with_dwolla_terms(form, bid, existing, context, force_terms=False, clear_auth=False, authorize=False):
+    """Write borrower bank fields and, when required, a Dwolla terms acceptance row.
+
+    Returns an error string and leaves the bank unchanged when a new link or
+    ACH authorization is missing the checkbox. Caller commits.
+    """
+    if not bid:
+        return None
+    linking = borrower_bank_present(form) or bool(authorize)
+    if not linking and not clear_auth:
+        return None
+    if payments_provider() == "stripe":
+        force_terms = False
+    changed = borrower_bank_changed(form, existing) if borrower_bank_present(form) or authorize else False
+    old_auth = _auth_flag(row_val(existing, "ach_authorized"))
+    if authorize:
+        auth_value = 1
+    elif clear_auth:
+        auth_value = 1 if form.get("ach_authorized") else 0
+    else:
+        auth_value = 1 if form.get("ach_authorized") or old_auth else 0
+    turning_on = bool(auth_value) and not old_auth
+    accepted = (form.get("dwolla_terms") or "") == "1"
+    prior = latest_dwolla_terms("borrower", bid)
+    needs = bool(linking and payments_provider() != "stripe" and (force_terms or changed or turning_on))
+    if needs and not accepted:
+        return DWOLLA_TERMS_REQUIRED
+    should_write = bool(clear_auth or changed or turning_on or authorize or (accepted and not prior))
+    if should_write:
+        db().execute(
+            """UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?,
+               bank_account_type=?, ach_authorized=? WHERE id=?""",
+            (
+                form.get("bank_name"),
+                form.get("bank_routing"),
+                form.get("bank_account"),
+                form.get("bank_account_type") or "Checking",
+                auth_value,
+                bid,
+            ),
+        )
+    version_changed = prior and row_val(prior, "terms_version") != dwolla_client.DWOLLA_TERMS_VERSION
+    if accepted and (needs or not prior or version_changed):
+        who, role = _terms_actor(form.get("signed_name") or "")
+        if context == "ach_auth":
+            who = _bank_text(form.get("signed_name")) or who or "Borrower"
+            role = "borrower"
+        record_dwolla_terms_acceptance("borrower", bid, who, role, context)
+    return None
 # Borrower pulls are unverified-bank to verified-bank. Dwolla marks the transfer
 # we stored as customer_transfer_completed. customer_bank_transfer_* is a later
 # leg and carries a different transfer id (follow funding-transfer to match).
@@ -12171,6 +12409,11 @@ def ensure_borrower_dwolla_source(borrower):
         return None, "Add routing and account on the borrower profile first."
     if not row_val(borrower, "ach_authorized"):
         return None, "Borrower must have ACH authorized on their profile."
+    if not latest_dwolla_terms("borrower", borrower["id"]):
+        return None, (
+            "Record acceptance of Dwolla’s Terms of Service and Privacy Policy "
+            "on the borrower bank form before creating a Dwolla customer."
+        )
     email = (row_val(borrower, "email") or "").strip().lower() or ("borrower%s@example.com" % borrower["id"])
     cust = (row_val(borrower, "dwolla_customer_url") or "").strip()
     if not cust:
@@ -12578,6 +12821,10 @@ def ach_auth_pdf(b, loan, data):
         "",
         "I authorize Brittco Capital Inc to debit the bank account above for the amount and schedule shown.",
         "I understand I may stop this authorization by written notice to Brittco before the next debit.",
+        "ACH payments are processed by Dwolla, Inc. Brittco Capital is the platform requesting the debit.",
+        "Accepted Dwolla Terms of Service: %s" % (data.get("dwolla_tos_url") or dwolla_client.DWOLLA_TOS_URL),
+        "Accepted Dwolla Privacy Policy: %s" % (data.get("dwolla_privacy_url") or dwolla_client.DWOLLA_PRIVACY_URL),
+        "Terms version: %s" % (data.get("dwolla_terms_version") or dwolla_client.DWOLLA_TERMS_VERSION),
         "Signed name: %s" % (data.get("signed_name") or ""),
         "Signed on: %s" % (data.get("signed_at") or ""),
     ]
@@ -12884,25 +13131,31 @@ def ach_auth_fill(token):
                 loan=loan,
                 b=b,
             )
-        if not request.form.get("agree"):
+        if not (request.form.get("dwolla_terms") or request.form.get("agree")):
             return render_template(
                 "ach_auth.html",
-                error="Check the authorization box to continue.",
+                error="Check the Dwolla Terms of Service and Privacy Policy box to continue.",
                 packet=row,
                 data=data,
                 loan=loan,
                 b=b,
             )
-        db().execute(
-            "UPDATE borrowers SET bank_name=?, bank_routing=?, bank_account=?, bank_account_type=?, ach_authorized=1 WHERE id=?",
-            (
-                data.get("bank_name"),
-                data.get("bank_routing"),
-                data.get("bank_account"),
-                data.get("bank_account_type") or "Checking",
-                b["id"],
-            ),
+        bank_err = save_bank_with_dwolla_terms(
+            request.form, b["id"], b, "ach_auth", force_terms=True, authorize=True
         )
+        if bank_err:
+            return render_template(
+                "ach_auth.html",
+                error=bank_err,
+                packet=row,
+                data=data,
+                loan=loan,
+                b=b,
+            )
+        data["dwolla_tos_url"] = dwolla_client.DWOLLA_TOS_URL
+        data["dwolla_privacy_url"] = dwolla_client.DWOLLA_PRIVACY_URL
+        data["dwolla_terms_version"] = dwolla_client.DWOLLA_TERMS_VERSION
+        data["dwolla_terms_accepted_at"] = data.get("signed_at") or ""
         db().execute(
             "UPDATE form_packets SET payload=?, status=?, completed_at=? WHERE id=?",
             (json.dumps(data), "Signed", datetime.now().isoformat(timespec="minutes"), row["id"]),
