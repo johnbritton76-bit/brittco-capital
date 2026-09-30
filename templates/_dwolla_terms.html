@@ -1,0 +1,21 @@
+<div class="span-2" id="dwolla-terms">
+  <p class="hint">{{ dwolla_service_disclosure }}</p>
+  <label>
+    <input type="checkbox" name="dwolla_terms" value="1">
+    {% if dwolla_terms_on_behalf %}
+    By checking this box I confirm this borrower agrees to our partner Dwolla’s
+    {% else %}
+    By checking this box you agree to Brittco Capital’s ACH authorization and to our partner Dwolla’s
+    {% endif %}
+    <a href="{{ dwolla_tos_url }}" target="_blank" rel="noopener">Terms of Service</a>
+    and
+    <a href="{{ dwolla_privacy_url }}" target="_blank" rel="noopener">Privacy Policy</a>.
+  </label>
+  {% if dwolla_terms %}
+  <p class="hint">
+    On file {{ dwolla_terms.accepted_at }}
+    · {{ dwolla_terms.accepted_by }} ({{ dwolla_terms.accepted_role }})
+    · {{ dwolla_terms.terms_version }}
+  </p>
+  {% endif %}
+</div>

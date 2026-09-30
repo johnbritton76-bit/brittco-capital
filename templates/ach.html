@@ -16,6 +16,9 @@
 <p class="hint">No live ACH keys for the selected provider. Collections are recorded manually until the env keys are set.</p>
 {% endif %}
 <p class="hint"><strong>Mandate reminder:</strong> {{ mandate_text }}</p>
+{% if payments_provider != 'stripe' %}
+<p class="hint" id="dwolla-service-disclosure">{{ dwolla_service_disclosure }} Link the borrower bank and record Dwolla terms before a customer is created. <a href="{{ url_for('dwolla_setup') }}">Production review notes</a>.</p>
+{% endif %}
 {% if payments_provider == 'dwolla' %}
 <p class="hint">
   Sandbox bank: routing <code>222222226</code>, any account number.
@@ -98,18 +101,18 @@
   <h3>ACH log</h3>
   <table class="table">
     <tr>
-      <th>When</th><th>Direction</th><th>Party</th><th>Loan</th><th>Amount</th>
+      <th>Date</th><th>Description</th><th>Party</th><th>Loan</th><th>Amount</th>
       <th>Vendor</th><th>Status</th><th>Processor ref</th><th>Last event</th>
     </tr>
     {% for t in transfers %}
     <tr>
       <td>{{ t.created_at }}</td>
-      <td>{{ t.direction or "—" }}</td>
+      <td>{{ ach_description(t) }}</td>
       <td>{{ t.borrower_name or t.investor_name or "—" }}</td>
       <td>{{ t.loan_number or "—" }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
       <td>{{ t.vendor or "—" }}</td>
-      <td>{{ t.status }}</td>
+      <td>{{ ach_status_label(t.status) }}</td>
       <td>
         {% set ref = t.provider_ref or t.notes or '' %}
         {% if ref %}

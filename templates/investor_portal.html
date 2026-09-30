@@ -167,6 +167,27 @@
     </table>
   </div>
   {% endfor %}
+
+  <div class="card" id="ach-history" style="margin-top:14px">
+    <h3>ACH payment history</h3>
+    <p class="hint">Loan ACH activity on deals you fund, plus any payout rows logged for you. Date, amount, description, and status (pending, processed, or failed).</p>
+    {% if ach_history %}
+    <table class="table">
+      <tr><th>Date</th><th>Loan</th><th>Description</th><th>Amount</th><th>Status</th></tr>
+      {% for t in ach_history %}
+      <tr>
+        <td>{{ t.created_at }}</td>
+        <td>{{ t.loan_number or "—" }}</td>
+        <td>{{ ach_description(t) }}</td>
+        <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
+        <td>{{ ach_status_label(t.status) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="hint">No ACH payments yet on your loans.</p>
+    {% endif %}
+  </div>
 </main>
 </body>
 </html>

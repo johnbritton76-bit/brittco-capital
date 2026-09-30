@@ -192,20 +192,26 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     <div class="span-2">
       <label><input type="checkbox" name="ach_authorized" value="1" {% if b.ach_authorized %}checked{% endif %}> Borrower authorized ACH drafts</label>
     </div>
+    {% if dwolla_terms_apply %}
+    {% with dwolla_terms_on_behalf=True %}
+    {% include "_dwolla_terms.html" %}
+    {% endwith %}
+    {% endif %}
     <div class="span-2">
-      <button class="btn ghost" type="submit">Save bank details</button>
-      <button class="btn" type="submit" name="open_processor" value="1">Save and open ACH scheduler</button>
+      <button class="btn" type="submit">Agree and Continue</button>
+      <button class="btn ghost" type="submit" name="open_processor" value="1">Agree and open ACH scheduler</button>
     </div>
   </form>
   {% if ach_rows %}
   <table class="table" style="margin-top:12px">
-    <tr><th>When</th><th>Loan</th><th>Amount</th><th>Status</th></tr>
+    <tr><th>Date</th><th>Loan</th><th>Description</th><th>Amount</th><th>Status</th></tr>
     {% for t in ach_rows %}
     <tr>
       <td>{{ t.created_at }}</td>
       <td>{{ t.loan_number or "—" }}</td>
+      <td>{{ ach_description(t) }}</td>
       <td>${{ "{:,.2f}".format(t.amount or 0) }}</td>
-      <td>{{ t.status }}</td>
+      <td>{{ ach_status_label(t.status) }}</td>
     </tr>
     {% endfor %}
   </table>
