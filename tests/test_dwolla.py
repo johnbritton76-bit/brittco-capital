@@ -609,7 +609,12 @@ def test_ach_page_and_one_time_investor_passwords():
     if loan:
         detail = client.get("/loans/%s" % loan["id"])
         assert detail.status_code == 200
-        assert "Recurring ACH plan" in detail.get_data(as_text=True)
+        page = detail.get_data(as_text=True)
+        assert "Collect ACH payment" in page
+        assert 'id="collect-ach"' in page
+        tag_at = page.find('id="collect-ach"')
+        tag = page[page.rfind("<details", 0, tag_at): page.find(">", tag_at)]
+        assert "open" not in tag
     created = client.post("/tools/test-investors", follow_redirects=True)
     body = created.get_data(as_text=True)
     assert created.status_code == 200
@@ -618,3 +623,218 @@ def test_ach_page_and_one_time_investor_passwords():
     assert "One-time password" in body
     again = client.get("/tools")
     assert "sandbox.investor.a@example.com" not in again.get_data(as_text=True)
+
+
+def _staff_client():
+    os.environ["PLATFORM_MODE"] = "brittco_existing"
+    os.environ.pop("DWOLLA_KEY", None)
+    os.environ.pop("DWOLLA_SECRET", None)
+    os.environ.pop("STRIPE_SECRET_KEY", None)
+    os.environ.pop("PAYMENTS_PROVIDER", None)
+    client = brittco.app.test_client()
+    client.post(
+        "/login",
+        data={"email": "admin@brittcocapital.com", "password": "brittco"},
+        follow_redirects=True,
+    )
+    return client
+
+
+def _loan_ready_for_ach(number):
+    with brittco.app.app_context():
+        borrower = brittco.db().execute("SELECT id FROM borrowers ORDER BY id LIMIT 1").fetchone()
+        brittco.db().execute(
+            """UPDATE borrowers
+               SET ach_authorized=1, bank_name=?, bank_routing=?, bank_account=?
+               WHERE id=?""",
+            ("Test Bank", "110000000", "000123456789", borrower["id"]),
+        )
+        cur = brittco.db().execute(
+            """INSERT INTO loans
+               (borrower_id, loan_number, current_balance, original_principal, rate, status, maturity_date, payment_amount)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (borrower["id"], number, 10000, 10000, 12, "Active", "2027-06-01", 125),
+        )
+        brittco.db().commit()
+        return cur.lastrowid
+
+
+def test_schedule_count_and_stop_stay_in_sync():
+    assert "customer_transfer_completed" in brittco.DWOLLA_SUCCESS_TOPICS
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-03-01", "", 1, 6, "count")
+    assert err is None
+    assert day == 1
+    assert count == 6
+    assert end == "2026-08-01"
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-04-01", "2026-08-01", 1, 6, "count")
+    assert end == "2026-09-01"
+    assert count == 6
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-03-01", "", 15, 3, "count")
+    assert end == "2026-05-15"
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-01-15", "2026-04-01", 1, "", "end")
+    assert err is None
+    assert count == 3
+    assert end == "2026-04-01"
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-02-01", "2026-04-01", 1, "9", "end")
+    assert count == 3
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-03-01", "2026-04-01", 1, "9", "end")
+    assert count == 2
+    start, end, day, count, err = brittco.resolve_ach_schedule("2026-01-20", "2026-01-31", 15, "", "end")
+    assert err
+    assert brittco.ach_count_through("2026-01-01", "2026-01-20", 15) == 1
+
+
+def test_recurring_plan_saves_synced_count_and_keeps_active():
+    lid = _loan_ready_for_ach("ACH-RECUR-1")
+    client = _staff_client()
+    saved = client.post(
+        "/loans/%s/ach-plan" % lid,
+        data={
+            "kind": "recurring",
+            "amount": "100.00",
+            "day_of_month": "1",
+            "start_on": "2026-03-01",
+            "end_on": "",
+            "payment_count": "6",
+            "schedule_driver": "count",
+            "note": "six pulls",
+        },
+        follow_redirects=True,
+    )
+    assert saved.status_code == 200
+    page = saved.get_data(as_text=True)
+    assert "Active recurring plan" in page
+    assert "6" in page
+    with brittco.app.app_context():
+        plan = brittco.db().execute(
+            "SELECT * FROM loan_ach_plans WHERE loan_id=? AND status='Active'", (lid,)
+        ).fetchone()
+        assert plan["kind"] == "recurring"
+        assert plan["payment_count"] == 6
+        assert plan["start_on"] == "2026-03-01"
+        assert plan["end_on"] == "2026-08-01"
+        assert plan["day_of_month"] == 1
+    moved = client.post(
+        "/loans/%s/ach-plan" % lid,
+        data={
+            "kind": "recurring",
+            "amount": "100.00",
+            "day_of_month": "1",
+            "start_on": "2026-01-15",
+            "end_on": "2026-04-10",
+            "payment_count": "99",
+            "schedule_driver": "end",
+            "note": "through april",
+        },
+        follow_redirects=True,
+    )
+    assert moved.status_code == 200
+    with brittco.app.app_context():
+        active = brittco.db().execute(
+            "SELECT * FROM loan_ach_plans WHERE loan_id=? AND status='Active'", (lid,)
+        ).fetchall()
+        assert len(active) == 1
+        assert active[0]["payment_count"] == 3
+        assert active[0]["end_on"] == "2026-04-10"
+        assert active[0]["start_on"] == "2026-01-15"
+        assert active[0]["kind"] == "recurring"
+
+
+def test_one_time_collects_and_does_not_leave_active_plan():
+    lid = _loan_ready_for_ach("ACH-ONCE-1")
+    with brittco.app.app_context():
+        brittco.ensure_ach_plans()
+        brittco.db().execute(
+            """INSERT INTO loan_ach_plans
+               (loan_id, amount, day_of_month, start_on, end_on, status, created_at, note)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (lid, 80, 1, "2026-01-01", "2026-12-01", "Active", "2026-01-01T00:00", "legacy open plan"),
+        )
+        brittco.db().commit()
+        before = brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM payments WHERE loan_id=?", (lid,)
+        ).fetchone()["c"]
+    client = _staff_client()
+    detail = client.get("/loans/%s" % lid)
+    html = detail.get_data(as_text=True)
+    assert "Active recurring plan" in html
+    assert "Collect ACH payment" in html
+    tag_at = html.find('id="collect-ach"')
+    tag = html[html.rfind("<details", 0, tag_at): html.find(">", tag_at)]
+    assert "open" not in tag
+    assert "One-time payment" in html
+    assert "Number of payments" in html
+    with patch.object(brittco, "collect_ach_once", return_value=(False, "bank down")):
+        blocked = client.post(
+            "/loans/%s/ach-plan" % lid,
+            data={"kind": "single", "amount": "40.00"},
+            follow_redirects=True,
+        )
+    assert "did not send" in blocked.get_data(as_text=True)
+    with brittco.app.app_context():
+        still = brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM loan_ach_plans WHERE loan_id=? AND status='Active'",
+            (lid,),
+        ).fetchone()["c"]
+        assert still == 1
+    collected = client.post(
+        "/loans/%s/ach-plan" % lid,
+        data={"kind": "single", "amount": "40.00", "note": "single pull"},
+        follow_redirects=True,
+    )
+    body = collected.get_data(as_text=True)
+    assert "No open recurring plan" in body or "No recurring plan was left open" in body
+    assert "Active recurring plan" not in body
+    with brittco.app.app_context():
+        active = brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM loan_ach_plans WHERE loan_id=? AND status='Active'",
+            (lid,),
+        ).fetchone()["c"]
+        assert active == 0
+        latest = brittco.db().execute(
+            "SELECT * FROM loan_ach_plans WHERE loan_id=? ORDER BY id DESC LIMIT 1",
+            (lid,),
+        ).fetchone()
+        assert latest["kind"] == "single"
+        assert latest["status"] == "Collected"
+        assert latest["payment_count"] == 1
+        assert latest["start_on"] == latest["end_on"]
+        pays = brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM payments WHERE loan_id=?", (lid,)
+        ).fetchone()["c"]
+        assert pays == before + 1
+
+
+def test_approved_one_time_closes_after_collect():
+    lid = _loan_ready_for_ach("ACH-ONCE-2")
+    with brittco.app.app_context():
+        brittco.ensure_ach_plans()
+        brittco.db().execute(
+            """INSERT INTO loan_ach_plans
+               (loan_id, amount, day_of_month, start_on, end_on, status, created_at, note, kind, payment_count)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (lid, 55, 3, "2026-05-03", "2026-05-03", "Pending", "2026-05-01T00:00", "Signed ACH auth · one-time", "single", 1),
+        )
+        brittco.db().commit()
+    client = _staff_client()
+    client.post("/loans/%s/ach-plan/approve" % lid, follow_redirects=True)
+    with brittco.app.app_context():
+        plan = brittco.db().execute(
+            "SELECT status, kind, start_on, end_on, payment_count FROM loan_ach_plans WHERE loan_id=?",
+            (lid,),
+        ).fetchone()
+        assert plan["status"] == "Active"
+        assert plan["kind"] == "single"
+        assert plan["start_on"] == plan["end_on"]
+        assert plan["payment_count"] == 1
+    client.post("/loans/%s/ach-collect" % lid, follow_redirects=True)
+    with brittco.app.app_context():
+        plan = brittco.db().execute(
+            "SELECT status FROM loan_ach_plans WHERE loan_id=?", (lid,)
+        ).fetchone()
+        assert plan["status"] == "Collected"
+        active = brittco.db().execute(
+            "SELECT COUNT(*) AS c FROM loan_ach_plans WHERE loan_id=? AND status='Active'",
+            (lid,),
+        ).fetchone()["c"]
+        assert active == 0
