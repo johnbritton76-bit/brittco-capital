@@ -7,6 +7,24 @@
   </div>
   <a class="btn" href="{{ url_for('loan_new') }}">Enter a loan</a>
 </div>
+{% if pending_closing_count %}
+<div class="card review-card" style="margin-bottom:16px">
+  <h3>Loan applications awaiting review</h3>
+  <div class="n">{{ pending_closing_count }}</div>
+  <p>A borrower signed and sent the application back. Open each one and approve it, or send it back for changes.</p>
+  <ul class="review-list">
+    {% for c in pending_closings %}
+    <li>
+      <a href="{{ url_for('closing_review', cid=c.id) }}">{{ c.borrower_name or "Borrower" }}</a>
+      {% if c.loan_type %} · {{ c.loan_type }}{% endif %}
+      {% if c.loan_amount %} · {{ c.loan_amount }}{% endif %}
+      · <a href="{{ url_for('closing_review', cid=c.id) }}">Review</a>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="hint"><a href="{{ url_for('admin_forms') }}">All loan applications</a></p>
+</div>
+{% endif %}
 <div class="card" style="margin-bottom:16px">
   <h3>Ask Brittco</h3>
   <p class="hint">Staff desk assistant. Uses this software’s rules. Does not change loans.</p>

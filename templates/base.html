@@ -21,7 +21,7 @@
       <a href="{{ url_for('loans') }}" class="{{ 'active' if nav=='loans' else '' }}">Loans</a>
       <a href="{{ url_for('investors') }}" class="{{ 'active' if nav=='investors' else '' }}">Investors</a>
       <a href="{{ url_for('accounting') }}" class="{{ 'active' if nav=='accounting' else '' }}">Accounting</a>
-      <a href="{{ url_for('admin_forms') }}" class="{{ 'active' if nav=='forms' else '' }}">Forms</a>
+      <a href="{{ url_for('admin_forms') }}" class="{{ 'active' if nav=='forms' else '' }}{% if pending_closing_count %} has-flag{% endif %}">Forms{% if pending_closing_count %} <span class="nav-count" title="Signed loan applications awaiting review">{{ pending_closing_count }}</span>{% endif %}</a>
       <a href="{{ url_for('staff_tools') }}" class="{{ 'active' if nav=='tools' else '' }}">Tools</a>
       {% if is_super %}
       <a href="{{ url_for('staff_desk') }}" class="{{ 'active' if nav=='staff' else '' }}">Staff</a>
@@ -42,6 +42,24 @@
         </form>
       </div>
       {% endfor %}
+    </div>
+    {% endif %}
+    {% if pending_closing_count %}
+    <div class="alert-bar review-alert">
+      <div class="alert-row">
+        <strong>{% if pending_closing_count == 1 %}1 signed loan application needs review{% else %}{{ pending_closing_count }} signed loan applications need review{% endif %}</strong>
+        <a href="{{ url_for('admin_forms') }}">Forms inbox</a>
+      </div>
+      {% if nav != 'dash' %}
+      {% for c in pending_closings %}
+      <div class="alert-row">
+        {{ c.borrower_name or "Borrower" }}
+        {% if c.loan_type %}· {{ c.loan_type }}{% endif %}
+        {% if c.loan_amount %}· {{ c.loan_amount }}{% endif %}
+        <a href="{{ url_for('closing_review', cid=c.id) }}">Review</a>
+      </div>
+      {% endfor %}
+      {% endif %}
     </div>
     {% endif %}
     {% if new_leads %}

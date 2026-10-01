@@ -40,12 +40,27 @@
   </form>
 </div>
 <div class="card">
+{% if pending_closing_count %}
+<p><span class="badge bad">{{ pending_closing_count }} awaiting review</span> Signed applications are highlighted. Open Review to approve or send changes.</p>
+{% endif %}
 <table class="table">
   <tr><th>Borrower</th><th>Status</th><th>Loan</th><th>Submitted</th><th></th></tr>
   {% for c in closings %}
-  <tr>
+  <tr class="{% if c.status == 'submitted' %}needs-review{% endif %}">
     <td>{{ c.borrower_name or "—" }}</td>
-    <td>{{ c.status }}</td>
+    <td>
+      {% if c.status == 'submitted' %}
+      <span class="badge bad">Needs review</span>
+      {% elif c.status == 'approved' %}
+      <span class="badge good">Approved</span>
+      {% elif c.status == 'changes_requested' %}
+      <span class="badge warn">Changes requested</span>
+      {% elif c.status == 'sent' %}
+      <span class="badge">Sent</span>
+      {% else %}
+      <span class="badge">{{ c.status or "—" }}</span>
+      {% endif %}
+    </td>
     <td>{{ c.loan_type }} · {{ c.loan_amount }}</td>
     <td>{{ c.submitted_at or c.created_at }}</td>
     <td><a class="btn" href="{{ url_for('closing_review', cid=c.id) }}">Review</a></td>

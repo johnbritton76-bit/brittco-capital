@@ -68,6 +68,9 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     <h2>{{ b.name }}</h2>
   </div>
 </div>
+{% set banner_borrower_id = b.id %}
+{% set banner_loan_id = none %}
+{% include "_closing_pending_banner.html" %}
 <div class="profile-actions">
   <a href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
   <a href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>

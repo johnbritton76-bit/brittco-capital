@@ -17,6 +17,9 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
     {% if loan.archived %}<p class="hint">This loan is archived. Accounting is unchanged.</p>{% endif %}
   </div>
 </div>
+{% set banner_borrower_id = loan.borrower_id %}
+{% set banner_loan_id = loan.id %}
+{% include "_closing_pending_banner.html" %}
 <div class="even-actions">
   {% if loan.archived %}
   <form method="post" action="{{ url_for('loan_restore', lid=loan.id) }}">
