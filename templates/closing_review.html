@@ -2,13 +2,13 @@
 {% block body %}
 <div class="top">
   <div>
-    <div class="tag">Missouri closing · {{ packet.status }}</div>
+    <div class="tag">Loan application · {{ packet.status }}</div>
     <h2>{{ borrower.name if borrower else "Borrower" }}</h2>
     <p class="hint">{{ summary }}</p>
   </div>
   <div>
     {% if packet.dot_filename %}
-    <a class="btn" href="{{ url_for('closing_deed_pdf', cid=packet.id) }}">Deed of Trust</a>
+    <a class="btn" href="{{ url_for('closing_deed_pdf', cid=packet.id) }}">{{ security_label }}</a>
     <a class="btn" href="{{ url_for('closing_note_pdf', cid=packet.id) }}">Note and guaranty</a>
     <a class="btn ghost" href="{{ url_for('closing_package_zip', cid=packet.id) }}">Download zip</a>
     {% endif %}

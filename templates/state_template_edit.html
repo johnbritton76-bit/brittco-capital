@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">{{ row.state_code }} · {{ row.instrument_type }}</div>
+    <h2>Edit document template</h2>
+    <p class="hint">Saving publishes a new version for this state and instrument. Use {{ '{{' }}token{{ '}}' }} merge fields such as borrower_legal_name, property_address, property_county, property_legal_description, note_principal, and guarantor_legal_name. Wrap spouse-only sentences in {{ '{{' }}#spouse{{ '}}' }} ... {{ '{{' }}/spouse{{ '}}' }}.</p>
+  </div>
+</div>
+<form method="post" class="card form-grid">
+  <div class="span-2"><label>Title</label><input name="title" value="{{ row.title }}"></div>
+  <div class="span-2"><label>Body</label><textarea name="body" rows="24">{{ row.body }}</textarea></div>
+  <div><button class="btn" type="submit">Save template</button></div>
+</form>
+<p><a href="{{ url_for('admin_forms') }}">Back to loan applications</a></p>
+{% endblock %}

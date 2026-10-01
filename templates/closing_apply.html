@@ -76,6 +76,19 @@
       <input name="spouse_signature_name" id="spouse-typed" value="">
       <div class="esign" id="spouse-preview"></div>
     </div>
+    {% if needs_password %}
+    <div class="span-2">
+      <label>Choose your borrower portal password</label>
+      <input type="password" name="portal_password" autocomplete="new-password" minlength="8" required>
+      <label>Confirm portal password</label>
+      <input type="password" name="portal_password_confirm" autocomplete="new-password" minlength="8" required>
+      <p class="hint">Use this password later at the borrower portal. It is stored for that login.</p>
+    </div>
+    {% else %}
+    <div class="span-2">
+      <p class="hint">You already have a borrower portal password. Leave it as it is. This application will not change it.</p>
+    </div>
+    {% endif %}
     <div class="span-2"><button class="btn" type="submit">Submit and sign</button></div>
   </form>
   {% endif %}

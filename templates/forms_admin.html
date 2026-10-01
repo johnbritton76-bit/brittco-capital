@@ -3,11 +3,42 @@
 <div class="top">
   <div>
     <div class="tag">Administration</div>
-    <h2>Closing applications</h2>
+    <h2>Loan applications</h2>
   </div>
 </div>
 <p class="hint">{{ disclaimer }}</p>
-<p class="hint">Send a prefilled application from a borrower, deal, or loan. The old deed and note templates are no longer seeded. Completed copies already on a borrower file stay available there.</p>
+<p class="hint">Send a prefilled Loan Application from a borrower, deal, or loan. Missouri uses a deed of trust. Kansas uses a mortgage. Both include a note and personal guaranty. Completed copies already on a borrower file stay available there.</p>
+<div class="card">
+  <h3>State document templates</h3>
+  <table class="table">
+    <tr><th>State</th><th>Instrument</th><th>Title</th><th>Version</th><th></th></tr>
+    {% for row in state_templates %}
+    <tr>
+      <td>{{ row.state_code }}</td>
+      <td>{{ row.instrument_type }}</td>
+      <td>{{ row.title }}</td>
+      <td>{{ row.version }}</td>
+      <td><a href="{{ url_for('admin_state_template', tid=row.id) }}">Edit</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No state templates stored yet.</td></tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('admin_state_template_new') }}" class="form-grid" style="margin-top:12px">
+    <div><label>State code</label><input name="state_code" maxlength="2" placeholder="KS" required></div>
+    <div>
+      <label>Instrument</label>
+      <select name="instrument_type">
+        <option value="deed_of_trust">deed_of_trust</option>
+        <option value="mortgage">mortgage</option>
+        <option value="note_guaranty">note_guaranty</option>
+      </select>
+    </div>
+    <div class="span-2"><label>Title</label><input name="title" required></div>
+    <div class="span-2"><label>Body</label><textarea name="body" rows="6" required></textarea></div>
+    <div><button class="btn" type="submit">Save template</button></div>
+  </form>
+</div>
 <div class="card">
 <table class="table">
   <tr><th>Borrower</th><th>Status</th><th>Loan</th><th>Submitted</th><th></th></tr>
@@ -20,7 +51,7 @@
     <td><a class="btn" href="{{ url_for('closing_review', cid=c.id) }}">Review</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="5">No closing applications yet.</td></tr>
+  <tr><td colspan="5">No loan applications yet.</td></tr>
   {% endfor %}
 </table>
 </div>

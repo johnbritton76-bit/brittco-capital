@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Brittco Capital Inc — CRM + underwriting + borrower portal."""
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -8743,15 +8745,47 @@ def accept_invite(token):
     )
 
 
+def hash_portal_password(password):
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt), 120000
+    ).hex()
+    return f"pbkdf2${salt}${digest}"
+
+
+def portal_password_matches(stored, password):
+    stored = stored or ""
+    password = password or ""
+    if stored.startswith("pbkdf2$"):
+        parts = stored.split("$", 2)
+        if len(parts) != 3:
+            return False
+        _prefix, salt, digest = parts
+        try:
+            check = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"), bytes.fromhex(salt), 120000
+            ).hex()
+        except ValueError:
+            return False
+        return hmac.compare_digest(check, digest)
+    if len(stored) != len(password):
+        return False
+    return hmac.compare_digest(stored, password)
+
+
+def portal_password_is_set(stored):
+    """A blank value or the untouched system default still needs a borrower-chosen password."""
+    stored = (stored or "").strip()
+    return bool(stored) and stored != "borrower"
+
+
 @app.route("/portal/login", methods=["GET", "POST"])
 def portal_login():
     error = None
     if request.method == "POST":
-        row = db().execute(
-            "SELECT * FROM borrowers WHERE email=? AND password=?",
-            (request.form["email"].strip().lower(), request.form["password"]),
-        ).fetchone()
-        if row:
+        email = (request.form.get("email") or "").strip().lower()
+        row = db().execute("SELECT * FROM borrowers WHERE lower(email)=?", (email,)).fetchone()
+        if row and portal_password_matches(row["password"], request.form.get("password") or ""):
             session.clear()
             session["borrower_id"] = row["id"]
             return redirect(url_for("portal_home"))
@@ -14738,6 +14772,7 @@ def closing_defaults(deal=None, loan=None):
         "extension_rate": closing_packet.clean_num(spec.get("ext_rate") or 0),
         "loan_amount": closing_packet.clean_num(amount) if str(amount) != "" else "",
         "property": prop,
+        "property_state": closing_packet.state_from_text(prop) or "MO",
         "deal_id": deal["id"] if deal is not None else "",
         "loan_id": loan["id"] if loan is not None else "",
     }
@@ -14775,6 +14810,11 @@ def compose_closing_payload(borrower, deal, loan, form):
         prop = row_val(loan, "property_address")
     if not prop:
         prop = base.get("property") or ""
+    state_code = (
+        closing_packet.normalize_state(form.get("property_state"))
+        or closing_packet.state_from_text(prop)
+        or "MO"
+    )
     data = closing_packet.blank_payload()
     data.update({
         "loan_type": kind,
@@ -14794,14 +14834,24 @@ def compose_closing_payload(borrower, deal, loan, form):
         "signatory_title": "Borrower" if entity_type.lower() == "individual" else "Authorized signatory",
         "property": prop,
         "county": (notes.get("county") or base.get("county") or ""),
-        "state": "Missouri",
+        "state": closing_packet.state_name(state_code),
+        "state_code": state_code,
         "legal_description": notes.get("legal_description") or "",
         "guarantor_name": signatory,
         "guarantor_address": notice,
         "marital_status": row_val(borrower, "marital_status"),
         "spouse_name": row_val(borrower, "spouse_name"),
         "spouse_dob": row_val(borrower, "spouse_dob"),
-        "spouse_ssn": row_val(borrower, "spouse_ssn"),
+        "spouse_ssn": _masked_tax_id(row_val(borrower, "spouse_ssn")),
+        "borrower_phone": row_val(borrower, "phone"),
+        "borrower_email": row_val(borrower, "email"),
+        "borrower_ssn": _masked_tax_id(row_val(borrower, "ssn")),
+        "borrower_dob": row_val(borrower, "dob"),
+        "borrower_ein": row_val(borrower, "ein"),
+        "mailing_address": row_val(borrower, "address"),
+        "mailing_city": row_val(borrower, "city"),
+        "mailing_state": row_val(borrower, "state"),
+        "mailing_zip": row_val(borrower, "zip"),
         "lender_name": base.get("lender_name") or "Brittco Capital Inc",
         "lender_notice_address": base.get("lender_notice_address") or "",
         "lender_phone": base.get("lender_phone") or "",
@@ -14814,16 +14864,18 @@ def compose_closing_payload(borrower, deal, loan, form):
     return closing_packet.derive(data)
 
 
-def _write_closing_pdfs(row_id, borrower_id, deal_id, data, signatures):
-    logo = os.path.join(APP_DIR, "static", "logo.jpg")
-    deed = closing_packet.build_deed_pdf(data, signatures, logo)
-    note = closing_packet.build_note_pdf(data, signatures, logo)
+def _masked_tax_id(value):
+    masked = mask_ssn(value)
+    return "" if not value or masked == "—" else masked
+
+
+def _store_closing_pdfs(row_id, borrower_id, deal_id, rendered):
     deed_name = f"closing_{row_id}_deed.pdf"
     note_name = f"closing_{row_id}_note.pdf"
     now = datetime.now().isoformat(timespec="minutes")
     for filename, blob, label in (
-        (deed_name, deed, "Missouri Deed of Trust.pdf"),
-        (note_name, note, "Missouri Secured Promissory Note and Personal Guaranty.pdf"),
+        (deed_name, rendered["security_pdf"], rendered["security_title"] + ".pdf"),
+        (note_name, rendered["note_pdf"], rendered["note_title"] + ".pdf"),
     ):
         with open(os.path.join(UPLOAD_DIR, filename), "wb") as handle:
             handle.write(blob)
@@ -14831,9 +14883,77 @@ def _write_closing_pdfs(row_id, borrower_id, deal_id, data, signatures):
         db().execute(
             """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
                VALUES (?,?,?,?,?,?)""",
-            (deal_id, borrower_id, filename, label, "Missouri closing", now),
+            (deal_id, borrower_id, filename, label, "Loan application", now),
         )
     return deed_name, note_name
+
+
+def sync_borrower_from_application(borrower_id, data):
+    """Copy profile facts from a submitted loan application. Skip blanks, masks, and loan terms."""
+    row = db().execute("SELECT * FROM borrowers WHERE id=?", (borrower_id,)).fetchone()
+    if not row:
+        return
+    updates = {}
+
+    def put(column, value):
+        value = (value or "").strip()
+        if not value or "*" in value:
+            return
+        updates[column] = value
+
+    put("phone", data.get("borrower_phone"))
+    put("ssn", data.get("borrower_ssn"))
+    put("dob", data.get("borrower_dob"))
+    put("ein", data.get("borrower_ein"))
+    put("entity_type", data.get("borrower_entity_type"))
+    put("entity_name", data.get("borrower_legal_name"))
+    put("address", data.get("mailing_address"))
+    put("city", data.get("mailing_city"))
+    put("state", data.get("mailing_state"))
+    put("zip", data.get("mailing_zip"))
+    put("marital_status", data.get("marital_status"))
+    put("spouse_name", data.get("spouse_name"))
+    put("spouse_dob", data.get("spouse_dob"))
+    put("spouse_ssn", data.get("spouse_ssn"))
+    if (data.get("borrower_entity_type") or "").strip().lower() == "individual":
+        put("name", data.get("signatory_name") or data.get("borrower_legal_name"))
+    if not updates.get("address") and not (row_val(row, "address") or "").strip():
+        notice = (data.get("borrower_notice_address") or "").strip()
+        if notice:
+            updates["address"] = notice
+    email = (data.get("borrower_email") or "").strip().lower()
+    current_email = (row_val(row, "email") or "").strip().lower()
+    if email and email != current_email:
+        taken = db().execute(
+            "SELECT id FROM borrowers WHERE lower(email)=? AND id<>?",
+            (email, borrower_id),
+        ).fetchone()
+        if not taken:
+            updates["email"] = email
+    if not updates:
+        return
+    columns = ", ".join(f"{name}=?" for name in updates)
+    db().execute(
+        f"UPDATE borrowers SET {columns} WHERE id=?",
+        list(updates.values()) + [borrower_id],
+    )
+
+
+def _password_errors(borrower, form):
+    needs = not portal_password_is_set(row_val(borrower, "password") if borrower else "")
+    password = (form.get("portal_password") or "").strip()
+    confirm = (form.get("portal_password_confirm") or "").strip()
+    if not needs and not password and not confirm:
+        return []
+    if needs and not password:
+        return ["Portal password (at least 8 characters)"]
+    if not password and not confirm:
+        return []
+    if len(password) < 8:
+        return ["Portal password (at least 8 characters)"]
+    if password != confirm:
+        return ["Portal password confirmation"]
+    return []
 
 
 def _closing_row(cid):
@@ -14929,7 +15049,7 @@ def send_closing_application(bid):
             mailed = send_mail(borrower["email"], "Brittco Capital — sign your loan application", body)
         except Exception:
             mailed = False
-    note = f"Closing application link: {link}"
+    note = f"Loan application link: {link}"
     if mailed:
         note = f"Emailed to {borrower['email']}. " + note
     else:
@@ -14949,44 +15069,61 @@ def closing_apply(token):
     data = closing_packet.derive(closing_packet.load_json(row["payload"], {}))
     signatures = closing_packet.load_json(row["signatures"], {})
     editable = (row["status"] or "") in ("sent", "changes_requested")
+    borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
+    needs_password = not portal_password_is_set(row_val(borrower, "password") if borrower else "")
     errors = []
     if request.method == "POST" and editable:
         errors, data = closing_packet.submission_errors(data, request.form)
+        errors.extend(_password_errors(borrower, request.form))
         if not errors:
             ip, ua = _client_audit()
             signed_at = datetime.now().isoformat(timespec="seconds")
             signatures = closing_packet.build_signatures(data, request.form, signed_at, ip, ua)
-            deed_name, note_name = _write_closing_pdfs(
-                row["id"], row["borrower_id"], row["deal_id"], data, signatures
-            )
-            db().execute(
-                """UPDATE closing_applications
-                   SET payload=?, signatures=?, status=?, submitted_at=?, dot_filename=?, note_filename=?
-                   WHERE id=?""",
-                (
-                    json.dumps(data),
-                    json.dumps(signatures),
-                    "submitted",
-                    signed_at,
-                    deed_name,
-                    note_name,
-                    row["id"],
-                ),
-            )
-            db().commit()
-            borrower = db().execute("SELECT name FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
-            subject = f"Closing application signed — {(borrower['name'] if borrower else '')}"
-            body = (
-                f"{borrower['name'] if borrower else 'A borrower'} signed the Missouri closing application.\n\n"
-                f"Review it: {public_base()}{url_for('closing_review', cid=row['id'])}\n"
-            )
-            for email in staff_notify_list():
-                try:
-                    send_mail(email, subject, body)
-                except Exception:
-                    pass
-            row = db().execute("SELECT * FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
-            editable = False
+            logo = os.path.join(APP_DIR, "static", "logo.jpg")
+            rendered = closing_packet.render_closing_pdfs(data, signatures, db(), logo)
+            if rendered.get("error"):
+                errors.append(rendered["error"])
+            else:
+                data = rendered["data"]
+                deed_name, note_name = _store_closing_pdfs(
+                    row["id"], row["borrower_id"], row["deal_id"], rendered
+                )
+                sync_borrower_from_application(row["borrower_id"], data)
+                chosen = (request.form.get("portal_password") or "").strip()
+                if chosen:
+                    db().execute(
+                        "UPDATE borrowers SET password=? WHERE id=?",
+                        (hash_portal_password(chosen), row["borrower_id"]),
+                    )
+                stored = closing_packet.redact_tax_ids(data)
+                db().execute(
+                    """UPDATE closing_applications
+                       SET payload=?, signatures=?, status=?, submitted_at=?, dot_filename=?, note_filename=?
+                       WHERE id=?""",
+                    (
+                        json.dumps(stored),
+                        json.dumps(signatures),
+                        "submitted",
+                        signed_at,
+                        deed_name,
+                        note_name,
+                        row["id"],
+                    ),
+                )
+                db().commit()
+                subject = f"Loan application signed — {(borrower['name'] if borrower else '')}"
+                body = (
+                    f"{borrower['name'] if borrower else 'A borrower'} signed the loan application.\n\n"
+                    f"Review it: {public_base()}{url_for('closing_review', cid=row['id'])}\n"
+                )
+                for email in staff_notify_list():
+                    try:
+                        send_mail(email, subject, body)
+                    except Exception:
+                        pass
+                row = db().execute("SELECT * FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
+                editable = False
+                needs_password = False
     return render_template(
         "closing_apply.html",
         packet=row,
@@ -14996,10 +15133,11 @@ def closing_apply(token):
         errors=errors,
         fields=closing_packet.BORROWER_FIELDS,
         spouse_on=closing_packet.spouse_required(data),
-        perjury=closing_packet.PERJURY_NOTICE,
+        perjury=closing_packet.perjury_for(data),
         spouse_perjury=closing_packet.SPOUSE_PERJURY_NOTICE,
         summary=closing_packet.terms_summary(data),
         disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        needs_password=needs_password,
     )
 
 
@@ -15008,7 +15146,7 @@ def closing_apply(token):
 def closing_review(cid):
     row = _closing_row(cid)
     if not row:
-        return "Unknown closing application.", 404
+        return "Unknown loan application.", 404
     borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
     note = session.pop("last_invite_note", None)
     if request.method == "POST":
@@ -15043,7 +15181,7 @@ def closing_review(cid):
                     try:
                         send_mail(
                             borrower["email"],
-                            "Brittco Capital — please update your closing application",
+                            "Brittco Capital — please update your loan application",
                             f"Hello {borrower['name'] or ''},\n\n"
                             f"{review_note}\n\n"
                             f"Open the same secure link, update the application, and sign again:\n{link}\n",
@@ -15062,17 +15200,22 @@ def closing_review(cid):
                 if not title_email or not deed or not note_pdf:
                     session["last_invite_note"] = "Enter a title email. The PDFs must already be generated."
                 else:
-                    blob = closing_packet.package_zip(deed, note_pdf)
+                    fresh_data = closing_packet.load_json(fresh["payload"], {})
+                    code = closing_packet.resolve_state_code(fresh_data)
+                    security_type = fresh_data.get("security_instrument") or ""
+                    security_name, note_name = closing_packet.package_names(code, security_type)
+                    blob = closing_packet.package_zip(deed, note_pdf, security_name, note_name)
+                    label = closing_packet.security_label(code)
                     sent = False
                     try:
                         sent = send_mail(
                             title_email,
-                            f"Brittco closing package — {row_val(borrower, 'name')}",
-                            "Missouri deed of trust and secured note with personal guaranty are attached.\n\n"
+                            f"Brittco loan application package — {row_val(borrower, 'name')}",
+                            f"{label} and secured note with personal guaranty are attached.\n\n"
                             + closing_packet.ADMIN_DISCLAIMER
                             + "\n",
                             attachment=blob,
-                            attachment_name=f"Brittco-MO-closing-{cid}.zip",
+                            attachment_name=f"Brittco-{code or 'loan'}-application-{cid}.zip",
                         )
                     except Exception:
                         sent = False
@@ -15089,9 +15232,10 @@ def closing_review(cid):
         return redirect(url_for("closing_review", cid=cid))
     data = closing_packet.load_json(row["payload"], {})
     signatures = closing_packet.load_json(row["signatures"], {})
+    code = closing_packet.resolve_state_code(data)
     return render_template(
         "closing_review.html",
-        title="Closing application",
+        title="Loan application",
         nav="forms",
         packet=row,
         borrower=borrower,
@@ -15099,6 +15243,7 @@ def closing_review(cid):
         signatures=signatures,
         summary=closing_packet.terms_summary(data) if data else "",
         disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        security_label=closing_packet.security_label(code),
         flash=note,
     )
 
@@ -15108,11 +15253,15 @@ def closing_review(cid):
 def closing_deed_pdf(cid):
     row = _closing_row(cid)
     if not row:
-        return "Unknown closing application.", 404
+        return "Unknown loan application.", 404
     blob = _closing_bytes(row, "deed")
     if not blob:
-        return "The deed is generated when the borrower submits.", 404
-    return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=False, download_name="Missouri-Deed-of-Trust.pdf")
+        return "The security instrument is generated when the borrower submits.", 404
+    data = closing_packet.load_json(row["payload"], {})
+    code = closing_packet.resolve_state_code(data)
+    security_type = data.get("security_instrument") or ""
+    download_name, _note_name = closing_packet.package_names(code, security_type)
+    return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=False, download_name=download_name)
 
 
 @app.route("/admin/closings/<int:cid>/note.pdf")
@@ -15120,15 +15269,18 @@ def closing_deed_pdf(cid):
 def closing_note_pdf(cid):
     row = _closing_row(cid)
     if not row:
-        return "Unknown closing application.", 404
+        return "Unknown loan application.", 404
     blob = _closing_bytes(row, "note")
     if not blob:
         return "The note is generated when the borrower submits.", 404
+    data = closing_packet.load_json(row["payload"], {})
+    code = closing_packet.resolve_state_code(data)
+    _security_name, note_name = closing_packet.package_names(code, data.get("security_instrument") or "")
     return send_file(
         BytesIO(blob),
         mimetype="application/pdf",
         as_attachment=False,
-        download_name="Missouri-Note-and-Guaranty.pdf",
+        download_name=note_name,
     )
 
 
@@ -15137,17 +15289,20 @@ def closing_note_pdf(cid):
 def closing_package_zip(cid):
     row = _closing_row(cid)
     if not row:
-        return "Unknown closing application.", 404
+        return "Unknown loan application.", 404
     deed = _closing_bytes(row, "deed")
     note_pdf = _closing_bytes(row, "note")
     if not deed or not note_pdf:
         return "The package is generated when the borrower submits.", 404
-    blob = closing_packet.package_zip(deed, note_pdf)
+    data = closing_packet.load_json(row["payload"], {})
+    code = closing_packet.resolve_state_code(data)
+    security_name, note_name = closing_packet.package_names(code, data.get("security_instrument") or "")
+    blob = closing_packet.package_zip(deed, note_pdf, security_name, note_name)
     return send_file(
         BytesIO(blob),
         mimetype="application/zip",
         as_attachment=True,
-        download_name=f"Brittco-MO-closing-{cid}.zip",
+        download_name=f"Brittco-{code or 'loan'}-application-{cid}.zip",
     )
 
 
@@ -15161,15 +15316,66 @@ def admin_forms():
            LEFT JOIN borrowers b ON b.id = c.borrower_id
            ORDER BY c.id DESC LIMIT 100"""
     ).fetchall()
+    state_templates = db().execute(
+        """SELECT * FROM state_document_templates
+           WHERE active=1
+           ORDER BY state_code, instrument_type"""
+    ).fetchall()
     return render_template(
         "forms_admin.html",
-        title="Closing applications",
+        title="Loan applications",
         nav="forms",
         forms=load_form_defs(),
         closings=closings,
+        state_templates=state_templates,
         disclaimer=closing_packet.ADMIN_DISCLAIMER,
         saved=request.args.get("saved"),
         flash=session.pop("last_invite_note", None),
+    )
+
+
+@app.route("/admin/state-templates", methods=["POST"])
+@staff_required
+def admin_state_template_new():
+    closing_packet.ensure_schema(db())
+    code = closing_packet.normalize_state(request.form.get("state_code")) or (
+        request.form.get("state_code") or ""
+    ).strip().upper()
+    instrument = (request.form.get("instrument_type") or "").strip()
+    if instrument not in ("deed_of_trust", "mortgage", "note_guaranty") or len(code) != 2:
+        session["last_invite_note"] = "Use a two-letter state code and an instrument type."
+        return redirect(url_for("admin_forms"))
+    closing_packet.publish_template(
+        db(),
+        code,
+        instrument,
+        request.form.get("title") or instrument,
+        request.form.get("body") or "",
+    )
+    return redirect(url_for("admin_forms", saved=1))
+
+
+@app.route("/admin/state-templates/<int:tid>", methods=["GET", "POST"])
+@staff_required
+def admin_state_template(tid):
+    closing_packet.ensure_schema(db())
+    row = db().execute("SELECT * FROM state_document_templates WHERE id=?", (tid,)).fetchone()
+    if not row:
+        return "Unknown document template.", 404
+    if request.method == "POST":
+        closing_packet.publish_template(
+            db(),
+            row["state_code"],
+            row["instrument_type"],
+            request.form.get("title") or row["title"],
+            request.form.get("body") if request.form.get("body") is not None else row["body"],
+        )
+        return redirect(url_for("admin_forms", saved=1))
+    return render_template(
+        "state_template_edit.html",
+        title="Edit document template",
+        nav="forms",
+        row=row,
     )
 
 
@@ -15178,7 +15384,7 @@ def admin_forms():
 def admin_form_edit(key):
     if key in FORM_HISTORICAL:
         session["last_invite_note"] = (
-            "That template is retired. Send a Missouri closing application from the borrower, deal, or loan. "
+            "That template is retired. Send a Loan Application from the borrower, deal, or loan. "
             "Forms already filled out stay on the borrower file."
         )
         return redirect(url_for("admin_forms"))

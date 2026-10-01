@@ -2,7 +2,7 @@
 
 The Deed of Trust and Secured Promissory Note templates are no longer seeded
 into the admin Forms screen. Copies already saved on a form packet stay
-readable. New Missouri closings use the e-sign application in closing_packet.py.
+readable. New closings use the loan application in closing_packet.py.
 """
 
 DEED_FIELDS = [
