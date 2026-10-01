@@ -15682,6 +15682,104 @@ def _closing_bytes(row, kind):
         return handle.read()
 
 
+def _sync_loan_dates_from_closing(loan_id, before, after):
+    """Keep the linked loan's start and maturity aligned with the closing documents."""
+    if not loan_id:
+        return
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (loan_id,)).fetchone()
+    if not loan:
+        return
+    start = row_val(loan, "start_date")
+    maturity = row_val(loan, "maturity_date")
+    nxt = row_val(loan, "next_payment_due")
+    if (before.get("effective_date") or "")[:10] != (after.get("effective_date") or "")[:10]:
+        start = (after.get("effective_date") or "")[:10]
+    if (before.get("maturity_date") or "")[:10] != (after.get("maturity_date") or "")[:10]:
+        new_mat = (after.get("maturity_date") or "")[:10]
+        freq = (row_val(loan, "payment_frequency") or "").strip().lower()
+        at_maturity = any(token in freq for token in ("maturity", "payoff", "due at"))
+        if at_maturity or not nxt or nxt == (before.get("maturity_date") or "")[:10]:
+            nxt = new_mat
+        maturity = new_mat
+    db().execute(
+        "UPDATE loans SET start_date=?, maturity_date=?, next_payment_due=? WHERE id=?",
+        (start, maturity, nxt, loan_id),
+    )
+
+
+def _update_closing_document_dates(row, submitted, staff_name):
+    """Replace generated closing PDFs with the same packet and new dates.
+
+    Returns a staff-facing message. Status, signatures, and approval are left as they are.
+    """
+    if (row["status"] or "") not in ("submitted", "approved"):
+        return "Update dates after the borrower has signed. This does not send the application back."
+    if not row["dot_filename"] or not row["note_filename"]:
+        return "The closing documents have to be generated before their dates can be changed."
+    data = closing_packet.load_json(row["payload"], {})
+    signatures = closing_packet.load_json(row["signatures"], {})
+    try:
+        updated, changes = closing_packet.apply_document_dates(data, submitted)
+    except closing_packet.DocumentDateError as exc:
+        return str(exc)
+    if not changes:
+        return "Those dates are already on the documents."
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    rendered = closing_packet.render_closing_pdfs(updated, signatures, db(), logo)
+    if not isinstance(rendered, dict) or rendered.get("error"):
+        message = ""
+        if isinstance(rendered, dict):
+            message = (rendered.get("error") or "").strip()
+        return message or "The closing documents could not be regenerated."
+    security_pdf = rendered.get("security_pdf") or b""
+    note_pdf = rendered.get("note_pdf") or b""
+    if not security_pdf.startswith(b"%PDF") or not note_pdf.startswith(b"%PDF"):
+        return "The closing documents could not be regenerated."
+    stored = closing_packet.redact_tax_ids(rendered["data"])
+    deed_name, note_name = _store_closing_pdfs(row["id"], row["borrower_id"], row["deal_id"], rendered)
+    db().execute(
+        """UPDATE closing_applications
+           SET payload=?, dot_filename=?, note_filename=?
+           WHERE id=?""",
+        (json.dumps(stored), deed_name, note_name, row["id"]),
+    )
+    _sync_loan_dates_from_closing(row["loan_id"], closing_packet.derive(data), stored)
+    now = datetime.now().isoformat(timespec="seconds")
+    db().execute(
+        """INSERT INTO closing_date_edits (closing_id, staff_name, changed_at, changes_json)
+           VALUES (?,?,?,?)""",
+        (row["id"], staff_name or "", now, json.dumps(changes)),
+    )
+    db().commit()
+    summary = "; ".join(f"{item['label']} is now {item['after_label']}" for item in changes)
+    logger.info(
+        "closing %s document dates updated by %s: %s",
+        row["id"],
+        staff_name or "",
+        summary,
+    )
+    note = f"Updated the closing documents. {summary}. The borrower does not sign again."
+    if row["title_sent_at"]:
+        note += " Email the zip to title again so they have the new dates."
+    return note
+
+
+def _closing_date_history(cid):
+    closing_packet.ensure_schema(db())
+    rows = db().execute(
+        "SELECT * FROM closing_date_edits WHERE closing_id=? ORDER BY id DESC LIMIT 8",
+        (cid,),
+    ).fetchall()
+    history = []
+    for edit in rows:
+        history.append({
+            "who": edit["staff_name"] or "Staff",
+            "when": edit["changed_at"] or "",
+            "changes": closing_packet.load_json(edit["changes_json"], []),
+        })
+    return history
+
+
 @app.route("/borrowers/<int:bid>/closing-application", methods=["POST"])
 @staff_required
 def send_closing_application(bid):
@@ -16146,6 +16244,12 @@ def closing_review(cid):
                     except Exception:
                         pass
                 session["last_invite_note"] = f"Sent back for changes. Link: {link}"
+        elif action == "dates":
+            current = closing_packet.load_json(row["payload"], {})
+            submitted = {}
+            for field in closing_packet.dates_on_documents(current, db()):
+                submitted[field["key"]] = request.form.get(field["key"])
+            session["last_invite_note"] = _update_closing_document_dates(row, submitted, staff_name)
         elif action == "title":
             fresh = _closing_row(cid)
             if fresh["status"] != "approved":
@@ -16190,6 +16294,7 @@ def closing_review(cid):
     data = closing_packet.load_json(row["payload"], {})
     signatures = closing_packet.load_json(row["signatures"], {})
     code = closing_packet.resolve_state_code(data)
+    show_dates = (row["status"] or "") in ("submitted", "approved") and row["dot_filename"] and row["note_filename"]
     return render_template(
         "closing_review.html",
         title="Loan application",
@@ -16201,6 +16306,8 @@ def closing_review(cid):
         summary=closing_packet.terms_summary(data) if data else "",
         disclaimer=closing_packet.ADMIN_DISCLAIMER,
         security_label=closing_packet.security_label(code),
+        date_fields=closing_packet.dates_on_documents(data, db()) if show_dates else [],
+        date_history=_closing_date_history(cid) if show_dates else [],
         flash=note,
     )
 
