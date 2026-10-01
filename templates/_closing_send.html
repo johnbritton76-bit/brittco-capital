@@ -1,0 +1,63 @@
+<details class="box" open>
+  <summary>Missouri closing application <span class="peek">e-sign link</span></summary>
+  <p class="hint">{{ closing_disclaimer }}</p>
+  <form method="post" action="{{ url_for('send_closing_application', bid=closing_bid) }}" class="form-grid">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <input type="hidden" name="deal_id" value="{{ closing_defaults.deal_id }}">
+    <input type="hidden" name="loan_id" value="{{ closing_defaults.loan_id }}">
+    <div>
+      <label>Loan type</label>
+      <select name="loan_type" id="closing-loan-type">
+        {% for kind in loan_types %}
+        <option value="{{ kind }}" {% if closing_defaults.loan_type == kind %}selected{% endif %}>{{ kind }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Interest rate %</label><input name="interest_rate" value="{{ closing_defaults.interest_rate }}"></div>
+    <div><label>Term months</label><input name="term_months" value="{{ closing_defaults.term_months }}"></div>
+    <div><label>Term business days</label><input name="term_days" value="{{ closing_defaults.term_days }}"></div>
+    <div><label>Points / flat fee %</label><input name="points" value="{{ closing_defaults.points }}"></div>
+    <div><label>Extension count</label><input name="extension_count" value="{{ closing_defaults.extension_count }}"></div>
+    <div><label>Extension rate %</label><input name="extension_rate" value="{{ closing_defaults.extension_rate }}"></div>
+    <div><label>Loan amount</label><input name="loan_amount" value="{{ closing_defaults.loan_amount }}" required></div>
+    <div class="span-2"><label>Property</label><input name="property" value="{{ closing_defaults.property }}"></div>
+    <div class="span-2">
+      <label><input type="checkbox" name="send_email" value="1" checked> Email the secure link to the borrower</label>
+    </div>
+    <div class="span-2"><button class="btn" type="submit">Send closing application</button></div>
+  </form>
+  {% if closings %}
+  <table class="table" style="margin-top:12px">
+    <tr><th>Status</th><th>Loan</th><th>When</th><th></th></tr>
+    {% for c in closings %}
+    <tr>
+      <td>{{ c.status }}</td>
+      <td>{{ c.loan_type }} · {{ c.loan_amount }}</td>
+      <td>{{ c.created_at }}</td>
+      <td>
+        <a href="{{ url_for('closing_review', cid=c.id) }}">Review</a>
+        · <a href="{{ url_for('closing_apply', token=c.token) }}">Borrower link</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</details>
+<script>
+(function () {
+  var specs = {{ loan_defaults|tojson }};
+  var sel = document.getElementById("closing-loan-type");
+  if (!sel || !specs) return;
+  sel.addEventListener("change", function () {
+    var spec = specs[sel.value];
+    if (!spec) return;
+    ["interest_rate", "term_months", "term_days", "points", "extension_count", "extension_rate"].forEach(function (name) {
+      var el = sel.form.querySelector('[name="' + name + '"]');
+      if (!el) return;
+      var key = name === "extension_count" ? "ext" : (name === "extension_rate" ? "ext_rate" : name);
+      if (name === "interest_rate") key = "rate";
+      if (spec[key] !== undefined) el.value = spec[key];
+    });
+  });
+})();
+</script>

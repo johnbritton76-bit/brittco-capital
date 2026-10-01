@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="top">
+  <div>
+    <div class="tag">Missouri closing · {{ packet.status }}</div>
+    <h2>{{ borrower.name if borrower else "Borrower" }}</h2>
+    <p class="hint">{{ summary }}</p>
+  </div>
+  <div>
+    {% if packet.dot_filename %}
+    <a class="btn" href="{{ url_for('closing_deed_pdf', cid=packet.id) }}">Deed of Trust</a>
+    <a class="btn" href="{{ url_for('closing_note_pdf', cid=packet.id) }}">Note and guaranty</a>
+    <a class="btn ghost" href="{{ url_for('closing_package_zip', cid=packet.id) }}">Download zip</a>
+    {% endif %}
+  </div>
+</div>
+<p class="hint">{{ disclaimer }}</p>
+<p><a href="{{ url_for('closing_apply', token=packet.token) }}">Borrower link</a>
+  {% if borrower %} · <a href="{{ url_for('borrower_detail', bid=borrower.id) }}">Borrower file</a>{% endif %}
+</p>
+{% if packet.review_note %}<p><strong>Last note:</strong> {{ packet.review_note }}</p>{% endif %}
+{% if signatures.get('borrower') %}
+<div class="card">
+  <h3>Signatures</h3>
+  <p style="font-family:Georgia,serif;font-style:italic;font-size:28px">{{ signatures.borrower.typed_name }}</p>
+  <p class="hint">{{ signatures.borrower.signed_at }} · {{ signatures.borrower.ip }} · {{ signatures.borrower.user_agent }}</p>
+  {% if signatures.get('spouse') %}
+  <p style="font-family:Georgia,serif;font-style:italic;font-size:28px">{{ signatures.spouse.typed_name }}</p>
+  <p class="hint">Spouse · {{ signatures.spouse.signed_at }} · {{ signatures.spouse.ip }}</p>
+  {% endif %}
+</div>
+{% endif %}
+<div class="card" style="margin-top:14px">
+  <h3>Review</h3>
+  <form method="post" class="form-grid">
+    <div class="span-2">
+      <button class="btn" name="action" value="approve" type="submit">Approve</button>
+    </div>
+    <div class="span-2">
+      <label>Ask the borrower to change something</label>
+      <textarea name="review_note" rows="3">{{ packet.review_note or '' }}</textarea>
+    </div>
+    <div><button class="btn ghost" name="action" value="changes" type="submit">Request changes</button></div>
+  </form>
+</div>
+{% if packet.status == 'approved' %}
+<div class="card" style="margin-top:14px">
+  <h3>Title</h3>
+  <form method="post" class="form-grid">
+    <div class="span-2"><label>Title company email</label><input type="email" name="title_email" value="{{ packet.title_email or '' }}" required></div>
+    <div><button class="btn" name="action" value="title" type="submit">Email zip to title</button></div>
+  </form>
+  {% if packet.title_sent_at %}<p class="hint">Last emailed {{ packet.title_sent_at }}</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

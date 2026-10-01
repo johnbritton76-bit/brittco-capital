@@ -29,6 +29,8 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from forms_catalog import DEFAULTS as FORM_DEFAULTS
+from forms_catalog import HISTORICAL as FORM_HISTORICAL
+import closing_packet
 from amortization import (
     amortization_workbook,
     filename_for_loan,
@@ -2122,6 +2124,7 @@ try:
         "UPDATE investors SET capital_available=150000 WHERE email='david@example.com' AND (capital_available IS NULL OR capital_available=0)"
     )
     ensure_dwolla_schema(_c)
+    closing_packet.ensure_schema(_c)
     _c.commit()
     _c.close()
 except sqlite3.Error:
@@ -4594,29 +4597,58 @@ def seed_form_templates(conn=None):
         c.commit()
 
 
+def _spec_from_row(r):
+    try:
+        fields = json.loads(r["fields_json"] or "[]")
+        fields = [tuple(x) for x in fields]
+    except Exception:
+        fields = []
+    return {
+        "key": r["form_key"],
+        "title": r["title"],
+        "blurb": r["blurb"],
+        "fields": fields,
+        "body": r["body"] or "",
+    }
+
+
 def load_form_defs():
+    """Active templates only. Retired deed/note templates stay in the database but are not offered."""
     seed_form_templates()
     rows = db().execute("SELECT * FROM form_templates ORDER BY title").fetchall()
     out = {}
     for r in rows:
-        try:
-            fields = json.loads(r["fields_json"] or "[]")
-            fields = [tuple(x) for x in fields]
-        except Exception:
-            fields = []
-        out[r["form_key"]] = {
-            "key": r["form_key"],
-            "title": r["title"],
-            "blurb": r["blurb"],
-            "fields": fields,
-            "body": r["body"] or "",
-        }
+        if r["form_key"] in FORM_HISTORICAL:
+            continue
+        out[r["form_key"]] = _spec_from_row(r)
     return out
 
 
 def get_form_spec(key):
-    defs = load_form_defs()
-    return defs.get(key)
+    """Resolve a template for a packet already on file, including retired forms."""
+    seed_form_templates()
+    row = db().execute("SELECT * FROM form_templates WHERE form_key=?", (key,)).fetchone()
+    if row:
+        return _spec_from_row(row)
+    hist = FORM_HISTORICAL.get(key)
+    if not hist:
+        return None
+    return {
+        "key": key,
+        "title": hist["title"],
+        "blurb": hist["blurb"],
+        "fields": list(hist["fields"]),
+        "body": hist["body"],
+    }
+
+
+def form_titles():
+    titles = {key: spec["title"] for key, spec in load_form_defs().items()}
+    for key in FORM_HISTORICAL:
+        spec = get_form_spec(key)
+        if spec:
+            titles[key] = spec["title"]
+    return titles
 
 
 def apply_form_body(body, data):
@@ -4831,36 +4863,12 @@ def staff_notify_list():
 
 
 def issue_pending_closing_packet(b, deal, extra):
-    data = apply_packet_data(b, deal, extra)
-    payload = json.dumps(data)
-    created = []
-    for key in ("deed_of_trust", "promissory_note_guaranty"):
-        spec = get_form_spec(key)
-        if not spec:
-            continue
-        token = secrets.token_urlsafe(16)
-        db().execute(
-            """INSERT INTO form_packets
-               (token, form_key, borrower_id, deal_id, status, payload, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (token, key, b["id"], deal["id"], "Pending", payload, datetime.now().isoformat(timespec="minutes")),
-        )
-        created.append((key, token, spec))
-        try:
-            pdf = form_packet_pdf(spec, data, b["name"])
-            stored = f"{deal['id']}_{key}_pending.pdf"
-            path = os.path.join(UPLOAD_DIR, stored)
-            with open(path, "wb") as fh:
-                fh.write(pdf)
-            db().execute(
-                """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (deal["id"], b["id"], stored, spec["title"] + " (pending).pdf", "Closing packet", datetime.now().isoformat(timespec="minutes")),
-            )
-        except Exception:
-            pass
-    db().commit()
-    return created
+    """Retired with the seeded deed and note templates.
+
+    Staff send a Missouri e-sign application instead. Existing form_packets rows
+    are left in place and stay readable.
+    """
+    return []
 
 
 def merge_form_data(stored, borrower, deal=None):
@@ -7437,6 +7445,7 @@ def borrower_new():
 @app.route("/borrowers/<int:bid>")
 @staff_required
 def borrower_detail(bid):
+    closing_packet.ensure_schema(db())
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     if not b:
         return redirect(url_for("borrowers"))
@@ -7493,6 +7502,18 @@ def borrower_detail(bid):
         ).fetchall(),
         dwolla_terms=latest_dwolla_terms("borrower", bid),
         form_defs=load_form_defs(),
+        form_titles=form_titles(),
+        closing_defaults=closing_defaults(
+            db().execute(
+                "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC LIMIT 1", (bid,)
+            ).fetchone()
+        ),
+        loan_types=closing_packet.LOAN_TYPES,
+        loan_defaults=LOAN_DEFAULTS,
+        closing_disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        closings=db().execute(
+            "SELECT * FROM closing_applications WHERE borrower_id=? ORDER BY id DESC", (bid,)
+        ).fetchall(),
         packets=db().execute(
             "SELECT * FROM form_packets WHERE borrower_id=? ORDER BY id DESC", (bid,)
         ).fetchall(),
@@ -8141,7 +8162,7 @@ def borrower_upload(bid):
 def send_borrower_form(bid):
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
     defs = load_form_defs()
-    keys = [k for k in request.form.getlist("form_key") if k in defs]
+    keys = [k for k in request.form.getlist("form_key") if k in defs and k not in FORM_HISTORICAL]
     if not keys:
         single = request.form.get("form_key")
         if single in defs:
@@ -8515,6 +8536,7 @@ def deal_new():
 @app.route("/deals/<int:did>")
 @staff_required
 def deal_detail(did):
+    closing_packet.ensure_schema(db())
     d = db().execute(
         """SELECT d.*, b.name AS borrower_name, b.credit_score
            FROM deals d JOIN borrowers b ON b.id=d.borrower_id WHERE d.id=?""",
@@ -8563,6 +8585,16 @@ def deal_detail(did):
         memo=memo,
         proposal=proposal,
         packets=packets,
+        form_titles=form_titles(),
+        closings=db().execute(
+            "SELECT * FROM closing_applications WHERE deal_id=? OR borrower_id=? ORDER BY id DESC",
+            (did, d["borrower_id"]),
+        ).fetchall(),
+        closing_defaults=closing_defaults(d, None),
+        loan_types=closing_packet.LOAN_TYPES,
+        loan_defaults=LOAN_DEFAULTS,
+        closing_disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        flash=session.pop("last_invite_note", None),
     )
 
 
@@ -8736,6 +8768,7 @@ def portal_logout():
 @app.route("/portal")
 @borrower_required
 def portal_home():
+    closing_packet.ensure_schema(db())
     b = db().execute("SELECT * FROM borrowers WHERE id=?", (session["borrower_id"],)).fetchone()
     deals = db().execute(
         "SELECT * FROM deals WHERE borrower_id=? ORDER BY id DESC", (b["id"],)
@@ -8779,6 +8812,11 @@ def portal_home():
         missing=missing,
         packets=packets,
         form_defs=load_form_defs(),
+        form_titles=form_titles(),
+        closings=db().execute(
+            "SELECT * FROM closing_applications WHERE borrower_id=? ORDER BY id DESC",
+            (b["id"],),
+        ).fetchall(),
         help_q=help_q,
         help_a=help_a,
         help_examples=help_catalog(),
@@ -9245,14 +9283,15 @@ def portal_apply_new():
         b["id"],
         "Automatic soft pull on Apply For a New Loan. Borrower consented that a soft inquiry will not adversely affect their credit report.",
     )
-    subj = f"Closing packet ready for {addr or 'new property'}"
+    subj = f"New application for {addr or 'new property'}"
     body = (
         f"A new {kind} application was submitted by {b['name']}.\n\n"
         f"Property: {addr}\n"
         f"Requested loan: ${money(f.get('loan_amount')):,.2f}\n"
         f"Proposed rate: {rate}%   Proposed points/fee: {points}%\n"
         f"Proposed term: {term_months} months / {term_days} business days\n\n"
-        "Rate and term are highlighted for staff to verify before documents go to title.\n"
+        "Rate and term are highlighted for staff to verify. Send the Missouri e-sign "
+        "application from the deal when the figures are ready for the borrower to sign.\n"
         f"Open the deal: {public_base()}/deals/{did}\n"
     )
     for em in staff_notify_list():
@@ -9260,7 +9299,7 @@ def portal_apply_new():
             send_mail(em, subj, body)
         except Exception:
             pass
-    return redirect(url_for("portal_home", msg="Application submitted. Closing packet is pending staff review."))
+    return redirect(url_for("portal_home", msg="Application submitted. Brittco will send the closing application to sign when the file is ready."))
 
 
 @app.route("/portal/apply", methods=["POST"])
@@ -9725,6 +9764,7 @@ def loan_edit(lid):
 @staff_required
 def loan_detail(lid):
     ensure_dwolla_schema()
+    closing_packet.ensure_schema(db())
     loan = db().execute(
         """SELECT l.*, b.name AS borrower_name, b.email, b.phone, b.credit_score,
                   b.bank_name, b.bank_routing, b.bank_account, b.bank_account_type, b.ach_authorized,
@@ -9851,6 +9891,19 @@ def loan_detail(lid):
             "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
         ).fetchall(),
         snap=property_snapshot(loan["property_address"]),
+        closing_defaults=closing_defaults(
+            db().execute("SELECT * FROM deals WHERE id=?", (loan["deal_id"],)).fetchone()
+            if row_val(loan, "deal_id")
+            else None,
+            loan,
+        ),
+        loan_types=closing_packet.LOAN_TYPES,
+        loan_defaults=LOAN_DEFAULTS,
+        closing_disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        closings=db().execute(
+            "SELECT * FROM closing_applications WHERE loan_id=? OR borrower_id=? ORDER BY id DESC",
+            (lid, loan["borrower_id"]),
+        ).fetchall(),
     )
 
 
@@ -14620,21 +14673,515 @@ def cron_reminders():
     return {"ok": True, "alerts": len(alerts), "new_reminders": sent}
 
 
+def _optional_int(raw):
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return number or None
+
+
+def _client_audit():
+    forwarded = request.headers.get("X-Forwarded-For") or ""
+    ip = forwarded.split(",")[0].strip() or (request.remote_addr or "")
+    return ip, (request.headers.get("User-Agent") or "")
+
+
+def _safe_next(raw, fallback):
+    raw = (raw or "").strip()
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return fallback
+
+
+def closing_defaults(deal=None, loan=None):
+    kind = ""
+    if loan is not None:
+        kind = row_val(loan, "loan_type")
+    if not kind and deal is not None:
+        kind = row_val(deal, "loan_type")
+    if kind not in closing_packet.LOAN_TYPES:
+        kind = "Fix and Flip"
+    spec = LOAN_DEFAULTS.get(kind) or LOAN_DEFAULTS["Fix and Flip"]
+    if loan is not None and row_val(loan, "rate") != "":
+        rate = row_val(loan, "rate")
+    elif deal is not None and row_val(deal, "rate") != "":
+        rate = row_val(deal, "rate")
+    else:
+        rate = spec["rate"]
+    if loan is not None and row_val(loan, "points") != "":
+        points = row_val(loan, "points")
+    elif deal is not None and row_val(deal, "points") != "":
+        points = row_val(deal, "points")
+    else:
+        points = spec["points"]
+    months = spec["term_months"]
+    if deal is not None and row_val(deal, "term_months") != "":
+        months = row_val(deal, "term_months")
+    if loan is not None and row_val(loan, "base_term_months") != "":
+        months = row_val(loan, "base_term_months")
+    amount = ""
+    if loan is not None and row_val(loan, "original_principal") != "":
+        amount = row_val(loan, "original_principal")
+    elif deal is not None and row_val(deal, "loan_amount") != "":
+        amount = row_val(deal, "loan_amount")
+    prop = row_val(loan, "property_address") if loan is not None else ""
+    if not prop and deal is not None:
+        prop = row_val(deal, "address")
+    return {
+        "loan_type": kind,
+        "interest_rate": closing_packet.clean_num(rate),
+        "term_months": int(money(months) or 0),
+        "term_days": int(money(spec["term_days"]) or 0),
+        "points": closing_packet.clean_num(points),
+        "extension_count": int(spec.get("ext") or 0),
+        "extension_rate": closing_packet.clean_num(spec.get("ext_rate") or 0),
+        "loan_amount": closing_packet.clean_num(amount) if str(amount) != "" else "",
+        "property": prop,
+        "deal_id": deal["id"] if deal is not None else "",
+        "loan_id": loan["id"] if loan is not None else "",
+    }
+
+
+def compose_closing_payload(borrower, deal, loan, form):
+    base = form_prefill(borrower, deal)
+    notes = {}
+    if deal is not None:
+        try:
+            parsed = json.loads(row_val(deal, "notes") or "")
+            if isinstance(parsed, dict):
+                notes = parsed
+        except (TypeError, ValueError):
+            notes = {}
+    kind = (form.get("loan_type") or "").strip()
+    if kind not in closing_packet.LOAN_TYPES:
+        kind = "Fix and Flip"
+    principal = money(form.get("loan_amount"))
+    if not principal and loan is not None:
+        principal = money(row_val(loan, "original_principal"))
+    if not principal and deal is not None:
+        principal = money(deal["loan_amount"])
+    notice_parts = [
+        row_val(borrower, "address"),
+        row_val(borrower, "city"),
+        row_val(borrower, "state"),
+        row_val(borrower, "zip"),
+    ]
+    notice = ", ".join(part for part in notice_parts if part) or base.get("borrower_notice_address") or ""
+    entity_type = row_val(borrower, "entity_type") or "Individual"
+    signatory = row_val(borrower, "name")
+    prop = (form.get("property") or "").strip()
+    if not prop and loan is not None:
+        prop = row_val(loan, "property_address")
+    if not prop:
+        prop = base.get("property") or ""
+    data = closing_packet.blank_payload()
+    data.update({
+        "loan_type": kind,
+        "interest_rate": closing_packet.clean_num(form.get("interest_rate") or 0),
+        "term_months": str(int(money(form.get("term_months")) or 0)),
+        "term_days": str(int(money(form.get("term_days")) or 0)),
+        "points": closing_packet.clean_num(form.get("points") or 0),
+        "extension_count": str(int(money(form.get("extension_count")) or 0)),
+        "extension_rate": closing_packet.clean_num(form.get("extension_rate") or 0),
+        "note_principal": principal,
+        "loan_amount": principal,
+        "borrower_legal_name": row_val(borrower, "entity_name") or signatory,
+        "borrower_entity_type": entity_type,
+        "borrower_formation_state": row_val(borrower, "state") or "Missouri",
+        "borrower_notice_address": notice,
+        "signatory_name": signatory,
+        "signatory_title": "Borrower" if entity_type.lower() == "individual" else "Authorized signatory",
+        "property": prop,
+        "county": (notes.get("county") or base.get("county") or ""),
+        "state": "Missouri",
+        "legal_description": notes.get("legal_description") or "",
+        "guarantor_name": signatory,
+        "guarantor_address": notice,
+        "marital_status": row_val(borrower, "marital_status"),
+        "spouse_name": row_val(borrower, "spouse_name"),
+        "spouse_dob": row_val(borrower, "spouse_dob"),
+        "spouse_ssn": row_val(borrower, "spouse_ssn"),
+        "lender_name": base.get("lender_name") or "Brittco Capital Inc",
+        "lender_notice_address": base.get("lender_notice_address") or "",
+        "lender_phone": base.get("lender_phone") or "",
+        "lender_email": base.get("lender_email") or "",
+        "lender_officer": base.get("lender_officer") or "",
+        "trustee_name": notes.get("title_company") or base.get("trustee_name") or "",
+        "trustee_address": notes.get("title_address") or base.get("trustee_address") or "",
+        "effective_date": date.today().isoformat(),
+    })
+    return closing_packet.derive(data)
+
+
+def _write_closing_pdfs(row_id, borrower_id, deal_id, data, signatures):
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    deed = closing_packet.build_deed_pdf(data, signatures, logo)
+    note = closing_packet.build_note_pdf(data, signatures, logo)
+    deed_name = f"closing_{row_id}_deed.pdf"
+    note_name = f"closing_{row_id}_note.pdf"
+    now = datetime.now().isoformat(timespec="minutes")
+    for filename, blob, label in (
+        (deed_name, deed, "Missouri Deed of Trust.pdf"),
+        (note_name, note, "Missouri Secured Promissory Note and Personal Guaranty.pdf"),
+    ):
+        with open(os.path.join(UPLOAD_DIR, filename), "wb") as handle:
+            handle.write(blob)
+        db().execute("DELETE FROM documents WHERE filename=?", (filename,))
+        db().execute(
+            """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (deal_id, borrower_id, filename, label, "Missouri closing", now),
+        )
+    return deed_name, note_name
+
+
+def _closing_row(cid):
+    closing_packet.ensure_schema(db())
+    return db().execute("SELECT * FROM closing_applications WHERE id=?", (cid,)).fetchone()
+
+
+def _closing_bytes(row, kind):
+    filename = row["dot_filename"] if kind == "deed" else row["note_filename"]
+    if not filename:
+        return None
+    path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.isfile(path):
+        return None
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+@app.route("/borrowers/<int:bid>/closing-application", methods=["POST"])
+@staff_required
+def send_closing_application(bid):
+    closing_packet.ensure_schema(db())
+    borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (bid,)).fetchone()
+    fallback = url_for("borrower_detail", bid=bid)
+    if not borrower:
+        return redirect(url_for("borrowers"))
+    nxt = _safe_next(request.form.get("next"), fallback)
+    kind = (request.form.get("loan_type") or "").strip()
+    if kind not in closing_packet.LOAN_TYPES:
+        session["last_invite_note"] = "Choose a loan type."
+        return redirect(nxt)
+    if money(request.form.get("loan_amount")) <= 0:
+        session["last_invite_note"] = "Enter a loan amount greater than zero."
+        return redirect(nxt)
+    if int(money(request.form.get("term_months")) or 0) <= 0 and int(money(request.form.get("term_days")) or 0) <= 0:
+        session["last_invite_note"] = "Enter a term in months or business days."
+        return redirect(nxt)
+    deal = None
+    loan = None
+    did = _optional_int(request.form.get("deal_id"))
+    lid = _optional_int(request.form.get("loan_id"))
+    if did:
+        deal = db().execute(
+            "SELECT * FROM deals WHERE id=? AND borrower_id=?", (did, bid)
+        ).fetchone()
+    if lid:
+        loan = db().execute(
+            "SELECT * FROM loans WHERE id=? AND borrower_id=?", (lid, bid)
+        ).fetchone()
+    payload = compose_closing_payload(borrower, deal, loan, request.form)
+    token = secrets.token_urlsafe(24)
+    now = datetime.now().isoformat(timespec="minutes")
+    db().execute(
+        """INSERT INTO closing_applications
+           (token, borrower_id, deal_id, loan_id, status, loan_type, interest_rate,
+            term_months, term_days, points, extension_count, extension_rate, loan_amount,
+            payload, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            token,
+            bid,
+            deal["id"] if deal else None,
+            loan["id"] if loan else None,
+            "sent",
+            payload.get("loan_type"),
+            payload.get("interest_rate"),
+            int(money(payload.get("term_months")) or 0),
+            int(money(payload.get("term_days")) or 0),
+            payload.get("points"),
+            int(money(payload.get("extension_count")) or 0),
+            payload.get("extension_rate"),
+            payload.get("note_principal"),
+            json.dumps(payload),
+            now,
+        ),
+    )
+    db().commit()
+    link = public_base() + url_for("closing_apply", token=token)
+    mailed = False
+    if request.form.get("send_email") and borrower["email"]:
+        body = (
+            f"Hello {borrower['name'] or ''},\n\n"
+            "This message is from Brittco Capital Inc.\n\n"
+            "Please complete and sign your loan application. Information we already have is filled in. "
+            "Type your legal name to sign. The application is signed under penalties of perjury. "
+            "If you are married, or a spouse is named, your spouse types their legal name too.\n\n"
+            f"{closing_packet.terms_summary(payload)}\n\n"
+            f"{link}\n\n"
+            "The link is unique to you. If you were not expecting this email, you may ignore it.\n\n"
+            "Brittco Capital Inc\n"
+        )
+        try:
+            mailed = send_mail(borrower["email"], "Brittco Capital — sign your loan application", body)
+        except Exception:
+            mailed = False
+    note = f"Closing application link: {link}"
+    if mailed:
+        note = f"Emailed to {borrower['email']}. " + note
+    else:
+        note = "Email was not sent. Copy this link. " + note
+    session["last_form_note"] = note
+    session["last_form_url"] = link
+    session["last_invite_note"] = note
+    return redirect(nxt)
+
+
+@app.route("/closing/<token>", methods=["GET", "POST"])
+def closing_apply(token):
+    closing_packet.ensure_schema(db())
+    row = db().execute("SELECT * FROM closing_applications WHERE token=?", (token,)).fetchone()
+    if not row:
+        return "This application link is not valid.", 404
+    data = closing_packet.derive(closing_packet.load_json(row["payload"], {}))
+    signatures = closing_packet.load_json(row["signatures"], {})
+    editable = (row["status"] or "") in ("sent", "changes_requested")
+    errors = []
+    if request.method == "POST" and editable:
+        errors, data = closing_packet.submission_errors(data, request.form)
+        if not errors:
+            ip, ua = _client_audit()
+            signed_at = datetime.now().isoformat(timespec="seconds")
+            signatures = closing_packet.build_signatures(data, request.form, signed_at, ip, ua)
+            deed_name, note_name = _write_closing_pdfs(
+                row["id"], row["borrower_id"], row["deal_id"], data, signatures
+            )
+            db().execute(
+                """UPDATE closing_applications
+                   SET payload=?, signatures=?, status=?, submitted_at=?, dot_filename=?, note_filename=?
+                   WHERE id=?""",
+                (
+                    json.dumps(data),
+                    json.dumps(signatures),
+                    "submitted",
+                    signed_at,
+                    deed_name,
+                    note_name,
+                    row["id"],
+                ),
+            )
+            db().commit()
+            borrower = db().execute("SELECT name FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
+            subject = f"Closing application signed — {(borrower['name'] if borrower else '')}"
+            body = (
+                f"{borrower['name'] if borrower else 'A borrower'} signed the Missouri closing application.\n\n"
+                f"Review it: {public_base()}{url_for('closing_review', cid=row['id'])}\n"
+            )
+            for email in staff_notify_list():
+                try:
+                    send_mail(email, subject, body)
+                except Exception:
+                    pass
+            row = db().execute("SELECT * FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
+            editable = False
+    return render_template(
+        "closing_apply.html",
+        packet=row,
+        data=data,
+        signatures=signatures,
+        editable=editable,
+        errors=errors,
+        fields=closing_packet.BORROWER_FIELDS,
+        spouse_on=closing_packet.spouse_required(data),
+        perjury=closing_packet.PERJURY_NOTICE,
+        spouse_perjury=closing_packet.SPOUSE_PERJURY_NOTICE,
+        summary=closing_packet.terms_summary(data),
+        disclaimer=closing_packet.ADMIN_DISCLAIMER,
+    )
+
+
+@app.route("/admin/closings/<int:cid>", methods=["GET", "POST"])
+@staff_required
+def closing_review(cid):
+    row = _closing_row(cid)
+    if not row:
+        return "Unknown closing application.", 404
+    borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
+    note = session.pop("last_invite_note", None)
+    if request.method == "POST":
+        action = request.form.get("action")
+        now = datetime.now().isoformat(timespec="seconds")
+        staff = current_staff()
+        staff_name = row_val(staff, "email") or row_val(staff, "name")
+        if action == "approve":
+            if row["status"] != "submitted" and row["status"] != "approved":
+                session["last_invite_note"] = "The borrower has to submit the signed application before you approve it."
+            else:
+                db().execute(
+                    """UPDATE closing_applications
+                       SET status=?, reviewed_at=?, reviewed_by=? WHERE id=?""",
+                    ("approved", now, staff_name, cid),
+                )
+                db().commit()
+                session["last_invite_note"] = "Approved. Download the package or email it to title."
+        elif action == "changes":
+            review_note = (request.form.get("review_note") or "").strip()
+            if not review_note:
+                session["last_invite_note"] = "Write what the borrower should change."
+            else:
+                db().execute(
+                    """UPDATE closing_applications
+                       SET status=?, review_note=?, reviewed_at=?, reviewed_by=? WHERE id=?""",
+                    ("changes_requested", review_note, now, staff_name, cid),
+                )
+                db().commit()
+                link = public_base() + url_for("closing_apply", token=row["token"])
+                if borrower and borrower["email"]:
+                    try:
+                        send_mail(
+                            borrower["email"],
+                            "Brittco Capital — please update your closing application",
+                            f"Hello {borrower['name'] or ''},\n\n"
+                            f"{review_note}\n\n"
+                            f"Open the same secure link, update the application, and sign again:\n{link}\n",
+                        )
+                    except Exception:
+                        pass
+                session["last_invite_note"] = f"Sent back for changes. Link: {link}"
+        elif action == "title":
+            fresh = _closing_row(cid)
+            if fresh["status"] != "approved":
+                session["last_invite_note"] = "Approve the package before sending it to title."
+            else:
+                title_email = (request.form.get("title_email") or "").strip()
+                deed = _closing_bytes(fresh, "deed")
+                note_pdf = _closing_bytes(fresh, "note")
+                if not title_email or not deed or not note_pdf:
+                    session["last_invite_note"] = "Enter a title email. The PDFs must already be generated."
+                else:
+                    blob = closing_packet.package_zip(deed, note_pdf)
+                    sent = False
+                    try:
+                        sent = send_mail(
+                            title_email,
+                            f"Brittco closing package — {row_val(borrower, 'name')}",
+                            "Missouri deed of trust and secured note with personal guaranty are attached.\n\n"
+                            + closing_packet.ADMIN_DISCLAIMER
+                            + "\n",
+                            attachment=blob,
+                            attachment_name=f"Brittco-MO-closing-{cid}.zip",
+                        )
+                    except Exception:
+                        sent = False
+                    db().execute(
+                        "UPDATE closing_applications SET title_email=?, title_sent_at=? WHERE id=?",
+                        (title_email, now if sent else None, cid),
+                    )
+                    db().commit()
+                    session["last_invite_note"] = (
+                        f"Emailed the zip to {title_email}."
+                        if sent
+                        else "Email was not sent. Download the zip and forward it."
+                    )
+        return redirect(url_for("closing_review", cid=cid))
+    data = closing_packet.load_json(row["payload"], {})
+    signatures = closing_packet.load_json(row["signatures"], {})
+    return render_template(
+        "closing_review.html",
+        title="Closing application",
+        nav="forms",
+        packet=row,
+        borrower=borrower,
+        data=data,
+        signatures=signatures,
+        summary=closing_packet.terms_summary(data) if data else "",
+        disclaimer=closing_packet.ADMIN_DISCLAIMER,
+        flash=note,
+    )
+
+
+@app.route("/admin/closings/<int:cid>/deed.pdf")
+@staff_required
+def closing_deed_pdf(cid):
+    row = _closing_row(cid)
+    if not row:
+        return "Unknown closing application.", 404
+    blob = _closing_bytes(row, "deed")
+    if not blob:
+        return "The deed is generated when the borrower submits.", 404
+    return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=False, download_name="Missouri-Deed-of-Trust.pdf")
+
+
+@app.route("/admin/closings/<int:cid>/note.pdf")
+@staff_required
+def closing_note_pdf(cid):
+    row = _closing_row(cid)
+    if not row:
+        return "Unknown closing application.", 404
+    blob = _closing_bytes(row, "note")
+    if not blob:
+        return "The note is generated when the borrower submits.", 404
+    return send_file(
+        BytesIO(blob),
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name="Missouri-Note-and-Guaranty.pdf",
+    )
+
+
+@app.route("/admin/closings/<int:cid>/package.zip")
+@staff_required
+def closing_package_zip(cid):
+    row = _closing_row(cid)
+    if not row:
+        return "Unknown closing application.", 404
+    deed = _closing_bytes(row, "deed")
+    note_pdf = _closing_bytes(row, "note")
+    if not deed or not note_pdf:
+        return "The package is generated when the borrower submits.", 404
+    blob = closing_packet.package_zip(deed, note_pdf)
+    return send_file(
+        BytesIO(blob),
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"Brittco-MO-closing-{cid}.zip",
+    )
+
+
 @app.route("/admin/forms")
 @staff_required
 def admin_forms():
+    closing_packet.ensure_schema(db())
+    closings = db().execute(
+        """SELECT c.*, b.name AS borrower_name
+           FROM closing_applications c
+           LEFT JOIN borrowers b ON b.id = c.borrower_id
+           ORDER BY c.id DESC LIMIT 100"""
+    ).fetchall()
     return render_template(
         "forms_admin.html",
-        title="Forms",
+        title="Closing applications",
         nav="forms",
         forms=load_form_defs(),
+        closings=closings,
+        disclaimer=closing_packet.ADMIN_DISCLAIMER,
         saved=request.args.get("saved"),
+        flash=session.pop("last_invite_note", None),
     )
 
 
 @app.route("/admin/forms/<key>", methods=["GET", "POST"])
 @staff_required
 def admin_form_edit(key):
+    if key in FORM_HISTORICAL:
+        session["last_invite_note"] = (
+            "That template is retired. Send a Missouri closing application from the borrower, deal, or loan. "
+            "Forms already filled out stay on the borrower file."
+        )
+        return redirect(url_for("admin_forms"))
     seed_form_templates()
     row = db().execute("SELECT * FROM form_templates WHERE form_key=?", (key,)).fetchone()
     if not row:

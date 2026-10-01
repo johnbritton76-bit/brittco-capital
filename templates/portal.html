@@ -168,20 +168,31 @@
   </div>
   {% endif %}
 
+  {% if closings %}
   <div class="card" style="margin-top:14px">
-    <h3>Forms to complete</h3>
-    <p class="hint">Type your answers, download or print the PDF, then sign in wet ink in front of a notary. Do not sign until the notary is present.</p>
-    {% for p in packets %}
+    <h3>Closing application</h3>
+    <p class="hint">Open the secure link, finish any blank fields, and type your legal name to sign.</p>
+    {% for c in closings %}
     <p>
-      <strong>{{ form_defs[p.form_key].title if form_defs.get(p.form_key) else p.form_key }}</strong>
-      · {{ p.status }}
-      · <a href="{{ url_for('fill_form', token=p.token) }}">Fill out</a>
-      · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
+      <strong>{{ c.loan_type }}</strong> · {{ c.status }}
+      · <a href="{{ url_for('closing_apply', token=c.token) }}">Open and sign</a>
     </p>
-    {% else %}
-    <p class="hint">No forms waiting. Brittco will send a link when a notarized form is needed.</p>
     {% endfor %}
   </div>
+  {% endif %}
+  {% if packets %}
+  <div class="card" style="margin-top:14px">
+    <h3>Earlier forms</h3>
+    {% for p in packets %}
+    <p>
+      <strong>{{ form_titles.get(p.form_key, p.form_key) }}</strong>
+      · {{ p.status }}
+      · <a href="{{ url_for('fill_form', token=p.token) }}">Open</a>
+      · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
+    </p>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <div class="card" style="margin-top:14px">
     <h3>Message Brittco</h3>

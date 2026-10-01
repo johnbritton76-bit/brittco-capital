@@ -33,12 +33,14 @@
   </form>
 </div>
 {% endif %}
+{% set closing_bid = d.borrower_id %}
+{% include "_closing_send.html" %}
 {% if packets %}
 <div class="card" style="margin-top:14px">
-  <h3>Closing packet</h3>
+  <h3>Earlier forms</h3>
   {% for p in packets %}
   <p>
-    {{ p.form_key }} · <strong>{{ p.status }}</strong>
+    {{ form_titles.get(p.form_key, p.form_key) }} · <strong>{{ p.status }}</strong>
     · <a href="{{ url_for('form_pdf', token=p.token) }}">PDF</a>
     · <a href="{{ url_for('fill_form', token=p.token) }}">Open</a>
   </p>

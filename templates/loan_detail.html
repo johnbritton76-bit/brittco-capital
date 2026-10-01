@@ -29,6 +29,8 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <a href="{{ url_for('borrower_detail', bid=loan.borrower_id) }}">Borrower file</a>
 </div>
 {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+{% set closing_bid = loan.borrower_id %}
+{% include "_closing_send.html" %}
 <details class="box">
   <summary>Property snapshot <span class="peek">{% if snap and snap.estimate %}${{ "{:,.0f}".format(snap.estimate) }} estimated{% else %}value and photos{% endif %}</span></summary>
 
