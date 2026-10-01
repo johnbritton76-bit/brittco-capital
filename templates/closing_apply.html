@@ -12,6 +12,13 @@
       font-style: italic; font-size: 28px; color: #1a2744; min-height: 36px;
     }
     #spouse-sign { display: none; }
+    .confirm-card { border: 2px solid #1f7a4d; background: #f3faf6; }
+    .confirm-card h3 { color: #145c38; font-size: 22px; font-weight: 650; margin: 0 0 8px; }
+    .submit-error {
+      border: 2px solid #a32020; background: #fdecec; color: #6d1212;
+      padding: 14px 16px; border-radius: 12px; margin: 0 0 16px;
+    }
+    .submit-error strong { display: block; font-size: 18px; margin-bottom: 6px; }
   </style>
 </head>
 <body>
@@ -20,20 +27,33 @@
   <h2>Loan application and electronic signature</h2>
   <p class="hint">{{ disclaimer }}</p>
   {% if packet.review_note and packet.status == 'changes_requested' %}
-  <div class="flash">Brittco asked for an update: {{ packet.review_note }}</div>
+  <div class="setup-banner">Brittco asked for an update: {{ packet.review_note }}</div>
   {% endif %}
   {% if not editable %}
-  <div class="card">
-    <h3>Submitted</h3>
-    <p>Brittco has this application{% if packet.status == 'approved' %} and has approved it{% endif %}. You do not need to sign again unless Brittco sends it back.</p>
+  <div class="card confirm-card" id="application-received" role="status">
+    <h3>Signed and received</h3>
+    {% if packet.status == 'approved' %}
+    <p>Thank you. Brittco Capital has your signed loan application and has approved it. We will follow up with you.</p>
+    {% else %}
+    <p>Thank you. Your loan application is signed, and Brittco Capital has received it. We will review it and follow up with you.</p>
+    {% endif %}
+    <p>You can close this page. Status: Submitted. You do not need to sign again unless Brittco asks you to update the application.</p>
     <p class="esign">{{ signatures.borrower.typed_name if signatures.get('borrower') else '' }}</p>
     {% if signatures.get('spouse') %}
     <p class="esign">{{ signatures.spouse.typed_name }}</p>
     {% endif %}
   </div>
   {% else %}
-  {% if errors %}
-  <div class="flash">Still needed: {{ errors|join(', ') }}</div>
+  {% if submit_error or errors %}
+  <div class="submit-error" id="application-not-submitted" role="alert">
+    <strong>Your application was not submitted.</strong>
+    {% if submit_error %}
+    <p>{{ submit_error }}</p>
+    {% else %}
+    <p>Please correct the items below and submit again. Brittco does not have your signed application until this page says it was signed and received.</p>
+    <p>Still needed: {{ errors|join('; ') }}</p>
+    {% endif %}
+  </div>
   {% endif %}
   <div class="card">
     <h3>Terms from Brittco</h3>
@@ -59,21 +79,21 @@
     <div class="span-2 perjury">
       <strong>Signed under penalties of perjury</strong>
       {{ perjury }}
-      <label><input type="checkbox" name="perjury_ack" value="yes" required> I have read this and I agree</label>
+      <label><input type="checkbox" name="perjury_ack" value="yes" required {% if request.form.get('perjury_ack') == 'yes' %}checked{% endif %}> I have read this and I agree</label>
     </div>
     <div class="span-2">
       <label>Type your legal name to sign</label>
-      <input name="borrower_signature_name" id="borrower-typed" autocomplete="name" value="">
+      <input name="borrower_signature_name" id="borrower-typed" autocomplete="name" value="{{ request.form.get('borrower_signature_name', '') }}">
       <div class="esign" id="borrower-preview"></div>
     </div>
     <div class="span-2" id="spouse-sign">
       <div class="perjury">
         <strong>Spouse — penalties of perjury</strong>
         {{ spouse_perjury }}
-        <label><input type="checkbox" name="spouse_perjury_ack" value="yes"> I am the spouse and I agree</label>
+        <label><input type="checkbox" name="spouse_perjury_ack" value="yes" {% if request.form.get('spouse_perjury_ack') == 'yes' %}checked{% endif %}> I am the spouse and I agree</label>
       </div>
       <label>Spouse types their legal name to sign the guaranty</label>
-      <input name="spouse_signature_name" id="spouse-typed" value="">
+      <input name="spouse_signature_name" id="spouse-typed" value="{{ request.form.get('spouse_signature_name', '') }}">
       <div class="esign" id="spouse-preview"></div>
     </div>
     {% if needs_password %}
@@ -89,7 +109,10 @@
       <p class="hint">You already have a borrower portal password. Leave it as it is. This application will not change it.</p>
     </div>
     {% endif %}
-    <div class="span-2"><button class="btn" type="submit">Submit and sign</button></div>
+    <div class="span-2">
+      <button class="btn" type="submit">Submit and sign</button>
+      <p class="hint">Brittco has your application only after this page confirms it. If you see an error, it was not submitted.</p>
+    </div>
   </form>
   {% endif %}
 </main>
@@ -120,6 +143,15 @@
   if (spouseName) spouseName.addEventListener("input", married);
   married();
   if ({{ 'true' if spouse_on else 'false' }} && block) block.style.display = "block";
+  var form = document.getElementById("closing-form");
+  if (form) {
+    form.addEventListener("submit", function () {
+      var button = form.querySelector('button[type="submit"]');
+      if (!button || button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Submitting…";
+    });
+  }
 })();
 </script>
 </body>

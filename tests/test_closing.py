@@ -1,5 +1,6 @@
 """Loan application: state templates, portal password, profile sync, e-sign."""
 
+import logging
 import os
 import tempfile
 
@@ -130,6 +131,8 @@ def test_prefilled_link_and_spouse_signature_required():
     assert b"Ada Lender" in opened.data
     assert b"penalties of perjury" in opened.data
     assert b"canvas" not in opened.data.lower()
+    assert b"Signed and received" not in opened.data
+    assert b"Submit and sign" in opened.data
 
     missing = dict(_application("Ada Lender", "Ben Lender"))
     missing.pop("spouse_signature_name")
@@ -137,6 +140,8 @@ def test_prefilled_link_and_spouse_signature_required():
     denied = client.post(f"/closing/{row['token']}", data=missing)
     assert denied.status_code == 200
     assert b"Spouse" in denied.data
+    assert b"Your application was not submitted." in denied.data
+    assert b"Signed and received" not in denied.data
     with brittco.app.app_context():
         still = brittco.db().execute("SELECT status FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
     assert still["status"] == "sent"
@@ -144,6 +149,9 @@ def test_prefilled_link_and_spouse_signature_required():
     signed = client.post(f"/closing/{row['token']}", data=_application("Ada Lender", "Ben Lender"))
     assert signed.status_code == 200
     assert b"Submitted" in signed.data
+    assert b"Signed and received" in signed.data
+    assert b"follow up" in signed.data.lower()
+    assert b"Submit and sign" not in signed.data
     with brittco.app.app_context():
         saved = brittco.db().execute("SELECT * FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
     assert saved["status"] == "submitted"
@@ -586,3 +594,223 @@ def test_submitted_application_flags_staff_until_approved():
     package = staff.get(f"/admin/closings/{row['id']}/package.zip")
     assert package.status_code == 200
     assert package.data[:2] == b"PK"
+
+
+def test_closing_notify_always_includes_john_and_nate(monkeypatch):
+    monkeypatch.setattr(brittco, "staff_notify_list", lambda: [])
+    assert [e.lower() for e in brittco.closing_submit_notify_list()] == [
+        "john@brittcocapital.com",
+        "nate@brittcocapital.com",
+    ]
+    monkeypatch.setattr(
+        brittco,
+        "staff_notify_list",
+        lambda: ["Nate@BrittcoCapital.com", "ops@example.com"],
+    )
+    listed = brittco.closing_submit_notify_list()
+    assert [e.lower() for e in listed] == [
+        "nate@brittcocapital.com",
+        "ops@example.com",
+        "john@brittcocapital.com",
+    ]
+    assert listed[0] == "Nate@BrittcoCapital.com"
+
+
+def _capture_logs():
+    records = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _ListHandler(level=logging.INFO)
+    brittco.logger.addHandler(handler)
+    return records, handler
+
+
+def test_signed_application_emails_john_and_nate_with_pdf_copy(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, subject, body, attachment=None, attachment_name=None):
+        sent.append(
+            {
+                "to": to_email,
+                "subject": subject,
+                "body": body,
+                "attachment": attachment,
+                "name": attachment_name,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(brittco, "send_mail", fake_send)
+    monkeypatch.setattr(brittco, "staff_notify_list", lambda: ["ops@example.com"])
+    records, handler = _capture_logs()
+    try:
+        bid = _borrower("Helen Packet", "helen.packet@example.com")
+        row = _send(bid)
+        signed = brittco.app.test_client().post(
+            f"/closing/{row['token']}", data=_application("Helen Packet")
+        )
+    finally:
+        brittco.logger.removeHandler(handler)
+    assert signed.status_code == 200
+    assert b"Signed and received" in signed.data
+    assert b"Your application was not submitted." not in signed.data
+    recipients = [item["to"].lower() for item in sent]
+    assert recipients == [
+        "ops@example.com",
+        "john@brittcocapital.com",
+        "nate@brittcocapital.com",
+    ]
+    for item in sent:
+        assert item["subject"] == "Loan application signed — Helen Packet"
+        assert "Helen Packet" in item["body"]
+        assert "Property: 10 Oak St, Kansas City, MO" in item["body"]
+        assert "Fix and Flip" in item["body"]
+        assert f"/admin/closings/{row['id']}" in item["body"]
+        assert item["attachment"][:2] == b"PK"
+        assert item["name"].endswith(".zip")
+        assert "attached" in item["body"].lower()
+    with brittco.app.app_context():
+        saved = brittco.db().execute(
+            "SELECT * FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()
+        docs = brittco.db().execute(
+            "SELECT filename FROM documents WHERE borrower_id=?", (bid,)
+        ).fetchall()
+    assert saved["status"] == "submitted"
+    assert saved["dot_filename"] and saved["note_filename"]
+    stored = {doc["filename"] for doc in docs}
+    assert saved["dot_filename"] in stored and saved["note_filename"] in stored
+    messages = [record.getMessage() for record in records]
+    assert any(f"closing submit {row['id']} saved status=submitted" in message for message in messages)
+    assert any("emailed john@brittcocapital.com with signed PDF copy" in message for message in messages)
+    assert any("emailed nate@brittcocapital.com with signed PDF copy" in message for message in messages)
+
+
+def test_email_failure_does_not_undo_saved_application(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("smtp down")
+
+    monkeypatch.setattr(brittco, "send_mail", boom)
+    records, handler = _capture_logs()
+    try:
+        bid = _borrower("Ivan Mail", "ivan.mail@example.com")
+        row = _send(bid)
+        signed = brittco.app.test_client().post(
+            f"/closing/{row['token']}", data=_application("Ivan Mail")
+        )
+    finally:
+        brittco.logger.removeHandler(handler)
+    assert b"Signed and received" in signed.data
+    assert b"Your application was not submitted." not in signed.data
+    with brittco.app.app_context():
+        saved = brittco.db().execute(
+            "SELECT status, dot_filename, note_filename FROM closing_applications WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+    assert saved["status"] == "submitted"
+    deed = open(os.path.join(brittco.UPLOAD_DIR, saved["dot_filename"]), "rb").read()
+    note = open(os.path.join(brittco.UPLOAD_DIR, saved["note_filename"]), "rb").read()
+    assert deed.startswith(b"%PDF") and note.startswith(b"%PDF")
+    messages = [record.getMessage() for record in records]
+    assert any(f"closing submit {row['id']} saved status=submitted" in message for message in messages)
+    assert any("email to john@brittcocapital.com failed" in message for message in messages)
+    assert any("email to nate@brittcocapital.com failed" in message for message in messages)
+
+
+def test_attachment_failure_still_sends_review_link(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, subject, body, attachment=None, attachment_name=None):
+        if attachment is not None:
+            raise RuntimeError("smtp rejected attachment")
+        sent.append((to_email.lower(), body, attachment_name))
+        return True
+
+    monkeypatch.setattr(brittco, "send_mail", fake_send)
+    monkeypatch.setattr(brittco, "staff_notify_list", lambda: [])
+    bid = _borrower("Jill Attach", "jill.attach@example.com")
+    row = _send(bid)
+    signed = brittco.app.test_client().post(
+        f"/closing/{row['token']}", data=_application("Jill Attach")
+    )
+    assert b"Signed and received" in signed.data
+    assert [item[0] for item in sent] == [
+        "john@brittcocapital.com",
+        "nate@brittcocapital.com",
+    ]
+    for _email, body, name in sent:
+        assert name is None
+        assert f"/admin/closings/{row['id']}" in body
+        assert "could not be attached" in body
+        assert "Jill Attach" in body
+        assert "10 Oak St" in body
+    with brittco.app.app_context():
+        status = brittco.db().execute(
+            "SELECT status FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()["status"]
+    assert status == "submitted"
+
+
+def test_pdf_store_failure_is_obvious_and_does_not_submit(monkeypatch):
+    calls = []
+
+    def fail_store(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    def fake_send(*args, **kwargs):
+        calls.append(args)
+        return True
+
+    monkeypatch.setattr(brittco, "_store_closing_pdfs", fail_store)
+    monkeypatch.setattr(brittco, "send_mail", fake_send)
+    records, handler = _capture_logs()
+    try:
+        bid = _borrower("Ken Disk", "ken.disk@example.com")
+        row = _send(bid)
+        failed = brittco.app.test_client().post(
+            f"/closing/{row['token']}", data=_application("Ken Disk")
+        )
+    finally:
+        brittco.logger.removeHandler(handler)
+    assert failed.status_code == 200
+    assert b"Your application was not submitted." in failed.data
+    assert b"Please try again" in failed.data
+    assert b"contact Brittco Capital" in failed.data
+    assert b"Signed and received" not in failed.data
+    assert b"Submit and sign" in failed.data
+    assert calls == []
+    with brittco.app.app_context():
+        saved = brittco.db().execute(
+            "SELECT status, dot_filename FROM closing_applications WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+    assert saved["status"] == "sent"
+    assert not saved["dot_filename"]
+    messages = [record.getMessage() for record in records]
+    assert any(f"closing submit {row['id']} failed before save" in message for message in messages)
+    assert not any("saved status=submitted" in message for message in messages)
+
+
+def test_pdf_generation_error_does_not_claim_success(monkeypatch):
+    monkeypatch.setattr(
+        closing_packet,
+        "render_closing_pdfs",
+        lambda *_args, **_kwargs: {"error": "No document templates are stored for Missouri."},
+    )
+    bid = _borrower("Lena Template", "lena.template@example.com")
+    row = _send(bid)
+    failed = brittco.app.test_client().post(
+        f"/closing/{row['token']}", data=_application("Lena Template")
+    )
+    page = failed.data.decode()
+    assert "Your application was not submitted." in page
+    assert "No document templates are stored for Missouri." in page
+    assert "Signed and received" not in page
+    with brittco.app.app_context():
+        status = brittco.db().execute(
+            "SELECT status FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()["status"]
+    assert status == "sent"
