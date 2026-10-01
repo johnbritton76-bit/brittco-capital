@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from io import BytesIO
 from xml.sax.saxutils import escape
 
-LOAN_TYPES = ("Fix and Flip", "Bridge", "Transactional Loan", "Gap Loan")
+LOAN_TYPES = ("Fix and Flip", "Bridge", "Transactional Loan", "Gap Loan", "Custom Loan")
 
 ADMIN_DISCLAIMER = (
     "Generated closing documents are working forms for Brittco Capital's use. "

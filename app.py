@@ -2589,11 +2589,28 @@ ACCOUNT_KINDS = [
     "Other",
 ]
 
+# Title case, matching Gap Loan and Transactional Loan.
+CUSTOM_LOAN_TYPE = "Custom Loan"
+
 LOAN_TYPES = [
     "Fix and Flip",
     "Transactional Loan",
     "Gap Loan",
 ]
+
+# Loan entry keeps Other as the perpetual standing type. Custom Loan is staff-entered only.
+STAFF_LOAN_FORM_TYPES = LOAN_TYPES + [CUSTOM_LOAN_TYPE, "Other"]
+DEAL_LOAN_TYPES = LOAN_TYPES + [CUSTOM_LOAN_TYPE]
+
+
+def is_custom_loan_type(kind):
+    return (kind or "").strip().lower() == CUSTOM_LOAN_TYPE.lower()
+
+
+def canonical_loan_type(kind):
+    if is_custom_loan_type(kind):
+        return CUSTOM_LOAN_TYPE
+    return kind
 
 BOOK_EXPENSE = [
     "Legal",
@@ -2934,7 +2951,25 @@ LOAN_DEFAULTS = {
         "ext_rate": 3.0,
         "blurb": "Standard: 15% flat for 3 months. Two extensions at 3% each. No purchase price required.",
     },
+    "Custom Loan": {
+        "rate": "",
+        "points": "",
+        "term_months": "",
+        "term_days": "",
+        "ext": "",
+        "ext_rate": "",
+        "blurb": "Custom Loan: no standard terms. Enter every figure. Nothing is filled in for you.",
+    },
 }
+
+
+@app.context_processor
+def inject_staff_loan_types():
+    return {
+        "staff_loan_types": STAFF_LOAN_FORM_TYPES,
+        "deal_loan_types": DEAL_LOAN_TYPES,
+    }
+
 
 def investor_product_terms(kind):
     if kind == "Transactional Loan":
@@ -3472,6 +3507,10 @@ def loan_term_dates(loan):
     lid = loan["id"]
     base = int(_row_months(loan) or 0)
     if base <= 0:
+        if is_custom_loan_type(row_val(loan, "loan_type")):
+            stored = parse_date(row_val(loan, "maturity_date"))
+            iso = stored.isoformat() if stored else None
+            return iso, iso
         base = 3
     extra = int(option_months_total(lid) or 0)
     try:
@@ -3566,6 +3605,8 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
     start = start or row_val(loan, "start_date")
     if base_term is None:
         base_term = _row_months(loan)
+    if is_custom_loan_type(row_val(loan, "loan_type")) and not int(base_term or 0):
+        return row_val(loan, "maturity_date")
     extra = option_months_total(lid)
     try:
         used = db().execute(
@@ -3633,6 +3674,8 @@ def loan_term_days(loan, p=None):
     months = _row_months(p) or _row_months(loan)
     if loan_type == "Transactional Loan":
         return 2
+    if is_custom_loan_type(loan_type):
+        return max(1, months * 30) if months else 0
     if months:
         return max(1, months * 30)
     return 90
@@ -5957,7 +6000,8 @@ GROK_HELP_RULES = (
     "You cannot approve a loan, change terms, wire money, or give legal or tax advice. "
     "Software live at app.brittcocapital.com. Staff use the dashboard. Borrowers use /portal/login. Investors use /investor/login. "
     "Products: Fix and Flip; Transactional (same-day double close 1%, 2–7 days 2%); "
-    "Gap Loan (3 months 15% flat, two 3% extensions); Other/perpetual standing loans. No bridge product right now. "
+    "Gap Loan (3 months 15% flat, two 3% extensions); Custom Loan (staff type every figure; nothing is prefilled); "
+    "Other/perpetual standing loans. No bridge product right now. "
     "Loan math: purchase price is the house price. Loan amount is what Brittco funds toward purchase (can be a %). "
     "Rehab is added. Upfront points are added on that funded purchase + rehab. That total is original principal and drives accounting. "
     "Maturity is calendar months, same day of month (3/25 + 3 months = 6/25). Extensions move that date. "
@@ -8633,7 +8677,7 @@ def save_deal(deal_id=None):
     f = request.form
     fields = (
         int(f["borrower_id"]),
-        f.get("loan_type"),
+        canonical_loan_type(f.get("loan_type")),
         f.get("address"),
         money(f.get("purchase_price")) or None,
         money(f.get("as_is_value")) or None,
@@ -8760,36 +8804,79 @@ def deal_detail(did):
     )
 
 
-@app.route("/deals/<int:did>/create-loan", methods=["POST"])
-@staff_required
-def deal_create_loan(did):
-    d = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
-    existing = db().execute("SELECT id FROM loans WHERE deal_id=?", (did,)).fetchone()
-    if existing:
-        return redirect(url_for("loan_detail", lid=existing["id"]))
-    principal = money(d["loan_amount"])
+def loan_fields_from_deal(deal):
+    """Values copied when staff create a loan from a deal.
+
+    Custom Loan returns None. The create action then opens an empty form
+    instead of copying amount, rate, term, property, or product defaults.
+    """
+    if deal is None or is_custom_loan_type(row_val(deal, "loan_type")):
+        return None
+    principal = money(deal["loan_amount"])
     start = date.today()
-    transactional = (d["loan_type"] or "") == "Transactional Loan"
+    transactional = (deal["loan_type"] or "") == "Transactional Loan"
     if transactional:
         maturity = (start + timedelta(days=7)).isoformat()
         nxt = maturity
-        points = money(d["points"]) or 3.0
+        points = money(deal["points"]) or 3.0
         pay_type = "Flat fee"
         notes = "Transactional Loan: 3% flat fee for up to 7 days. Extensions beyond 7 days are negotiable."
         pricing_mode = "flat_fee"
         flat_fee = round(principal * points / 100.0, 2) or None
         booked_rate = None
     else:
-        months = int(d["term_months"] or 12)
+        months = int(deal["term_months"] or 12)
         maturity = (start + timedelta(days=30 * months)).isoformat()
         nxt = (start + timedelta(days=30)).isoformat()
-        points = money(d["points"]) or None
+        points = money(deal["points"]) or None
         pay_type = "Interest only"
         notes = "Created from funded deal"
         pricing_mode = "rate"
         flat_fee = None
-        booked_rate = money(d["rate"]) or None
-    number = f"BC-{did:04d}"
+        booked_rate = money(deal["rate"]) or None
+    return {
+        "borrower_id": deal["borrower_id"],
+        "deal_id": deal["id"],
+        "loan_number": f"BC-{deal['id']:04d}",
+        "loan_type": deal["loan_type"],
+        "property_address": deal["address"],
+        "original_principal": principal,
+        "current_balance": principal,
+        "rate": booked_rate,
+        "points": points,
+        "start_date": start.isoformat(),
+        "maturity_date": maturity,
+        "payment_type": pay_type,
+        "payment_amount": None,
+        "payment_frequency": "Monthly",
+        "next_payment_due": nxt,
+        "late_fee": 0,
+        "status": "Current",
+        "notes": notes,
+        "pricing_mode": pricing_mode,
+        "flat_fee": flat_fee,
+    }
+
+
+@app.route("/deals/<int:did>/create-loan", methods=["POST"])
+@staff_required
+def deal_create_loan(did):
+    d = db().execute("SELECT * FROM deals WHERE id=?", (did,)).fetchone()
+    if not d:
+        return redirect(url_for("deals"))
+    existing = db().execute("SELECT id FROM loans WHERE deal_id=?", (did,)).fetchone()
+    if existing:
+        return redirect(url_for("loan_detail", lid=existing["id"]))
+    fields = loan_fields_from_deal(d)
+    if fields is None:
+        return redirect(
+            url_for(
+                "loan_new",
+                borrower_id=d["borrower_id"],
+                deal_id=did,
+                loan_type=CUSTOM_LOAN_TYPE,
+            )
+        )
     cur = db().execute(
         """INSERT INTO loans
         (borrower_id, deal_id, loan_number, loan_type, property_address,
@@ -8798,30 +8885,30 @@ def deal_create_loan(did):
          status, notes, pricing_mode, flat_fee)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            d["borrower_id"],
-            did,
-            number,
-            d["loan_type"],
-            d["address"],
-            principal,
-            principal,
-            booked_rate,
-            points,
-            start.isoformat(),
-            maturity,
-            pay_type,
-            None,
-            "Monthly",
-            nxt,
-            0,
-            "Current",
-            notes,
-            pricing_mode,
-            flat_fee,
+            fields["borrower_id"],
+            fields["deal_id"],
+            fields["loan_number"],
+            fields["loan_type"],
+            fields["property_address"],
+            fields["original_principal"],
+            fields["current_balance"],
+            fields["rate"],
+            fields["points"],
+            fields["start_date"],
+            fields["maturity_date"],
+            fields["payment_type"],
+            fields["payment_amount"],
+            fields["payment_frequency"],
+            fields["next_payment_due"],
+            fields["late_fee"],
+            fields["status"],
+            fields["notes"],
+            fields["pricing_mode"],
+            fields["flat_fee"],
         ),
     )
     db().execute("UPDATE deals SET status=? WHERE id=?", ("Funded", did))
-    sync_application_pricing(did, pricing_mode, booked_rate)
+    sync_application_pricing(did, fields["pricing_mode"], fields["rate"])
     db().commit()
     return redirect(url_for("loan_detail", lid=cur.lastrowid))
 
@@ -9729,6 +9816,39 @@ def _pricing_from_form(f, standing=False):
     return mode, (money(f.get("rate")) or None), None, None
 
 
+def _form_blank(raw):
+    return raw in (None, "")
+
+
+def unset_blank_custom_loan(form, values):
+    """Keep blank Custom Loan inputs unset instead of storing zeros or computed dates."""
+    if not is_custom_loan_type(form.get("loan_type")):
+        return values
+    values = dict(values)
+    values["loan_type"] = CUSTOM_LOAN_TYPE
+    if _form_blank(form.get("purchase_price")):
+        values["purchase"] = None
+    if _form_blank(form.get("rehab_cost")):
+        values["rehab"] = None
+    if _form_blank(form.get("points")):
+        values["points"] = None
+    if _form_blank(form.get("base_term")):
+        values["base_term"] = None
+        values["maturity"] = None
+        if _form_blank(form.get("next_payment_due")) and _form_blank(form.get("first_due")):
+            values["next_due"] = None
+    amount_keys = (
+        "loan_amount",
+        "total_loan_amount",
+        "standing_principal",
+        "purchase_price",
+        "rehab_cost",
+    )
+    if all(_form_blank(form.get(key)) for key in amount_keys):
+        values["principal"] = None
+    return values
+
+
 def sync_application_pricing(deal_id, mode, rate):
     """Copy booked pricing onto the linked application so closing defaults match."""
     if not deal_id:
@@ -9781,7 +9901,7 @@ def _loan_replay(f, existing=None):
         "borrower_id": num_id("borrower_id"),
         "deal_id": num_id("deal_id"),
         "loan_number": f.get("loan_number") or "",
-        "loan_type": f.get("loan_type") or "",
+        "loan_type": canonical_loan_type(f.get("loan_type") or ""),
         "term_kind": f.get("term_kind") or "Fixed",
         "property_address": f.get("property_address") or "",
         "purchase_price": f.get("purchase_price") or "",
@@ -9863,6 +9983,27 @@ def loan_new():
         status = f.get("status") or "Current"
         if status == "Late":
             status = "Current"
+        custom = is_custom_loan_type(f.get("loan_type"))
+        packed = unset_blank_custom_loan(
+            f,
+            {
+                "purchase": purchase,
+                "rehab": rehab,
+                "points": points,
+                "principal": principal,
+                "base_term": base_term,
+                "maturity": maturity,
+                "next_due": next_due,
+            },
+        )
+        purchase = packed["purchase"]
+        rehab = packed["rehab"]
+        points = packed["points"]
+        principal = packed["principal"]
+        base_term = packed["base_term"]
+        maturity = packed["maturity"]
+        next_due = packed["next_due"]
+        loan_type_value = CUSTOM_LOAN_TYPE if custom else f.get("loan_type")
         deal_id = int(f["deal_id"]) if f.get("deal_id") else None
         cur = db().execute(
             """INSERT INTO loans
@@ -9876,7 +10017,7 @@ def loan_new():
                 int(f["borrower_id"]),
                 deal_id,
                 f.get("loan_number"),
-                f.get("loan_type"),
+                loan_type_value,
                 f.get("property_address"),
                 principal,
                 principal,
@@ -9918,7 +10059,8 @@ def loan_new():
                 pass
         else:
             save_loan_ext_options(lid, f)
-            refresh_loan_maturity(lid, start=start, base_term=base_term)
+            if not (custom and base_term in (None, "")):
+                refresh_loan_maturity(lid, start=start, base_term=base_term)
         saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
         if saved and (row_val(saved, "payment_type") or "") == "Balloon":
             db().execute(
@@ -9928,8 +10070,21 @@ def loan_new():
         sync_application_pricing(deal_id, mode, rate_val)
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
+    raw_type = (request.args.get("loan_type") or "").strip()
+    selected_type = canonical_loan_type(raw_type) if raw_type else ""
+    if selected_type and selected_type not in STAFF_LOAN_FORM_TYPES:
+        selected_type = ""
     return render_template(
-        "loan_form.html", title="New loan", nav="loans", borrowers=borrowers, deals=deals, loan=None, ext_options=[]
+        "loan_form.html",
+        title="New loan",
+        nav="loans",
+        borrowers=borrowers,
+        deals=deals,
+        loan=None,
+        ext_options=[],
+        selected_borrower=request.args.get("borrower_id", type=int),
+        selected_deal=request.args.get("deal_id", type=int),
+        selected_type=selected_type,
     )
 
 
@@ -9997,7 +10152,9 @@ def loan_edit(lid):
     deals = db().execute("SELECT id, address, loan_type FROM deals ORDER BY id DESC").fetchall()
     if request.method == "POST":
         f = request.form
-        v = _loan_values_from_form(f)
+        v = unset_blank_custom_loan(f, _loan_values_from_form(f))
+        custom = is_custom_loan_type(f.get("loan_type"))
+        loan_type_value = CUSTOM_LOAN_TYPE if custom else f.get("loan_type")
         mode, rate_val, flat_fee, pricing_error = _pricing_from_form(f, v["standing"])
         if pricing_error:
             return render_template(
@@ -10031,7 +10188,7 @@ def loan_edit(lid):
                 int(f["borrower_id"]),
                 deal_id,
                 f.get("loan_number"),
-                f.get("loan_type"),
+                loan_type_value,
                 f.get("property_address"),
                 v["principal"],
                 balance,
@@ -10077,7 +10234,8 @@ def loan_edit(lid):
             except sqlite3.Error:
                 pass
             save_loan_ext_options(lid, f)
-            refresh_loan_maturity(lid, start=v["start"], base_term=v["base_term"])
+            if not (custom and v["base_term"] in (None, "")):
+                refresh_loan_maturity(lid, start=v["start"], base_term=v["base_term"])
         saved = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
         if saved and (row_val(saved, "payment_type") or "") == "Balloon":
             db().execute(
@@ -15057,34 +15215,64 @@ def closing_defaults(deal=None, loan=None):
         kind = row_val(loan, "loan_type")
     if not kind and deal is not None:
         kind = row_val(deal, "loan_type")
-    if kind not in closing_packet.LOAN_TYPES:
+    custom = is_custom_loan_type(kind)
+    if custom:
+        kind = CUSTOM_LOAN_TYPE
+    elif kind not in closing_packet.LOAN_TYPES:
         kind = "Fix and Flip"
     spec = LOAN_DEFAULTS.get(kind) or LOAN_DEFAULTS["Fix and Flip"]
-    if loan is not None and row_val(loan, "rate") != "":
+    if custom and loan is not None:
+        # A saved custom loan keeps only what staff typed on that loan.
         rate = row_val(loan, "rate")
-    elif deal is not None and row_val(deal, "rate") != "":
-        rate = row_val(deal, "rate")
-    else:
-        rate = spec["rate"]
-    if loan is not None and row_val(loan, "points") != "":
         points = row_val(loan, "points")
-    elif deal is not None and row_val(deal, "points") != "":
-        points = row_val(deal, "points")
-    else:
-        points = spec["points"]
-    months = spec["term_months"]
-    if deal is not None and row_val(deal, "term_months") != "":
-        months = row_val(deal, "term_months")
-    if loan is not None and row_val(loan, "base_term_months") != "":
         months = row_val(loan, "base_term_months")
-    amount = ""
-    if loan is not None and row_val(loan, "original_principal") != "":
         amount = row_val(loan, "original_principal")
-    elif deal is not None and row_val(deal, "loan_amount") != "":
-        amount = row_val(deal, "loan_amount")
-    prop = row_val(loan, "property_address") if loan is not None else ""
-    if not prop and deal is not None:
-        prop = row_val(deal, "address")
+        prop = row_val(loan, "property_address")
+    else:
+        if loan is not None and row_val(loan, "rate") != "":
+            rate = row_val(loan, "rate")
+        elif deal is not None and row_val(deal, "rate") != "":
+            rate = row_val(deal, "rate")
+        else:
+            rate = spec["rate"]
+        if loan is not None and row_val(loan, "points") != "":
+            points = row_val(loan, "points")
+        elif deal is not None and row_val(deal, "points") != "":
+            points = row_val(deal, "points")
+        else:
+            points = spec["points"]
+        months = spec["term_months"]
+        if deal is not None and row_val(deal, "term_months") != "":
+            months = row_val(deal, "term_months")
+        if loan is not None and row_val(loan, "base_term_months") != "":
+            months = row_val(loan, "base_term_months")
+        amount = ""
+        if loan is not None and row_val(loan, "original_principal") != "":
+            amount = row_val(loan, "original_principal")
+        elif deal is not None and row_val(deal, "loan_amount") != "":
+            amount = row_val(deal, "loan_amount")
+        prop = row_val(loan, "property_address") if loan is not None else ""
+        if not prop and deal is not None:
+            prop = row_val(deal, "address")
+    ids = {
+        "property": prop,
+        "property_state": closing_packet.state_from_text(prop) or "MO",
+        "deal_id": deal["id"] if deal is not None else "",
+        "loan_id": loan["id"] if loan is not None else "",
+    }
+    if custom:
+        # Saved figures only. Do not substitute a product template when a field is blank.
+        return {
+            "loan_type": kind,
+            "interest_rate": "" if rate in (None, "") else closing_packet.clean_num(rate),
+            "term_months": "" if months in (None, "") else int(money(months) or 0),
+            "term_days": "",
+            "points": "" if points in (None, "") else closing_packet.clean_num(points),
+            "extension_count": "",
+            "extension_rate": "",
+            "loan_amount": "" if str(amount) == "" else closing_packet.clean_num(amount),
+            **ids,
+        }
     return {
         "loan_type": kind,
         "interest_rate": closing_packet.clean_num(rate),
@@ -15094,10 +15282,7 @@ def closing_defaults(deal=None, loan=None):
         "extension_count": int(spec.get("ext") or 0),
         "extension_rate": closing_packet.clean_num(spec.get("ext_rate") or 0),
         "loan_amount": closing_packet.clean_num(amount) if str(amount) != "" else "",
-        "property": prop,
-        "property_state": closing_packet.state_from_text(prop) or "MO",
-        "deal_id": deal["id"] if deal is not None else "",
-        "loan_id": loan["id"] if loan is not None else "",
+        **ids,
     }
 
 
