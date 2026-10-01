@@ -1,0 +1,20 @@
+{% set ns = namespace(seen=[], rows=[]) %}
+{% for c in pending_closings or [] %}
+  {% if (banner_borrower_id and c.borrower_id == banner_borrower_id) or (banner_loan_id and c.loan_id == banner_loan_id) %}
+    {% if c.id not in ns.seen %}
+      {% set ns.seen = ns.seen + [c.id] %}
+      {% set ns.rows = ns.rows + [c] %}
+    {% endif %}
+  {% endif %}
+{% endfor %}
+{% if ns.rows %}
+<div class="review-banner" role="status">
+  <strong>Signed loan application needs review</strong>
+  <span>{{ ns.rows|length }} waiting on staff for this file.</span>
+  <div class="review-links">
+    {% for c in ns.rows %}
+    <a href="{{ url_for('closing_review', cid=c.id) }}">Review {{ c.borrower_name or "application" }}{% if c.loan_type %} · {{ c.loan_type }}{% endif %}{% if c.loan_amount %} · {{ c.loan_amount }}{% endif %}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

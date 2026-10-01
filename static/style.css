@@ -142,3 +142,45 @@ textarea { min-height: 88px; resize: vertical; }
 .setup-banner {
   background: #fff4d6; color: #6d5420; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px;
 }
+.nav a .nav-count {
+  display: inline-block;
+  min-width: 1.25em;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e23b3b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.6;
+  text-align: center;
+  vertical-align: middle;
+}
+.nav a.has-flag { color: #fff; }
+.review-alert {
+  background: #fde8e8;
+  border: 2px solid #c44545;
+  color: #6b1d1d;
+}
+.review-alert a { color: #8a1f1f; font-weight: 700; }
+.review-banner {
+  background: #fde8e8;
+  border: 2px solid #c44545;
+  color: #6b1d1d;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 0 0 18px;
+}
+.review-banner strong { display: block; margin-bottom: 4px; font-size: 16px; }
+.review-banner .review-links { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; }
+.review-banner a { font-weight: 700; color: #8a1f1f; }
+.review-card {
+  border: 2px solid #c44545;
+  background: #fff6f6;
+}
+.review-card h3 { color: #8a1f1f; }
+.review-card .n { color: #c44545; }
+.review-list { margin: 8px 0 0; padding-left: 18px; }
+.review-list li { margin: 6px 0; }
+.table tr.needs-review td { background: #fff4d6; }
+.table tr.needs-review td:first-child { box-shadow: inset 4px 0 0 #c44545; }

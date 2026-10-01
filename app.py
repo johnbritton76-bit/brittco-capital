@@ -2235,11 +2235,45 @@ def _dwolla_ui_flags():
     return flags
 
 
+def pending_closing_reviews():
+    """Signed loan applications waiting on staff.
+
+    Status ``submitted`` means the borrower signed and staff have not
+    approved the package or sent it back for changes.
+    """
+    try:
+        ready = db().execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='closing_applications'"
+        ).fetchone()
+        if not ready:
+            return []
+        rows = db().execute(
+            """SELECT c.id, c.borrower_id, c.deal_id, c.loan_id, c.status,
+                      c.loan_type, c.loan_amount, c.submitted_at, c.created_at,
+                      b.name AS borrower_name
+               FROM closing_applications c
+               LEFT JOIN borrowers b ON b.id = c.borrower_id
+               WHERE c.status = 'submitted'
+               ORDER BY COALESCE(c.submitted_at, c.created_at) DESC, c.id DESC"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        return []
+
+
 @app.context_processor
 def inject_new_apps():
     flags = _dwolla_ui_flags()
     if not session.get("staff_id"):
-        flags.update({"new_apps": [], "new_leads": [], "is_super": False})
+        flags.update(
+            {
+                "new_apps": [],
+                "new_leads": [],
+                "is_super": False,
+                "pending_closings": [],
+                "pending_closing_count": 0,
+            }
+        )
         return flags
     try:
         rows = db().execute(
@@ -2259,16 +2293,27 @@ def inject_new_apps():
             ).fetchall()
         except sqlite3.Error:
             leads = []
+        pending = pending_closing_reviews()
         flags.update(
             {
                 "new_apps": [dict(r) for r in rows],
                 "new_leads": [dict(r) for r in leads],
                 "is_super": staff_is_super(),
+                "pending_closings": pending,
+                "pending_closing_count": len(pending),
             }
         )
         return flags
     except sqlite3.Error:
-        flags.update({"new_apps": [], "new_leads": [], "is_super": staff_is_super()})
+        flags.update(
+            {
+                "new_apps": [],
+                "new_leads": [],
+                "is_super": staff_is_super(),
+                "pending_closings": [],
+                "pending_closing_count": 0,
+            }
+        )
         return flags
 
 

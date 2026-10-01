@@ -481,3 +481,108 @@ def test_submitted_profile_fields_sync_to_borrower():
     assert saved["spouse_ssn"] == "222-33-4444"
     assert saved["spouse_dob"] == "1982-04-05"
     assert saved["marital_status"] == "Married"
+
+
+def _pending_ids():
+    with brittco.app.app_context():
+        return [item["id"] for item in brittco.pending_closing_reviews()]
+
+
+def _forms_status_window(html, name):
+    marker = f"<td>{name}</td>"
+    start = html.find(marker)
+    assert start >= 0
+    row_start = html.rfind("<tr", 0, start)
+    row_end = html.find("</tr>", start)
+    assert row_start >= 0 and row_end >= 0
+    return html[row_start:row_end]
+
+
+def test_submitted_application_flags_staff_until_approved():
+    bid = _borrower("Iris Review", "iris.review@example.com")
+    row = _send(bid)
+    assert row["id"] not in _pending_ids()
+
+    staff = _staff()
+    before = staff.get("/")
+    assert before.status_code == 200
+    assert b"Iris Review" not in before.data
+
+    signed = brittco.app.test_client().post(
+        f"/closing/{row['token']}", data=_application("Iris Review")
+    )
+    assert signed.status_code == 200
+    assert b"Submitted" in signed.data
+    pending = _pending_ids()
+    assert row["id"] in pending
+
+    dash = staff.get("/")
+    assert dash.status_code == 200
+    dash_html = dash.data.decode()
+    assert "Loan applications awaiting review" in dash_html
+    assert "Iris Review" in dash_html
+    assert f"/admin/closings/{row['id']}" in dash_html
+    assert (
+        f'class="nav-count" title="Signed loan applications awaiting review">{len(pending)}</span>'
+        in dash_html
+    )
+
+    forms_html = staff.get("/admin/forms").data.decode()
+    window = _forms_status_window(forms_html, "Iris Review")
+    assert "needs-review" in window
+    assert "Needs review" in window
+
+    borrower_html = staff.get(f"/borrowers/{bid}").data.decode()
+    assert "Signed loan application needs review" in borrower_html
+    assert f"/admin/closings/{row['id']}" in borrower_html
+
+    with brittco.app.app_context():
+        cur = brittco.db().execute(
+            """INSERT INTO loans
+               (borrower_id, loan_number, loan_type, property_address, status,
+                original_principal, current_balance)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                bid,
+                "BC-IRIS-1",
+                "Fix and Flip",
+                "10 Oak St, Kansas City, MO",
+                "Current",
+                150000,
+                150000,
+            ),
+        )
+        lid = cur.lastrowid
+        brittco.db().execute(
+            "UPDATE closing_applications SET loan_id=? WHERE id=?",
+            (lid, row["id"]),
+        )
+        brittco.db().commit()
+
+    loan_page = staff.get(f"/loans/{lid}")
+    assert loan_page.status_code == 200, loan_page.data[:500]
+    loan_html = loan_page.data.decode()
+    assert "Signed loan application needs review" in loan_html
+    assert f"/admin/closings/{row['id']}" in loan_html
+
+    approved = staff.post(f"/admin/closings/{row['id']}", data={"action": "approve"})
+    assert approved.status_code in (302, 303)
+    assert row["id"] not in _pending_ids()
+
+    cleared = staff.get("/").data.decode()
+    assert f"/admin/closings/{row['id']}" not in cleared
+    assert "Iris Review" not in cleared.split("Latest 5 loans")[0]
+    forms_after = staff.get("/admin/forms").data.decode()
+    window = _forms_status_window(forms_after, "Iris Review")
+    assert "needs-review" not in window
+    assert "Approved" in window
+    assert "Needs review" not in window
+
+    assert "Signed loan application needs review" not in staff.get(f"/loans/{lid}").data.decode()
+    assert "Signed loan application needs review" not in staff.get(f"/borrowers/{bid}").data.decode()
+
+    review = staff.get(f"/admin/closings/{row['id']}")
+    assert review.status_code == 200
+    package = staff.get(f"/admin/closings/{row['id']}/package.zip")
+    assert package.status_code == 200
+    assert package.data[:2] == b"PK"

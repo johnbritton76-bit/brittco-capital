@@ -34,11 +34,31 @@
     <div class="span-2"><button class="btn" type="submit">Send loan application</button></div>
   </form>
   {% if closings %}
+  {% set waiting = closings|selectattr('status', 'equalto', 'submitted')|list %}
+  {% if waiting %}
+  <p><strong>Signed and waiting on staff.</strong>
+    {% for c in waiting %}
+    <a href="{{ url_for('closing_review', cid=c.id) }}">Review</a>{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+  {% endif %}
   <table class="table" style="margin-top:12px">
     <tr><th>Status</th><th>Loan</th><th>When</th><th></th></tr>
     {% for c in closings %}
-    <tr>
-      <td>{{ c.status }}</td>
+    <tr class="{% if c.status == 'submitted' %}needs-review{% endif %}">
+      <td>
+        {% if c.status == 'submitted' %}
+        <span class="badge bad">Needs review</span>
+        {% elif c.status == 'approved' %}
+        <span class="badge good">Approved</span>
+        {% elif c.status == 'changes_requested' %}
+        <span class="badge warn">Changes requested</span>
+        {% elif c.status == 'sent' %}
+        <span class="badge">Sent</span>
+        {% else %}
+        <span class="badge">{{ c.status or "—" }}</span>
+        {% endif %}
+      </td>
       <td>{{ c.loan_type }} · {{ c.loan_amount }}</td>
       <td>{{ c.created_at }}</td>
       <td>
