@@ -499,6 +499,9 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
       {% endif %}
     </span>
   </summary>
+  {% with bank_bid=loan.borrower_id, bank_next=url_for('loan_detail', lid=loan.id) %}
+  {% include "_portal_bank_switch.html" %}
+  {% endwith %}
   <p class="hint" id="dwolla-service-disclosure">{{ dwolla_service_disclosure }}</p>
   <p class="hint">
     Uses the bank on the borrower profile. Borrower must have ACH authorized.

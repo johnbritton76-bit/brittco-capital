@@ -1,0 +1,17 @@
+<form method="post" action="{{ url_for('borrower_portal_bank', bid=bank_bid) }}" class="form-grid" style="margin:8px 0 12px">
+  <input type="hidden" name="next" value="{{ bank_next }}">
+  <div class="span-2">
+    <label>Request bank info in the borrower portal</label>
+    <select name="portal_bank_request">
+      <option value="auto" {% if portal_bank_mode == 'auto' %}selected{% endif %}>Auto — follow the loan payment plan</option>
+      <option value="on" {% if portal_bank_mode == 'on' %}selected{% endif %}>On — require bank (non-deferred monthly)</option>
+      <option value="off" {% if portal_bank_mode == 'off' %}selected{% endif %}>Off — deferred / no monthly ACH</option>
+    </select>
+    <p class="hint">
+      Auto uses open loans: deferred or interest due at maturity stays off; a non-deferred monthly plan turns the request on.
+      Inferred from the payment plan: {{ 'on' if portal_bank_inferred else 'off' }}.
+      Portal {{ 'asks for bank info until it is on file' if require_bank else 'does not treat missing bank info as incomplete' }}.
+    </p>
+  </div>
+  <div><button class="btn" type="submit">Save portal bank setting</button></div>
+</form>

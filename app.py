@@ -126,7 +126,8 @@ def init_db():
             bank_routing TEXT,
             bank_account TEXT,
             bank_account_type TEXT,
-            ach_authorized INTEGER
+            ach_authorized INTEGER,
+            portal_bank_request TEXT
         );
         CREATE TABLE IF NOT EXISTS deals (
             id INTEGER PRIMARY KEY,
@@ -2070,6 +2071,7 @@ try:
         ("bank_account", "TEXT"),
         ("bank_account_type", "TEXT"),
         ("ach_authorized", "INTEGER"),
+        ("portal_bank_request", "TEXT"),
         ("complete_token", "TEXT"),
         ("gap_email_at", "TEXT"),
     ]:
@@ -4193,6 +4195,82 @@ def request_soft_pull(bid, source):
     )
 
 
+_CLOSED_LOAN_STATUSES = {"paid off", "closed", "termed", "sold", "written off"}
+
+
+def loan_is_nondeferred_monthly(loan):
+    """True when this loan collects a monthly payment that is not deferred to maturity."""
+    freq = (row_val(loan, "payment_frequency") or "").strip().lower()
+    pay = (row_val(loan, "payment_type") or "").strip().lower()
+    blob = f"{freq} {pay}"
+    if any(tok in blob for tok in ("maturity", "deferred", "due at", "at payoff")):
+        return False
+    if "balloon" in pay and "month" not in freq:
+        return False
+    return "month" in freq
+
+
+def portal_bank_override(b):
+    raw = (row_val(b, "portal_bank_request") or "").strip().lower()
+    if raw in ("on", "off"):
+        return raw
+    return "auto"
+
+
+def inferred_portal_bank_required(b):
+    """Deferred plans stay off. A non-deferred monthly plan turns the request on."""
+    try:
+        bid = b["id"] if b is not None and "id" in b.keys() else None
+    except Exception:
+        bid = None
+    if not bid:
+        return False
+    try:
+        rows = db().execute(
+            "SELECT payment_type, payment_frequency, status, archived FROM loans WHERE borrower_id=?",
+            (bid,),
+        ).fetchall()
+    except sqlite3.Error:
+        return False
+    for loan in rows:
+        if str(row_val(loan, "archived") or "") in ("1", "true"):
+            continue
+        if (row_val(loan, "status") or "").strip().lower() in _CLOSED_LOAN_STATUSES:
+            continue
+        if loan_is_nondeferred_monthly(loan):
+            return True
+    return False
+
+
+def portal_bank_required(b):
+    """Staff override wins. Otherwise follow the open loan payment plan."""
+    if not b:
+        return False
+    mode = portal_bank_override(b)
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return inferred_portal_bank_required(b)
+
+
+def normalize_portal_bank_request(raw):
+    val = (raw or "").strip().lower()
+    if val in ("on", "1", "yes", "required"):
+        return "on"
+    if val in ("off", "0", "no"):
+        return "off"
+    return "auto"
+
+
+def set_portal_bank_request(bid, raw):
+    val = normalize_portal_bank_request(raw)
+    db().execute(
+        "UPDATE borrowers SET portal_bank_request=? WHERE id=?",
+        (None if val == "auto" else val, bid),
+    )
+
+
 def profile_ready(b):
     if not b:
         return False, ["profile"]
@@ -4224,6 +4302,9 @@ def profile_ready(b):
             val = ""
         if not str(val or "").strip():
             missing.append(label)
+    if not portal_bank_required(b):
+        bank_labels = {"Bank name", "Bank routing number", "Bank account number"}
+        missing = [label for label in missing if label not in bank_labels]
     years = None
     try:
         years = float(b["years_at_address"]) if b["years_at_address"] not in (None, "") else None
@@ -7586,6 +7667,9 @@ def borrower_detail(bid):
             ).fetchone(),
             db().execute("SELECT id FROM documents WHERE borrower_id=?", (bid,)).fetchall(),
         ),
+        portal_bank_mode=portal_bank_override(b),
+        portal_bank_inferred=inferred_portal_bank_required(b),
+        require_bank=portal_bank_required(b),
         property_files=borrower_property_files(bid),
         named_files=borrower_named_files(bid),
         all_borrowers=db().execute("SELECT id, name FROM borrowers ORDER BY name").fetchall(),
@@ -8366,6 +8450,21 @@ def borrower_portal_password(bid):
     return redirect(url_for("borrower_detail", bid=bid))
 
 
+@app.route("/borrowers/<int:bid>/portal-bank", methods=["POST"])
+@staff_required
+def borrower_portal_bank(bid):
+    row = db().execute("SELECT id FROM borrowers WHERE id=?", (bid,)).fetchone()
+    if not row:
+        return redirect(url_for("borrowers"))
+    set_portal_bank_request(bid, request.form.get("portal_bank_request"))
+    db().commit()
+    session["last_invite_note"] = "Portal bank request updated."
+    nxt = (request.form.get("next") or "").strip()
+    if nxt.startswith("/") and not nxt.startswith("//"):
+        return redirect(nxt)
+    return redirect(url_for("borrower_detail", bid=bid))
+
+
 @app.route("/borrowers/<int:bid>/edit", methods=["GET", "POST"])
 @staff_required
 def borrower_edit(bid):
@@ -8771,6 +8870,7 @@ def accept_invite(token):
                 inv=inv,
                 b=b,
                 missing=missing,
+                require_bank=portal_bank_required(b),
                 done=False,
             )
         bank_err = save_borrower_from_form(request.form, bid=b["id"], existing=b)
@@ -8790,6 +8890,7 @@ def accept_invite(token):
                 inv=inv,
                 b=b,
                 missing=[],
+                require_bank=portal_bank_required(b),
                 dwolla_terms=latest_dwolla_terms("borrower", b["id"]),
                 done=True,
             )
@@ -8799,6 +8900,7 @@ def accept_invite(token):
             inv=inv,
             b=b,
             missing=missing,
+            require_bank=portal_bank_required(b),
             dwolla_terms=latest_dwolla_terms("borrower", b["id"]),
             msg="Saved. Please finish the highlighted fields.",
             done=False,
@@ -8810,6 +8912,7 @@ def accept_invite(token):
         inv=inv,
         b=b,
         missing=missing,
+        require_bank=portal_bank_required(b),
         dwolla_terms=latest_dwolla_terms("borrower", b["id"]) if b else None,
         done=False,
     )
@@ -8914,6 +9017,7 @@ def portal_home():
         flash=request.args.get("msg"),
         ready=ready,
         missing=missing,
+        require_bank=portal_bank_required(b),
         packets=packets,
         form_defs=load_form_defs(),
         form_titles=form_titles(),
@@ -10088,6 +10192,9 @@ def loan_detail(lid):
     ).fetchall()
     latest = letters[0] if letters else None
     ach_plan = loan_ach_plan(lid)
+    borrower_for_bank = db().execute(
+        "SELECT * FROM borrowers WHERE id=?", (loan["borrower_id"],)
+    ).fetchone()
     return render_template(
         "loan_detail.html",
         title=loan["loan_number"],
@@ -10123,6 +10230,9 @@ def loan_detail(lid):
             "SELECT * FROM ach_transfers WHERE loan_id=? ORDER BY id DESC LIMIT 8", (lid,)
         ).fetchall() if True else [],
         ext_options=loan_ext_options(lid),
+        portal_bank_mode=portal_bank_override(borrower_for_bank),
+        portal_bank_inferred=inferred_portal_bank_required(borrower_for_bank),
+        require_bank=portal_bank_required(borrower_for_bank),
         used_exts=db().execute(
             "SELECT * FROM extensions WHERE loan_id=? ORDER BY id", (lid,)
         ).fetchall(),
