@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="top"><h2>{{ 'Edit loan' if loan else 'Enter current loan' }}</h2></div>
+<div class="top"><h2>{{ 'Edit loan' if loan and loan.id else 'Enter current loan' }}</h2></div>
+{% if error %}<p class="flash">{{ error }}</p>{% endif %}
 <form method="post" class="card form-grid">
   <div><label>Borrower</label>
     <select name="borrower_id" required>
@@ -44,7 +45,17 @@
   <div class="flip-only"><label>Total loan amount</label><input name="total_loan_amount" id="total_loan_amount" type="number" step="0.01" value="{{ loan.original_principal if loan else '' }}">
     <p class="hint">Funded loan plus upfront points.</p>
   </div>
-  <div class="flip-only"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10" value="{{ loan.rate if loan else '' }}"></div>
+  <div class="flip-only"><label>Pricing</label>
+    <select name="pricing_mode" id="pricing_mode">
+      <option value="rate" {% if not loan or (loan.pricing_mode or 'rate') != 'flat_fee' %}selected{% endif %}>Interest rate %</option>
+      <option value="flat_fee" {% if loan and loan.pricing_mode == 'flat_fee' %}selected{% endif %}>Flat fee</option>
+    </select>
+    <p class="hint">Interest rate uses the base rate. Flat fee charges a dollar amount instead, and no rate is saved.</p>
+  </div>
+  <div class="flip-only" id="rate-wrap"><label>Base rate (%)</label><input name="rate" id="rate" type="number" step="0.01" placeholder="Example: 10" value="{{ loan.rate if loan and loan.rate else '' }}"></div>
+  <div class="flip-only" id="flat-fee-wrap"><label>Flat fee amount ($)</label><input name="flat_fee" id="flat_fee" type="number" step="0.01" min="0.01" placeholder="Example: 2500" value="{{ loan.flat_fee if loan and loan.flat_fee else '' }}">
+    <p class="hint">Required when pricing is a flat fee. Upfront points, if entered, are still added to the loan amount.</p>
+  </div>
   <div class="flip-only"><label>Base term (months)</label><input name="base_term" id="base_term" type="number" step="1" min="0" placeholder="Example: 3" value="{{ loan.base_term_months if loan else '' }}"></div>
   <div class="standing-only span-2"><h3>Standing / other loan</h3>
     <p class="hint">Interest only until you send a payoff notice. No flip fields and no extensions.</p>
@@ -96,11 +107,11 @@
     <div id="ext-list"></div>
     <button class="btn ghost" type="button" id="add-ext">Add extension</button>
   </div>
-  <div class="span-2"><button class="btn" type="submit">{{ 'Save changes' if loan else 'Save loan' }}</button>
-    {% if loan %}<a class="btn ghost" href="{{ url_for('loan_detail', lid=loan.id) }}">Cancel</a>{% endif %}
+  <div class="span-2"><button class="btn" type="submit">{{ 'Save changes' if loan and loan.id else 'Save loan' }}</button>
+    {% if loan and loan.id %}<a class="btn ghost" href="{{ url_for('loan_detail', lid=loan.id) }}">Cancel</a>{% endif %}
   </div>
 </form>
-{% if loan %}
+{% if loan and loan.id %}
 <div class="card" style="margin-top:16px">
   <h3>Delete this loan</h3>
   <p class="hint">This removes the loan and its payments. Type DELETE to confirm.</p>
@@ -168,7 +179,8 @@
     var out = document.getElementById("payment_amount");
     if (!out || t !== "Balloon") return;
     var prin = principal();
-    var rate = num("rate");
+    var mode = (document.getElementById("pricing_mode")||{}).value || "rate";
+    var charge = (!standingOn() && mode === "flat_fee") ? num("flat_fee") : prin * num("rate") / 100;
     var deferred = 0;
     var rates = document.querySelectorAll('[name="ext_rate"]');
     var whens = document.querySelectorAll('[name="ext_when"]');
@@ -176,7 +188,7 @@
       var when = (whens[i] && whens[i].value) || "deferred";
       if (when === "deferred") deferred += parseFloat(rates[i].value || "0") || 0;
     }
-    var payoff = prin + prin * rate / 100 + prin * deferred / 100;
+    var payoff = prin + charge + prin * deferred / 100;
     if (payoff) out.value = payoff.toFixed(2);
   }
   function moneyTxt(n){
@@ -261,6 +273,10 @@
   if (ptype) ptype.addEventListener("change", syncPayLabel);
   var rateEl = document.querySelector('[name="rate"]');
   if (rateEl) rateEl.addEventListener("input", syncPayoff);
+  var feeEl = document.getElementById("flat_fee");
+  if (feeEl) feeEl.addEventListener("input", syncPayoff);
+  var pricingEl = document.getElementById("pricing_mode");
+  if (pricingEl) pricingEl.addEventListener("change", syncPricing);
   var addExt = document.getElementById("add-ext");
   if (addExt) addExt.addEventListener("click", function(){ row(1, 2); });
   function standingOn(){
@@ -271,8 +287,30 @@
   function isGap(){
     return (document.getElementById("loan_type")||{}).value === "Gap Loan";
   }
+  function syncPricing(){
+    var standing = standingOn();
+    var modeEl = document.getElementById("pricing_mode");
+    var mode = modeEl ? modeEl.value : "rate";
+    var flat = !standing && mode === "flat_fee";
+    var rateWrap = document.getElementById("rate-wrap");
+    var feeWrap = document.getElementById("flat-fee-wrap");
+    var rate = document.getElementById("rate");
+    var fee = document.getElementById("flat_fee");
+    if (!standing){
+      if (rateWrap) rateWrap.style.display = flat ? "none" : "";
+      if (feeWrap) feeWrap.style.display = flat ? "" : "none";
+    }
+    if (rate) rate.disabled = flat;
+    if (fee){
+      fee.disabled = !flat;
+      fee.required = flat;
+    }
+    syncPayoff();
+  }
   function applyGapDefaults(){
     if (!isGap()) return;
+    var mode = document.getElementById("pricing_mode");
+    if (mode) mode.value = "rate";
     var rate = document.getElementById("rate");
     if (rate) rate.value = "15";
     var term = document.getElementById("base_term");
@@ -304,6 +342,7 @@
     }
     var tot = document.getElementById("total_loan_amount");
     if (tot) tot.readOnly = false;
+    syncPricing();
   }
   ["loan_type","term_kind"].forEach(function(id){
     var el = document.getElementById(id);

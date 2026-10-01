@@ -176,6 +176,8 @@ def init_db():
             late_fee REAL,
             status TEXT,
             notes TEXT,
+            pricing_mode TEXT,
+            flat_fee REAL,
             archived INTEGER,
             archived_at TEXT
         );
@@ -2092,6 +2094,13 @@ try:
     if loan_cols2 and "brittco_pct" not in loan_cols2:
         _c.execute("ALTER TABLE loans ADD COLUMN brittco_pct REAL")
         _c.execute("UPDATE loans SET brittco_pct=0 WHERE brittco_pct IS NULL")
+    for col, typ in (("pricing_mode", "TEXT"), ("flat_fee", "REAL")):
+        if loan_cols2 and col not in loan_cols2:
+            _c.execute(f"ALTER TABLE loans ADD COLUMN {col} {typ}")
+    if loan_cols2:
+        _c.execute(
+            "UPDATE loans SET pricing_mode='rate' WHERE pricing_mode IS NULL OR TRIM(pricing_mode)=''"
+        )
     _c.execute(
         """CREATE TABLE IF NOT EXISTS books_entries (
             id INTEGER PRIMARY KEY,
@@ -3627,8 +3636,21 @@ def loan_term_days(loan, p=None):
     return 90
 
 
+def loan_is_flat_fee(loan):
+    return (row_val(loan, "pricing_mode") or "").strip().lower() == "flat_fee"
+
+
+def loan_flat_fee(loan):
+    if not loan_is_flat_fee(loan):
+        return 0.0
+    return money(row_val(loan, "flat_fee"))
+
+
 def payoff_amount(loan):
     prin = money(row_val(loan, "current_balance")) or money(row_val(loan, "original_principal"))
+    if loan is not None and loan_is_flat_fee(loan):
+        deferred = deferred_extension_fee(loan)
+        return round(prin + loan_flat_fee(loan) + deferred, 2)
     extra = money(row_val(loan, "payment_amount"))
     kind = (row_val(loan, "loan_type") or "") + " " + (row_val(loan, "payment_type") or "")
     if extra and extra < prin * 0.25 and ("Transactional" in kind or "Fee at payoff" in kind or "At payoff" in kind):
@@ -3666,12 +3688,18 @@ def payoff_defaults(loan):
     total = payoff_amount(loan)
     fee = max(0.0, round(total - prin, 2))
     days = loan_term_days(loan) or 0
+    flat = loan_is_flat_fee(loan)
     kind = (row_val(loan, "loan_type") or "") + " " + (row_val(loan, "payment_type") or "")
-    if days and fee and ("Transactional" in kind or "Fee at payoff" in kind or "At payoff" in kind):
+    if flat:
+        per = 0.0
+        shown_rate = 0.0
+    elif days and fee and ("Transactional" in kind or "Fee at payoff" in kind or "At payoff" in kind):
         per = round(fee / days, 2)
+        shown_rate = money(row_val(loan, "rate")) or money(row_val(loan, "points"))
     else:
         rate = money(row_val(loan, "rate"))
         per = round(prin * rate / 100.0 / 365.0, 2) if rate else 0.0
+        shown_rate = rate or money(row_val(loan, "points"))
     wire = company_wire()
     if not wire.get("wire_further"):
         wire["wire_further"] = row_val(loan, "property_address") or ""
@@ -3683,7 +3711,9 @@ def payoff_defaults(loan):
         "other_fees": 0.0,
         "per_diem": per,
         "total": total,
-        "rate": money(row_val(loan, "rate")) or money(row_val(loan, "points")),
+        "rate": shown_rate,
+        "pricing_mode": "flat_fee" if flat else "rate",
+        "flat_fee": loan_flat_fee(loan) if flat else 0.0,
         "term_days": days,
         "start_date": row_val(loan, "start_date") or "",
         "maturity_date": row_val(loan, "maturity_date") or "",
@@ -4675,6 +4705,24 @@ def row_val(row, key):
     return "" if v is None else str(v)
 
 
+def loan_for_deal(deal):
+    """Latest booked loan for an application, if staff already entered one."""
+    if deal is None:
+        return None
+    try:
+        did = deal["id"]
+    except Exception:
+        return None
+    if not did:
+        return None
+    try:
+        return db().execute(
+            "SELECT * FROM loans WHERE deal_id=? ORDER BY id DESC LIMIT 1", (did,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
 def form_prefill(borrower, deal=None):
     parts = [
         row_val(borrower, "address"),
@@ -4695,7 +4743,7 @@ def form_prefill(borrower, deal=None):
     lender_phone = os.environ.get("LENDER_PHONE") or "(816) 694-1658"
     lender_email = os.environ.get("LENDER_EMAIL") or "john@brittcocapital.com"
     lender_officer = os.environ.get("LENDER_OFFICER") or "John Britton, President"
-    return {
+    data = {
         "guarantor_name": name,
         "borrower_name": name,
         "legal_name": name,
@@ -4755,6 +4803,14 @@ def form_prefill(borrower, deal=None):
         "spouse_dob": row_val(borrower, "spouse_dob"),
         "spouse_ssn": row_val(borrower, "spouse_ssn"),
     }
+    loan = loan_for_deal(deal)
+    if loan is not None and loan_is_flat_fee(loan):
+        fee = loan_flat_fee(loan)
+        if fee:
+            data["profit_fee"] = f"{fee:,.2f}"
+            data["profit_fee_words"] = money_words(fee)
+        data["pricing_mode"] = "flat_fee"
+    return data
 
 
 def add_business_days(start, n):
@@ -4798,7 +4854,11 @@ def apply_packet_data(b, deal, extra):
     data = form_prefill(b, deal)
     amt = money(extra.get("loan_amount")) or money(deal["loan_amount"] if deal else 0)
     fee = money(extra.get("points"))
-    fee_amt = amt * fee / 100.0 if fee else money(extra.get("fee_amount"))
+    loan = loan_for_deal(deal)
+    if loan is not None and loan_is_flat_fee(loan) and loan_flat_fee(loan):
+        fee_amt = loan_flat_fee(loan)
+    else:
+        fee_amt = amt * fee / 100.0 if fee else money(extra.get("fee_amount"))
     start = parse_date(extra.get("start_date")) or date.today()
     days = int(money(extra.get("term_days")) or 0)
     months = int(money(extra.get("term_months")) or 0)
@@ -8559,7 +8619,8 @@ def deal_detail(did):
         "SELECT * FROM documents WHERE deal_id=? ORDER BY id DESC", (did,)
     ).fetchall()
     existing_loan = db().execute(
-        "SELECT id, loan_number FROM loans WHERE deal_id=? ORDER BY id DESC", (did,)
+        "SELECT id, loan_number, pricing_mode, flat_fee, rate FROM loans WHERE deal_id=? ORDER BY id DESC",
+        (did,),
     ).fetchone()
     complete = application_completeness(borrower, d, docs)
     memo = underwriting_memo(d, borrower, uw, complete)
@@ -8616,6 +8677,9 @@ def deal_create_loan(did):
         points = money(d["points"]) or 3.0
         pay_type = "Flat fee"
         notes = "Transactional Loan: 3% flat fee for up to 7 days. Extensions beyond 7 days are negotiable."
+        pricing_mode = "flat_fee"
+        flat_fee = round(principal * points / 100.0, 2) or None
+        booked_rate = None
     else:
         months = int(d["term_months"] or 12)
         maturity = (start + timedelta(days=30 * months)).isoformat()
@@ -8623,14 +8687,17 @@ def deal_create_loan(did):
         points = money(d["points"]) or None
         pay_type = "Interest only"
         notes = "Created from funded deal"
+        pricing_mode = "rate"
+        flat_fee = None
+        booked_rate = money(d["rate"]) or None
     number = f"BC-{did:04d}"
     cur = db().execute(
         """INSERT INTO loans
         (borrower_id, deal_id, loan_number, loan_type, property_address,
          original_principal, current_balance, rate, points, start_date, maturity_date,
          payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
-         status, notes)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         status, notes, pricing_mode, flat_fee)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             d["borrower_id"],
             did,
@@ -8639,7 +8706,7 @@ def deal_create_loan(did):
             d["address"],
             principal,
             principal,
-            money(d["rate"]) or None,
+            booked_rate,
             points,
             start.isoformat(),
             maturity,
@@ -8650,9 +8717,12 @@ def deal_create_loan(did):
             0,
             "Current",
             notes,
+            pricing_mode,
+            flat_fee,
         ),
     )
     db().execute("UPDATE deals SET status=? WHERE id=?", ("Funded", did))
+    sync_application_pricing(did, pricing_mode, booked_rate)
     db().commit()
     return redirect(url_for("loan_detail", lid=cur.lastrowid))
 
@@ -9535,6 +9605,104 @@ def loans():
     )
 
 
+def _pricing_from_form(f, standing=False):
+    """Return pricing_mode, rate, flat_fee, and an error when a flat fee is missing.
+
+    Rate mode keeps the posted interest rate. Flat fee clears the rate so the
+    loan is not shown or sent as if it carried interest.
+    """
+    mode = "flat_fee" if (f.get("pricing_mode") or "").strip() == "flat_fee" else "rate"
+    if standing:
+        mode = "rate"
+    if mode == "flat_fee":
+        raw = f.get("flat_fee")
+        if raw in (None, ""):
+            return mode, None, None, "Enter a flat fee amount."
+        fee = money(raw)
+        if fee <= 0:
+            return mode, None, None, "Enter a flat fee amount."
+        return mode, None, round(fee, 2), None
+    return mode, (money(f.get("rate")) or None), None, None
+
+
+def sync_application_pricing(deal_id, mode, rate):
+    """Copy booked pricing onto the linked application so closing defaults match."""
+    if not deal_id:
+        return
+    try:
+        if mode == "flat_fee":
+            db().execute("UPDATE deals SET rate=? WHERE id=?", (None, deal_id))
+        elif rate not in (None, ""):
+            db().execute("UPDATE deals SET rate=? WHERE id=?", (rate, deal_id))
+    except sqlite3.Error:
+        pass
+
+
+def _posted_ext_options(f):
+    months = f.getlist("ext_months")
+    rates = f.getlist("ext_rate")
+    whens = f.getlist("ext_when")
+    out = []
+    for i, m in enumerate(months):
+        out.append(
+            {
+                "months": m,
+                "rate": rates[i] if i < len(rates) else "",
+                "when": whens[i] if i < len(whens) else "deferred",
+            }
+        )
+    return out
+
+
+def _loan_replay(f, existing=None):
+    """Form values to redisplay when a flat fee was left blank."""
+
+    def num_id(key):
+        raw = f.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    standing = (f.get("term_kind") or "") == "Perpetual" or (f.get("loan_type") or "") == "Other"
+    mode = "rate" if standing else ("flat_fee" if (f.get("pricing_mode") or "") == "flat_fee" else "rate")
+    try:
+        unsecured_n = int(f.get("unsecured")) if f.get("unsecured") not in (None, "") else 1
+    except (TypeError, ValueError):
+        unsecured_n = 1
+    return {
+        "id": existing["id"] if existing is not None else None,
+        "borrower_id": num_id("borrower_id"),
+        "deal_id": num_id("deal_id"),
+        "loan_number": f.get("loan_number") or "",
+        "loan_type": f.get("loan_type") or "",
+        "term_kind": f.get("term_kind") or "Fixed",
+        "property_address": f.get("property_address") or "",
+        "purchase_price": f.get("purchase_price") or "",
+        "original_principal": f.get("loan_amount") or f.get("standing_principal") or f.get("total_loan_amount") or "",
+        "rehab_cost": f.get("rehab_cost") or "",
+        "points": f.get("points") or "",
+        "rate": f.get("rate") or "",
+        "pricing_mode": mode,
+        "flat_fee": f.get("flat_fee") or "",
+        "base_term_months": f.get("base_term") or "",
+        "payment_amount": f.get("monthly_interest") or f.get("payment_amount") or "",
+        "first_payment_amount": f.get("first_payment_amount") or "",
+        "next_payment_due": f.get("first_due") or f.get("next_payment_due") or "",
+        "call_notice_days": f.get("call_notice_days") or 90,
+        "unsecured": unsecured_n,
+        "payoff_notice_on": f.get("payoff_notice_on") or "",
+        "start_date": f.get("start_date") or "",
+        "payment_type": f.get("payment_type") or "",
+        "payment_frequency": f.get("payment_frequency") or "",
+        "late_fee": f.get("late_fee") or "",
+        "status": f.get("status") or "Current",
+        "notes": f.get("notes") or "",
+    }
+
+
 @app.route("/loans/new", methods=["GET", "POST"])
 @staff_required
 def loan_new():
@@ -9543,6 +9711,18 @@ def loan_new():
     if request.method == "POST":
         f = request.form
         standing = (f.get("term_kind") or "") == "Perpetual" or (f.get("loan_type") or "") == "Other"
+        mode, rate_val, flat_fee, pricing_error = _pricing_from_form(f, standing)
+        if pricing_error:
+            return render_template(
+                "loan_form.html",
+                title="New loan",
+                nav="loans",
+                borrowers=borrowers,
+                deals=deals,
+                loan=_loan_replay(f),
+                ext_options=_posted_ext_options(f),
+                error=pricing_error,
+            )
         purchase = money(f.get("purchase_price"))
         rehab = money(f.get("rehab_cost"))
         points = money(f.get("points"))
@@ -9579,22 +9759,24 @@ def loan_new():
         status = f.get("status") or "Current"
         if status == "Late":
             status = "Current"
+        deal_id = int(f["deal_id"]) if f.get("deal_id") else None
         cur = db().execute(
             """INSERT INTO loans
             (borrower_id, deal_id, loan_number, loan_type, property_address,
              original_principal, current_balance, rate, points, start_date, maturity_date,
              payment_type, payment_amount, payment_frequency, next_payment_due, late_fee,
-             status, notes, base_term_months, purchase_price, rehab_cost)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             status, notes, base_term_months, purchase_price, rehab_cost,
+             pricing_mode, flat_fee)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(f["borrower_id"]),
-                int(f["deal_id"]) if f.get("deal_id") else None,
+                deal_id,
                 f.get("loan_number"),
                 f.get("loan_type"),
                 f.get("property_address"),
                 principal,
                 principal,
-                money(f.get("rate")) or None,
+                rate_val,
                 points or None,
                 start,
                 maturity,
@@ -9608,6 +9790,8 @@ def loan_new():
                 base_term,
                 purchase,
                 rehab,
+                mode,
+                flat_fee,
             ),
         )
         lid = cur.lastrowid
@@ -9637,6 +9821,7 @@ def loan_new():
                 "UPDATE loans SET payment_amount=? WHERE id=?",
                 (payoff_amount(saved), lid),
             )
+        sync_application_pricing(deal_id, mode, rate_val)
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
     return render_template(
@@ -9709,6 +9894,18 @@ def loan_edit(lid):
     if request.method == "POST":
         f = request.form
         v = _loan_values_from_form(f)
+        mode, rate_val, flat_fee, pricing_error = _pricing_from_form(f, v["standing"])
+        if pricing_error:
+            return render_template(
+                "loan_form.html",
+                title="Edit loan",
+                nav="loans",
+                borrowers=borrowers,
+                deals=deals,
+                loan=_loan_replay(f, loan),
+                ext_options=_posted_ext_options(f),
+                error=pricing_error,
+            )
         old_prin = money(loan["original_principal"])
         paid = db().execute(
             "SELECT COALESCE(SUM(amount),0) FROM payments WHERE loan_id=?", (lid,)
@@ -9717,22 +9914,24 @@ def loan_edit(lid):
             balance = max(0.0, (money(loan["current_balance"]) or 0) + ((v["principal"] or 0) - (old_prin or 0)))
         else:
             balance = v["principal"]
+        deal_id = int(f["deal_id"]) if f.get("deal_id") else None
         db().execute(
             """UPDATE loans SET
                borrower_id=?, deal_id=?, loan_number=?, loan_type=?, property_address=?,
                original_principal=?, current_balance=?, rate=?, points=?, start_date=?, maturity_date=?,
                payment_type=?, payment_amount=?, payment_frequency=?, next_payment_due=?, late_fee=?,
-               status=?, notes=?, base_term_months=?, purchase_price=?, rehab_cost=?
+               status=?, notes=?, base_term_months=?, purchase_price=?, rehab_cost=?,
+               pricing_mode=?, flat_fee=?
                WHERE id=?""",
             (
                 int(f["borrower_id"]),
-                int(f["deal_id"]) if f.get("deal_id") else None,
+                deal_id,
                 f.get("loan_number"),
                 f.get("loan_type"),
                 f.get("property_address"),
                 v["principal"],
                 balance,
-                money(f.get("rate")) or None,
+                rate_val,
                 v["points"] or None,
                 v["start"],
                 v["maturity"],
@@ -9746,6 +9945,8 @@ def loan_edit(lid):
                 v["base_term"],
                 v["purchase"],
                 v["rehab"],
+                mode,
+                flat_fee,
                 lid,
             ),
         )
@@ -9779,6 +9980,7 @@ def loan_edit(lid):
                 "UPDATE loans SET payment_amount=? WHERE id=?",
                 (payoff_amount(saved), lid),
             )
+        sync_application_pricing(deal_id, mode, rate_val)
         db().commit()
         return redirect(url_for("loan_detail", lid=lid))
     return render_template(
@@ -10600,7 +10802,18 @@ def loan_closeout_pdf(loan, borrower):
     for p in pays:
         k = p["applied_to"] or "Other"
         by_kind[k] = by_kind.get(k, 0) + money(p["amount"])
-    base_fee = prin * money(row_val(loan, "rate")) / 100.0
+    if loan_is_flat_fee(loan):
+        base_fee = loan_flat_fee(loan)
+        pricing_line = (
+            f"  Pricing: flat fee ${base_fee:,.2f} for {row_val(loan, 'base_term_months') or '—'} months (no interest rate)"
+        )
+        fee_label = f"  Flat fee: ${base_fee:,.2f}"
+    else:
+        base_fee = prin * money(row_val(loan, "rate")) / 100.0
+        pricing_line = (
+            f"  Base rate: {money(row_val(loan, 'rate')):g}% for {row_val(loan, 'base_term_months') or '—'} months"
+        )
+        fee_label = f"  Base rate fee: ${base_fee:,.2f}"
     deferred = deferred_extension_fee(loan)
     upfront = upfront_extension_fee(loan)
     payoff = payoff_amount(loan)
@@ -10619,13 +10832,13 @@ def loan_closeout_pdf(loan, borrower):
         f"  Rehab cost: ${money(row_val(loan, 'rehab_cost')):,.2f}",
         f"  Points: {money(row_val(loan, 'points')):g}%",
         f"  Total loan amount / principal: ${prin:,.2f}",
-        f"  Base rate: {money(row_val(loan, 'rate')):g}% for {row_val(loan, 'base_term_months') or '—'} months",
+        pricing_line,
         f"  Start: {row_val(loan, 'start_date')}   Maturity: {row_val(loan, 'maturity_date')}",
         f"  Remaining balance at statement: ${bal:,.2f}",
         "",
         "SCHEDULED COST TO PAY OFF",
         f"  Principal: ${prin:,.2f}",
-        f"  Base rate fee: ${base_fee:,.2f}",
+        fee_label,
         f"  Deferred extension fees (in balloon): ${deferred:,.2f}",
         f"  Up-front extension fees (collected separately): ${upfront:,.2f}",
         f"  Balloon / payoff due: ${payoff:,.2f}",
