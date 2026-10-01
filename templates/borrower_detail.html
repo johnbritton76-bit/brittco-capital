@@ -71,7 +71,7 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 <div class="profile-actions">
   <a href="{{ url_for('borrower_edit', bid=b.id) }}">Profile</a>
   <a href="{{ url_for('borrower_soft_pull', bid=b.id) }}">Soft credit pull</a>
-  <a href="{{ url_for('loan_new') }}">Enter a loan for this borrower</a>
+  <a href="{{ url_for('loan_new', borrower_id=b.id) }}">Enter a loan for this borrower</a>
   <a href="{{ url_for('borrower_statement_pdf_view', bid=b.id) }}">View this month’s statement</a>
   <form method="post" action="{{ url_for('borrower_send_welcome', bid=b.id) }}" class="welcome-stack">
     <label class="ach-toggle">

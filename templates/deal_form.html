@@ -11,11 +11,11 @@
   </div>
   <div><label>Loan type</label>
     <select name="loan_type">
-      {% for t in ['Fix and Flip','Transactional Loan','Gap Loan'] %}
+      {% for t in deal_loan_types %}
       <option value="{{ t }}" {% if d and d.loan_type==t %}selected{% endif %}>{{ t }}</option>
       {% endfor %}
     </select>
-    <p class="hint">Gap Loan fills 15% for 3 months and two 3% extensions. Transactional: short flat fee. Edit any field.</p>
+    <p class="hint">Gap Loan fills 15% for 3 months and two 3% extensions. Transactional: short flat fee. Custom Loan leaves rate, points, and term empty. Edit any field.</p>
   </div>
   <div class="span-2"><label>Property address</label><input name="address" value="{{ d.address if d else '' }}" required></div>
   <div><label>Purchase price</label><input name="purchase_price" type="number" step="0.01" value="{{ d.purchase_price if d else '' }}"></div>
@@ -46,6 +46,15 @@
   var points = document.querySelector('[name="points"]');
   var term = document.querySelector('[name="term_months"]');
   var purchase = document.querySelector('[name="purchase_price"]');
+  var initial = {
+    rate: rate ? rate.value : "",
+    points: points ? points.value : "",
+    term: term ? term.value : ""
+  };
+  function showPurchase(){
+    if (!purchase) return;
+    purchase.closest("div").style.display = "";
+  }
   function sync(){
     if (!type) return;
     if (type.value === "Gap Loan"){
@@ -54,14 +63,32 @@
       if (term && !term.dataset.touched) term.value = "3";
       if (purchase){ purchase.required = false; purchase.closest("div").style.display = "none"; }
     } else {
-      if (purchase){ purchase.closest("div").style.display = ""; }
+      showPurchase();
     }
+  }
+  function blankCustom(){
+    [rate, points, term].forEach(function(el){
+      if (el && !el.dataset.touched) el.value = "";
+    });
+    showPurchase();
+  }
+  function restoreStandard(){
+    if (rate && !rate.dataset.touched) rate.value = initial.rate;
+    if (points && !points.dataset.touched) points.value = initial.points;
+    if (term && !term.dataset.touched) term.value = initial.term;
   }
   ["rate","points","term_months"].forEach(function(n){
     var el = document.querySelector('[name="'+n+'"]');
     if (el) el.addEventListener("input", function(){ el.dataset.touched = "1"; });
   });
-  if (type) type.addEventListener("change", sync);
+  var before = type ? type.value : "";
+  if (type) type.addEventListener("change", function(){
+    var previous = before;
+    before = type.value;
+    if (type.value === "Custom Loan") blankCustom();
+    else if (previous === "Custom Loan" && type.value !== "Gap Loan") restoreStandard();
+    sync();
+  });
   sync();
 })();
 </script>

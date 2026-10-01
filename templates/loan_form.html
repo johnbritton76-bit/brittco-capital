@@ -3,22 +3,25 @@
 <div class="top"><h2>{{ 'Edit loan' if loan and loan.id else 'Enter current loan' }}</h2></div>
 {% if error %}<p class="flash">{{ error }}</p>{% endif %}
 <form method="post" class="card form-grid">
+  {% set chosen_borrower = loan.borrower_id if loan else (selected_borrower|default(none)) %}
+  {% set chosen_deal = loan.deal_id if loan else (selected_deal|default(none)) %}
+  {% set chosen_type = loan.loan_type if loan else (selected_type|default('')) %}
   <div><label>Borrower</label>
     <select name="borrower_id" required>
-      {% for b in borrowers %}<option value="{{ b.id }}" {% if loan and loan.borrower_id==b.id %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
+      {% for b in borrowers %}<option value="{{ b.id }}" {% if chosen_borrower==b.id %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
     </select>
   </div>
   <div><label>Related application (optional)</label>
     <select name="deal_id">
       <option value="">None</option>
-      {% for d in deals %}<option value="{{ d.id }}" {% if loan and loan.deal_id==d.id %}selected{% endif %}>#{{ d.id }} {{ d.address }}</option>{% endfor %}
+      {% for d in deals %}<option value="{{ d.id }}" {% if chosen_deal==d.id %}selected{% endif %}>#{{ d.id }} {{ d.address }}</option>{% endfor %}
     </select>
   </div>
   <div><label>Loan number</label><input name="loan_number" placeholder="BC-1002" value="{{ loan.loan_number if loan else '' }}"></div>
   <div><label>Loan type</label>
     <select name="loan_type" id="loan_type">
-      {% for t in ['Fix and Flip','Transactional Loan','Gap Loan','Other'] %}
-      <option {% if loan and loan.loan_type==t %}selected{% endif %}>{{ t }}</option>
+      {% for t in staff_loan_types %}
+      <option value="{{ t }}" {% if chosen_type==t %}selected{% endif %}>{{ t }}</option>
       {% endfor %}
     </select>
   </div>
@@ -307,22 +310,49 @@
     }
     syncPayoff();
   }
+  function markAuto(el){
+    if (el) el.dataset.auto = "1";
+  }
+  function clearIfAuto(el, fallback){
+    if (!el || el.dataset.auto !== "1") return;
+    el.value = fallback == null ? "" : fallback;
+    delete el.dataset.auto;
+  }
   function applyGapDefaults(){
     if (!isGap()) return;
     var mode = document.getElementById("pricing_mode");
-    if (mode) mode.value = "rate";
+    if (mode){ mode.value = "rate"; markAuto(mode); }
     var rate = document.getElementById("rate");
-    if (rate) rate.value = "15";
+    if (rate){ rate.value = "15"; markAuto(rate); }
     var term = document.getElementById("base_term");
-    if (term) term.value = "3";
+    if (term){ term.value = "3"; markAuto(term); }
     var ptype = document.getElementById("payment_type");
-    if (ptype) ptype.value = "Balloon";
+    if (ptype){ ptype.value = "Balloon"; markAuto(ptype); }
     var freq = document.querySelector('[name="payment_frequency"]');
-    if (freq) freq.value = "Interest due at maturity";
-    if (list) list.innerHTML = "";
-    n = 0;
+    if (freq){ freq.value = "Interest due at maturity"; markAuto(freq); }
+    if (list){
+      list.innerHTML = "";
+      n = 0;
+      list.dataset.auto = "1";
+    }
     row(1, 3);
     row(1, 3);
+  }
+  function clearCustomProductFill(){
+    clearIfAuto(document.getElementById("pricing_mode"), "rate");
+    clearIfAuto(document.getElementById("rate"), "");
+    clearIfAuto(document.getElementById("base_term"), "");
+    clearIfAuto(document.getElementById("payment_type"), "Interest only");
+    clearIfAuto(document.querySelector('[name="payment_frequency"]'), "Interest due at maturity");
+    clearIfAuto(document.getElementById("term_kind"), "Fixed");
+    if (list && list.dataset.auto === "1"){
+      list.innerHTML = "";
+      n = 0;
+      delete list.dataset.auto;
+    }
+    syncTotal();
+    syncMaturity();
+    syncPayLabel();
   }
   function syncStanding(){
     var on = standingOn();
@@ -349,9 +379,10 @@
     if (el) el.addEventListener("change", function(){
       if (id === "loan_type" && el.value === "Other"){
         var k = document.getElementById("term_kind");
-        if (k) k.value = "Perpetual";
+        if (k){ k.value = "Perpetual"; markAuto(k); }
       }
       if (id === "loan_type" && el.value === "Gap Loan") applyGapDefaults();
+      if (id === "loan_type" && el.value === "Custom Loan") clearCustomProductFill();
       syncStanding();
       syncPayLabel();
       syncMaturity();
