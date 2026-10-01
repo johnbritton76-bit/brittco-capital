@@ -3,26 +3,38 @@
 <div class="top">
   <div>
     <div class="tag">Administration</div>
-    <h2>Forms</h2>
+    <h2>Closing applications</h2>
   </div>
 </div>
-{% if saved %}<div class="flash">Form saved.</div>{% endif %}
-<p class="hint">These templates are used when staff send forms to a borrower. Edit the legal text here. Field tokens look like {{ '{{property}}' }} and are filled from the borrower profile and the form fields.</p>
+<p class="hint">{{ disclaimer }}</p>
+<p class="hint">Send a prefilled application from a borrower, deal, or loan. The old deed and note templates are no longer seeded. Completed copies already on a borrower file stay available there.</p>
 <div class="card">
 <table class="table">
-  <tr><th>Form</th><th>Updated</th><th></th></tr>
-  {% for key, spec in forms.items() %}
+  <tr><th>Borrower</th><th>Status</th><th>Loan</th><th>Submitted</th><th></th></tr>
+  {% for c in closings %}
   <tr>
-    <td>
-      <strong>{{ spec.title }}</strong>
-      <div class="hint">{{ spec.blurb }}</div>
-    </td>
-    <td class="hint">{{ key }}</td>
-    <td><a class="btn" href="{{ url_for('admin_form_edit', key=key) }}">View / edit</a></td>
+    <td>{{ c.borrower_name or "—" }}</td>
+    <td>{{ c.status }}</td>
+    <td>{{ c.loan_type }} · {{ c.loan_amount }}</td>
+    <td>{{ c.submitted_at or c.created_at }}</td>
+    <td><a class="btn" href="{{ url_for('closing_review', cid=c.id) }}">Review</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="3">No templates yet.</td></tr>
+  <tr><td colspan="5">No closing applications yet.</td></tr>
   {% endfor %}
 </table>
 </div>
+{% if forms %}
+<details class="box">
+  <summary>Other templates</summary>
+  <table class="table">
+    {% for key, spec in forms.items() %}
+    <tr>
+      <td>{{ spec.title }}</td>
+      <td><a href="{{ url_for('admin_form_edit', key=key) }}">Edit</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</details>
+{% endif %}
 {% endblock %}

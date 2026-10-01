@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign your Brittco application</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .perjury { border: 2px solid #16324f; background: #f4f7fb; padding: 12px 14px; margin: 8px 0 12px; }
+    .perjury strong { display: block; margin-bottom: 4px; }
+    .esign {
+      font-family: "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+      font-style: italic; font-size: 28px; color: #1a2744; min-height: 36px;
+    }
+    #spouse-sign { display: none; }
+  </style>
+</head>
+<body>
+<main class="main" style="max-width:760px;margin:24px auto">
+  <img class="logo" src="/static/logo.jpg" alt="Brittco Capital Inc">
+  <h2>Loan application and electronic signature</h2>
+  <p class="hint">{{ disclaimer }}</p>
+  {% if packet.review_note and packet.status == 'changes_requested' %}
+  <div class="flash">Brittco asked for an update: {{ packet.review_note }}</div>
+  {% endif %}
+  {% if not editable %}
+  <div class="card">
+    <h3>Submitted</h3>
+    <p>Brittco has this application{% if packet.status == 'approved' %} and has approved it{% endif %}. You do not need to sign again unless Brittco sends it back.</p>
+    <p class="esign">{{ signatures.borrower.typed_name if signatures.get('borrower') else '' }}</p>
+    {% if signatures.get('spouse') %}
+    <p class="esign">{{ signatures.spouse.typed_name }}</p>
+    {% endif %}
+  </div>
+  {% else %}
+  {% if errors %}
+  <div class="flash">Still needed: {{ errors|join(', ') }}</div>
+  {% endif %}
+  <div class="card">
+    <h3>Terms from Brittco</h3>
+    <p>{{ summary }}</p>
+    <p class="hint">Maturity {{ data.maturity_date }}. These commercial terms stay as Brittco set them.</p>
+  </div>
+  <form method="post" class="card form-grid" id="closing-form">
+    {% for key, label, kind in fields %}
+    <div class="{% if kind == 'area' or key in ['borrower_notice_address','property','legal_description','guarantor_address','trustee_address'] %}span-2{% endif %} {% if key.startswith('spouse_') %}spouse-field{% endif %}">
+      <label>{{ label }}</label>
+      {% if kind == 'area' %}
+      <textarea name="{{ key }}" rows="4">{{ data.get(key, '') }}</textarea>
+      {% elif kind == 'marital' %}
+      <label><input type="radio" name="marital_status" value="Single" {% if data.get('marital_status') == 'Single' %}checked{% endif %}> Single</label>
+      <label><input type="radio" name="marital_status" value="Married" {% if data.get('marital_status') == 'Married' %}checked{% endif %}> Married</label>
+      {% elif kind == 'date' %}
+      <input type="date" name="{{ key }}" value="{{ data.get(key, '') }}">
+      {% else %}
+      <input name="{{ key }}" value="{{ data.get(key, '') }}">
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="span-2 perjury">
+      <strong>Signed under penalties of perjury</strong>
+      {{ perjury }}
+      <label><input type="checkbox" name="perjury_ack" value="yes" required> I have read this and I agree</label>
+    </div>
+    <div class="span-2">
+      <label>Type your legal name to sign</label>
+      <input name="borrower_signature_name" id="borrower-typed" autocomplete="name" value="">
+      <div class="esign" id="borrower-preview"></div>
+    </div>
+    <div class="span-2" id="spouse-sign">
+      <div class="perjury">
+        <strong>Spouse — penalties of perjury</strong>
+        {{ spouse_perjury }}
+        <label><input type="checkbox" name="spouse_perjury_ack" value="yes"> I am the spouse and I agree</label>
+      </div>
+      <label>Spouse types their legal name to sign the guaranty</label>
+      <input name="spouse_signature_name" id="spouse-typed" value="">
+      <div class="esign" id="spouse-preview"></div>
+    </div>
+    <div class="span-2"><button class="btn" type="submit">Submit and sign</button></div>
+  </form>
+  {% endif %}
+</main>
+<script>
+(function () {
+  function preview(input, target) {
+    if (!input || !target) return;
+    var paint = function () { target.textContent = input.value; };
+    input.addEventListener("input", paint);
+    paint();
+  }
+  preview(document.getElementById("borrower-typed"), document.getElementById("borrower-preview"));
+  preview(document.getElementById("spouse-typed"), document.getElementById("spouse-preview"));
+  var block = document.getElementById("spouse-sign");
+  function married() {
+    var chosen = document.querySelector('[name="marital_status"]:checked');
+    var spouse = document.querySelector('[name="spouse_name"]');
+    var on = (chosen && chosen.value === "Married") || (spouse && spouse.value.trim());
+    if (block) block.style.display = on ? "block" : "none";
+    document.querySelectorAll(".spouse-field").forEach(function (el) {
+      el.style.display = on ? "" : "none";
+    });
+  }
+  document.querySelectorAll('[name="marital_status"]').forEach(function (el) {
+    el.addEventListener("change", married);
+  });
+  var spouseName = document.querySelector('[name="spouse_name"]');
+  if (spouseName) spouseName.addEventListener("input", married);
+  married();
+  if ({{ 'true' if spouse_on else 'false' }} && block) block.style.display = "block";
+})();
+</script>
+</body>
+</html>

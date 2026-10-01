@@ -1,4 +1,9 @@
-"""Default Brittco legal form templates. Staff can edit copies in the database."""
+"""Historical Brittco form text.
+
+The Deed of Trust and Secured Promissory Note templates are no longer seeded
+into the admin Forms screen. Copies already saved on a form packet stay
+readable. New Missouri closings use the e-sign application in closing_packet.py.
+"""
 
 DEED_FIELDS = [
     ("effective_date", "Effective date"),
@@ -121,7 +126,9 @@ If more than one Guarantor signs, liability is joint and several. Release of one
 
 If Guarantor is married, Guarantor’s spouse, {{spouse_name}}, joins this Guaranty and signs below as an additional Guarantor. Spouse’s date of birth is {{spouse_dob}}. Spouse signs solely as guarantor and not as borrower unless separately named as Borrower."""
 
-DEFAULTS = {
+# Kept so filled packets already in the database can still be opened and printed.
+# Not inserted by seed_form_templates.
+HISTORICAL = {
     "deed_of_trust": {
         "title": "Deed of Trust",
         "blurb": "Security instrument with power of sale. Complete the fields, download or print, and wet-sign in front of a notary.",
@@ -135,3 +142,5 @@ DEFAULTS = {
         "body": NOTE_BODY,
     },
 }
+
+DEFAULTS = {}
