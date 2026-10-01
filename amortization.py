@@ -445,3 +445,25 @@ def filename_for_loan(loan):
     num = str(_row_get(loan, "loan_number") or f"Loan-{_row_get(loan, 'id')}")
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in num).strip("-") or "loan"
     return f"Amortization-{safe}.xlsx"
+
+
+def _safe_token(text, fallback=""):
+    cleaned = "".join(ch if ch.isalnum() else "-" for ch in str(text or "").strip())
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned.strip("-") or fallback
+
+
+def amortization_document_name(loan, borrower_name=""):
+    """Borrower-file name: loan id, loan number, borrower, and the day it was created."""
+    lid = _safe_token(_row_get(loan, "id"), "loan")
+    number = _safe_token(_row_get(loan, "loan_number"), "")
+    who = _safe_token(borrower_name, "borrower")
+    bits = ["Amortization", lid]
+    if number and number.lower() != lid.lower():
+        bits.append(number)
+    bits.extend([who, date.today().isoformat()])
+    name = "-".join(bits) + ".xlsx"
+    if len(name) > 180:
+        name = name[:170].rstrip("-") + ".xlsx"
+    return name

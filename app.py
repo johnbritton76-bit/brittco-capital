@@ -34,6 +34,7 @@ from forms_catalog import DEFAULTS as FORM_DEFAULTS
 from forms_catalog import HISTORICAL as FORM_HISTORICAL
 import closing_packet
 from amortization import (
+    amortization_document_name,
     amortization_workbook,
     filename_for_loan,
 )
@@ -3623,9 +3624,15 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
         end = parse_date(mat)
         if end and date.today() <= end:
             status = "Current"
+    freq = (row_val(loan, "payment_frequency") or "").strip().lower()
+    at_maturity = any(token in freq for token in ("maturity", "payoff", "due at"))
+    existing_due = row_val(loan, "next_payment_due")
+    # Periodic loans keep the entered next/first payment date. Due-at-maturity
+    # loans, and loans with no date yet, stay due on the maturity date.
+    next_due = mat if at_maturity or not existing_due else existing_due
     db().execute(
         "UPDATE loans SET maturity_date=?, next_payment_due=?, status=? WHERE id=?",
-        (mat, mat, status, lid),
+        (mat, next_due, status, lid),
     )
     return mat
 
@@ -10374,6 +10381,7 @@ def loan_detail(lid):
         letters=letters,
         latest_letter=latest,
         flash=session.pop("last_invite_note", None),
+        error=session.pop("last_action_error", None),
         ach_plan=ach_plan,
         ach_kind=ach_plan_kind(ach_plan) or "recurring",
         ach_count=ach_plan_count(ach_plan),
@@ -10472,13 +10480,19 @@ def _staff_may_download_loan(loan, borrower_id=None, investor_id=None):
     return True
 
 
-def _xlsx_response(loan):
-    pays = _loan_payments(loan["id"])
-    data, _num = amortization_workbook(
+def loan_amortization_package(loan):
+    """Workbook bytes from the same builder the Tools amortization download uses."""
+    borrower_name = _borrower_name_for_loan(loan)
+    data, number = amortization_workbook(
         loan,
-        borrower_name=_borrower_name_for_loan(loan),
-        payments=pays,
+        borrower_name=borrower_name,
+        payments=_loan_payments(loan["id"]),
     )
+    return data, number, borrower_name
+
+
+def _xlsx_response(loan):
+    data, _num, _who = loan_amortization_package(loan)
     name = filename_for_loan(loan)
     return send_file(
         BytesIO(data),
@@ -10486,6 +10500,122 @@ def _xlsx_response(loan):
         as_attachment=True,
         download_name=name,
     )
+
+
+def attach_loan_document(loan, file_bytes, display_name, kind, extension):
+    """Save a generated file on the loan folder and the borrower document cabinet."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    ext = extension if str(extension).startswith(".") else f".{extension}"
+    ext = "".join(ch for ch in ext.lower() if ch.isalnum() or ch == ".")
+    if not ext.startswith("."):
+        ext = "." + ext
+    slug = "".join(ch if ch.isalnum() else "_" for ch in (kind or "document")).strip("_").lower() or "document"
+    stored = f"{slug}_{loan['id']}_{int(datetime.now().timestamp())}{ext}"
+    path = os.path.join(UPLOAD_DIR, stored)
+    with open(path, "wb") as fh:
+        fh.write(file_bytes)
+    folder, _items = loan_folder_docs(loan)
+    cur = db().execute(
+        """INSERT INTO documents (deal_id, borrower_id, filename, original_name, kind, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            loan["deal_id"],
+            loan["borrower_id"],
+            stored,
+            display_name,
+            kind,
+            datetime.now().isoformat(timespec="minutes"),
+        ),
+    )
+    doc_id = cur.lastrowid
+    if folder:
+        db().execute(
+            "INSERT INTO doc_file_items (file_id, document_id) VALUES (?,?)",
+            (folder["id"], doc_id),
+        )
+    return doc_id
+
+
+def create_and_send_loan_amortization(loan):
+    """File the loan's amortization workbook on the borrower and email a copy.
+
+    The spreadsheet is kept when the borrower has no email or the send fails.
+    """
+    borrower = db().execute(
+        "SELECT name, email FROM borrowers WHERE id=?", (loan["borrower_id"],)
+    ).fetchone()
+    data, _number, borrower_name = loan_amortization_package(loan)
+    if not borrower_name and borrower:
+        borrower_name = borrower["name"] or ""
+    email = ((borrower["email"] if borrower else "") or "").strip()
+    display = amortization_document_name(loan, borrower_name)
+    doc_id = attach_loan_document(loan, data, display, "Amortization schedule", ".xlsx")
+    db().commit()
+    label = row_val(loan, "loan_number") or loan["id"]
+    subject = f"Brittco Capital amortization schedule — {label}"
+    prop = (row_val(loan, "property_address") or "").strip()
+    where = f" ({prop})" if prop else ""
+    body = (
+        f"Hello {borrower_name or 'there'},\n\n"
+        f"Attached is the amortization schedule for your Brittco Capital loan {label}{where}.\n\n"
+        "It uses the principal, pricing, term, payment frequency, and dates on file. "
+        "A copy is also saved with your borrower documents.\n\n"
+        "Brittco Capital Inc\n"
+    )
+    mailed = False
+    mail_error = None
+    if not email:
+        mail_error = "no_email"
+    else:
+        try:
+            mailed = bool(send_mail(email, subject, body, data, display))
+        except Exception:
+            logger.exception("amortization schedule email failed")
+            mailed = False
+        if not mailed:
+            mail_error = "send_failed"
+    return {
+        "doc_id": doc_id,
+        "filename": display,
+        "stored": True,
+        "emailed": mailed,
+        "email": email,
+        "mail_error": mail_error,
+    }
+
+
+@app.route("/loans/<int:lid>/amortization-schedule", methods=["POST"])
+@staff_required
+def loan_create_amortization(lid):
+    loan = db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+    if not loan:
+        session["last_action_error"] = "Loan not found."
+        return redirect(url_for("loans"))
+    try:
+        result = create_and_send_loan_amortization(loan)
+    except Exception:
+        logger.exception("amortization schedule failed")
+        try:
+            db().rollback()
+        except Exception:
+            pass
+        session["last_action_error"] = "Could not create the amortization schedule."
+        return redirect(url_for("loan_detail", lid=lid))
+    if result["emailed"]:
+        session["last_invite_note"] = (
+            f"Amortization schedule saved to the borrower's documents and emailed to {result['email']}."
+        )
+    elif result["mail_error"] == "no_email":
+        session["last_action_error"] = (
+            "Amortization schedule was saved to the borrower's documents. "
+            "No borrower email is on file, so a copy was not emailed."
+        )
+    else:
+        session["last_action_error"] = (
+            "Amortization schedule was saved to the borrower's documents. "
+            f"The email to {result['email']} did not send."
+        )
+    return redirect(url_for("loan_detail", lid=lid))
 
 
 @app.route("/tools")
