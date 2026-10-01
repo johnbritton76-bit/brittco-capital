@@ -163,6 +163,10 @@ def build_amortization_schedule(loan, payments=None):
     if current <= 0 and original > 0:
         current = original
     rate = _money(_row_get(loan, "rate"))
+    flat_fee = 0.0
+    if str(_row_get(loan, "pricing_mode") or "").strip().lower() == "flat_fee":
+        rate = 0.0
+        flat_fee = _money(_row_get(loan, "flat_fee"))
     pay_amt = _money(_row_get(loan, "payment_amount"))
     pay_type = str(_row_get(loan, "payment_type") or "Interest only")
     freq = str(_row_get(loan, "payment_frequency") or "Monthly")
@@ -278,7 +282,8 @@ def build_amortization_schedule(loan, payments=None):
         if interest_only:
             interest = _monthly_interest(begin, rate, pay_amt)
             if is_last and begin > 0.005:
-                # balloon principal at maturity
+                # balloon principal at maturity; flat fee is due then, not as a rate
+                interest = round(interest + flat_fee, 2)
                 principal = round(begin, 2)
                 payment = round(interest + principal, 2)
             else:
@@ -286,6 +291,8 @@ def build_amortization_schedule(loan, payments=None):
                 payment = interest
         else:
             interest = round(begin * rate / 100.0 / 12.0, 2)
+            if is_last and flat_fee:
+                interest = round(interest + flat_fee, 2)
             payment = amort_pmt
             principal = round(payment - interest, 2)
             if principal > begin or is_last:
@@ -346,7 +353,9 @@ def amortization_workbook(loan, borrower_name="", schedule=None, payments=None):
     prop = str(_row_get(loan, "property_address") or "")
     original = _money(_row_get(loan, "original_principal"))
     current = _money(_row_get(loan, "current_balance"))
-    rate = _money(_row_get(loan, "rate"))
+    flat = str(_row_get(loan, "pricing_mode") or "").strip().lower() == "flat_fee"
+    rate = 0.0 if flat else _money(_row_get(loan, "rate"))
+    flat_fee = _money(_row_get(loan, "flat_fee")) if flat else 0.0
     pay_amt = _money(_row_get(loan, "payment_amount"))
     pay_type = str(_row_get(loan, "payment_type") or "")
     freq = str(_row_get(loan, "payment_frequency") or "")
@@ -359,13 +368,14 @@ def amortization_workbook(loan, borrower_name="", schedule=None, payments=None):
     ws["A2"] = "Loan amortization schedule"
     ws["A2"].font = Font(name="Calibri", size=12, italic=True, color="5D6B7C")
 
+    pricing_rows = [("Pricing", "Flat fee"), ("Flat fee", flat_fee)] if flat else [("Rate %", rate)]
     meta = [
         ("Loan number", loan_number),
         ("Borrower", borrower_name or ""),
         ("Property", prop),
         ("Original principal", original),
         ("Current balance", current),
-        ("Rate %", rate),
+        *pricing_rows,
         ("Payment amount", pay_amt),
         ("Payment type / frequency", f"{pay_type} / {freq}".strip(" /")),
         ("Start date", start[:10] if start else ""),
@@ -376,7 +386,7 @@ def amortization_workbook(loan, borrower_name="", schedule=None, payments=None):
         ws.cell(row=i, column=1, value=label).font = label_font
         cell = ws.cell(row=i, column=2, value=val)
         cell.font = value_font
-        if label in ("Original principal", "Current balance", "Payment amount"):
+        if label in ("Original principal", "Current balance", "Payment amount", "Flat fee"):
             cell.number_format = money_fmt
         if label == "Rate %":
             cell.number_format = "0.00"
@@ -391,7 +401,7 @@ def amortization_workbook(loan, borrower_name="", schedule=None, payments=None):
         "Ending balance",
         "Status",
     ]
-    header_row = 16
+    header_row = 4 + len(meta) + 1
     for col, h in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=h)
         cell.font = col_font

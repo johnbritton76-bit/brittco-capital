@@ -91,7 +91,7 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <div class="card"><h3>Funded</h3><div>${{ "{:,.0f}".format(perf.funded) }}</div></div>
 </div>
 <details class="box" style="margin-top:14px">
-  <summary>Loan figures <span class="peek">balance, rate, payoff, investors paid</span></summary>
+  <summary>Loan figures <span class="peek">balance, pricing, payoff, investors paid</span></summary>
   <div class="grid cards">
   <div class="card"><h3>Current balance</h3><div class="n">${{ "{:,.0f}".format(perf.remaining) }}</div></div>
   <div class="card"><h3>Purchase price</h3><div>${{ "{:,.0f}".format(loan.purchase_price or 0) }}</div></div>
@@ -108,7 +108,13 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
   <div class="card"><h3>Total loan amount</h3><div>${{ "{:,.0f}".format(loan.original_principal or 0) }}</div>
     <div class="hint">Funded purchase + rehab + points</div>
   </div>
+  {% if loan.pricing_mode == 'flat_fee' %}
+  <div class="card"><h3>Flat fee</h3><div>${{ "{:,.2f}".format(loan.flat_fee or 0) }}{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div>
+    <div class="hint">Fee-based. No interest rate.</div>
+  </div>
+  {% else %}
   <div class="card"><h3>Base rate</h3><div>{{ loan.rate or "—" }}%{% if loan.base_term_months %} · {{ loan.base_term_months }} mo{% endif %}</div></div>
+  {% endif %}
   <div class="card"><h3>Payments recorded</h3><div>${{ "{:,.0f}".format(perf.paid) }}</div></div>
   <div class="card"><h3>Amount due at maturity</h3>
     <div class="n">${{ "{:,.0f}".format(perf.payoff) }}</div>
@@ -176,9 +182,9 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 </details>
 
 <details class="box">
-  <summary>Term and extensions <span class="peek">{{ loan.base_term_months or "—" }} mo at {{ loan.rate or "—" }}% · matures {{ loan.maturity_date or "—" }}</span></summary>
+  <summary>Term and extensions <span class="peek">{% if loan.pricing_mode == 'flat_fee' %}{{ loan.base_term_months or "—" }} mo · flat fee ${{ "{:,.2f}".format(loan.flat_fee or 0) }}{% else %}{{ loan.base_term_months or "—" }} mo at {{ loan.rate or "—" }}%{% endif %} · matures {{ loan.maturity_date or "—" }}</span></summary>
 
-  <p>Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.</p>
+  <p>{% if loan.pricing_mode == 'flat_fee' %}Base: {{ loan.base_term_months or "—" }} months. Flat fee ${{ "{:,.2f}".format(loan.flat_fee or 0) }}. No interest rate.{% else %}Base: {{ loan.base_term_months or "—" }} months at {{ loan.rate or "—" }}%.{% endif %}</p>
   {% if ext_options %}
   <table class="table">
     <tr><th>#</th><th>Option term</th><th>Rate</th><th>Collect</th><th>Status</th><th></th></tr>
@@ -249,7 +255,7 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 <details class="box">
   <summary>Payoff letter <span class="peek">{% if latest_letter %}{{ latest_letter.status }} · ${{ "{:,.2f}".format(latest_letter.total or 0) }}{% else %}create or send a letter{% endif %}</span></summary>
 
-  <p class="hint">Figures fill from this loan’s rate, term, balance, and maturity. Staff must approve before it can be emailed to the borrower. Signature on the PDF is John Britton, electronically signed.</p>
+  <p class="hint">{% if loan.pricing_mode == 'flat_fee' %}Figures fill from this loan’s flat fee, term, balance, and maturity. No interest rate is applied.{% else %}Figures fill from this loan’s rate, term, balance, and maturity.{% endif %} Staff must approve before it can be emailed to the borrower. Signature on the PDF is John Britton, electronically signed.</p>
   {% if latest_letter %}
   <p>
     Latest: <span class="badge">{{ latest_letter.status }}</span>

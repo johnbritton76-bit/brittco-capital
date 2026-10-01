@@ -23,7 +23,10 @@
   <h3>Rate and term — verify before title</h3>
   <p class="hint">Borrower submitted these figures. Edit if needed, then approve or deny. Closing packet stays Pending until you decide.</p>
   <form method="post" action="{{ url_for('deal_decision', did=d.id) }}" class="form-grid">
-    <div><label>Rate %</label><input name="rate" type="number" step="0.01" value="{{ d.rate or '' }}" style="background:#fff6d6"></div>
+    {% if existing_loan and existing_loan.pricing_mode == 'flat_fee' %}
+    <div class="span-2"><p class="hint">The booked loan is a flat fee of ${{ "{:,.2f}".format(existing_loan.flat_fee or 0) }}. Leave rate blank so this application does not show an interest rate.</p></div>
+    {% endif %}
+    <div><label>Rate %</label><input name="rate" type="number" step="0.01" value="{{ '' if existing_loan and existing_loan.pricing_mode == 'flat_fee' else (d.rate or '') }}" style="background:#fff6d6"></div>
     <div><label>Points / fee %</label><input name="points" type="number" step="0.01" value="{{ d.points or '' }}" style="background:#fff6d6"></div>
     <div><label>Term months</label><input name="term_months" type="number" value="{{ d.term_months or '' }}" style="background:#fff6d6"></div>
     <div class="span-2">
@@ -94,7 +97,13 @@
   <div class="card"><h3>As-is value</h3><div>${{ "{:,.0f}".format(d.as_is_value or 0) }}</div></div>
   <div class="card"><h3>ARV</h3><div>${{ "{:,.0f}".format(d.arv or 0) }}</div></div>
   <div class="card"><h3>Rehab</h3><div>${{ "{:,.0f}".format(d.rehab_budget or 0) }}</div></div>
+  {% if existing_loan and existing_loan.pricing_mode == 'flat_fee' %}
+  <div class="card"><h3>Pricing / points / term</h3><div>Flat fee ${{ "{:,.2f}".format(existing_loan.flat_fee or 0) }} · {{ d.points or "—" }} pts · {{ d.term_months or "—" }} mo</div>
+    <div class="hint">Fee-based loan. No interest rate.</div>
+  </div>
+  {% else %}
   <div class="card"><h3>Rate / points / term</h3><div>{{ d.rate or "—" }}% · {{ d.points or "—" }} pts · {{ d.term_months or "—" }} mo</div></div>
+  {% endif %}
   <div class="card"><h3>Exit</h3><div>{{ d.exit_strategy or "—" }}</div></div>
 </div>
 
