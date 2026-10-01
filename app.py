@@ -63,6 +63,11 @@ CLOSING_DEFAULTS = [
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "brittco-local-dev-key-change-before-hosting")
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    _stderr_log = logging.StreamHandler()
+    _stderr_log.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_stderr_log)
+logger.setLevel(logging.INFO)
 
 
 def db():
@@ -5097,6 +5102,28 @@ def staff_notify_list():
         if e.lower() not in seen:
             seen.add(e.lower())
             out.append(e)
+    return out
+
+
+# Signed loan applications always copy these two addresses. staff_notify_list()
+# (the staff table plus STAFF_NOTIFY) is included as well. This is a union:
+# an empty or partial staff list must not drop John or Nate.
+CLOSING_SUBMIT_ALWAYS_NOTIFY = (
+    "john@brittcocapital.com",
+    "nate@brittcocapital.com",
+)
+
+
+def closing_submit_notify_list():
+    seen = set()
+    out = []
+    for raw in list(staff_notify_list()) + list(CLOSING_SUBMIT_ALWAYS_NOTIFY):
+        email = (raw or "").strip()
+        key = email.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(email)
     return out
 
 
@@ -15743,6 +15770,237 @@ def send_closing_application(bid):
     return redirect(nxt)
 
 
+def _closing_retry_message(data):
+    phone = ((data or {}).get("lender_phone") or "").strip()
+    email = ((data or {}).get("lender_email") or "").strip()
+    if phone and email:
+        contact = f"contact Brittco Capital at {phone} or {email}"
+    elif phone or email:
+        contact = f"contact Brittco Capital at {phone or email}"
+    else:
+        contact = "contact Brittco Capital"
+    return (
+        "We could not save your signed application. "
+        f"Please try again. If this happens again, {contact}."
+    )
+
+
+def _reread_closing(application_id):
+    try:
+        return db().execute(
+            "SELECT * FROM closing_applications WHERE id=?",
+            (application_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        logger.exception("closing submit %s could not re-read the application", application_id)
+        return None
+
+
+def _save_signed_closing(row, data, form):
+    """Write signed PDFs and mark the application submitted. Raises if that does not stick."""
+    ip, ua = _client_audit()
+    signed_at = datetime.now().isoformat(timespec="seconds")
+    signatures = closing_packet.build_signatures(data, form, signed_at, ip, ua)
+    logo = os.path.join(APP_DIR, "static", "logo.jpg")
+    rendered = closing_packet.render_closing_pdfs(data, signatures, db(), logo)
+    if not isinstance(rendered, dict) or rendered.get("error"):
+        message = ""
+        if isinstance(rendered, dict):
+            message = (rendered.get("error") or "").strip()
+        raise RuntimeError(message or "The signed application could not be generated.")
+    security_pdf = rendered.get("security_pdf") or b""
+    note_pdf = rendered.get("note_pdf") or b""
+    if not security_pdf.startswith(b"%PDF") or not note_pdf.startswith(b"%PDF"):
+        raise RuntimeError("The signed application PDF was incomplete.")
+    data = rendered["data"]
+    deed_name, note_name = _store_closing_pdfs(
+        row["id"], row["borrower_id"], row["deal_id"], rendered
+    )
+    for filename in (deed_name, note_name):
+        path = os.path.join(UPLOAD_DIR, filename)
+        if not os.path.isfile(path) or os.path.getsize(path) < 8:
+            raise RuntimeError("The signed application could not be stored.")
+        with open(path, "rb") as handle:
+            if not handle.read(8).startswith(b"%PDF"):
+                raise RuntimeError("The signed application stored on disk was incomplete.")
+    sync_borrower_from_application(row["borrower_id"], data)
+    chosen = (form.get("portal_password") or "").strip()
+    if chosen:
+        db().execute(
+            "UPDATE borrowers SET password=? WHERE id=?",
+            (hash_portal_password(chosen), row["borrower_id"]),
+        )
+    stored = closing_packet.redact_tax_ids(data)
+    updated = db().execute(
+        """UPDATE closing_applications
+           SET payload=?, signatures=?, status=?, submitted_at=?, dot_filename=?, note_filename=?
+           WHERE id=? AND status IN ('sent', 'changes_requested')""",
+        (
+            json.dumps(stored),
+            json.dumps(signatures),
+            "submitted",
+            signed_at,
+            deed_name,
+            note_name,
+            row["id"],
+        ),
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("The application status was not updated.")
+    db().commit()
+    logger.info(
+        "closing submit %s saved status=submitted borrower_id=%s files=%s,%s",
+        row["id"],
+        row["borrower_id"],
+        deed_name,
+        note_name,
+    )
+    return {
+        "data": data,
+        "signatures": signatures,
+        "security_pdf": security_pdf,
+        "note_pdf": note_pdf,
+    }
+
+
+def _signed_application_attachment(application_id, data, security_pdf, note_pdf):
+    try:
+        if not security_pdf or not note_pdf:
+            raise ValueError("signed PDFs were not available")
+        code = (data or {}).get("state_code") or ""
+        security_name, note_name = closing_packet.package_names(
+            code, (data or {}).get("security_instrument") or ""
+        )
+        blob = closing_packet.package_zip(security_pdf, note_pdf, security_name, note_name)
+        if not blob or not blob.startswith(b"PK"):
+            raise ValueError("signed application zip was empty")
+        filename = f"Brittco-{code or 'loan'}-signed-application-{application_id}.zip"
+        return blob, filename
+    except Exception:
+        logger.exception(
+            "closing submit %s: could not build the PDF email copy; sending the review link without it",
+            application_id,
+        )
+        return None, None
+
+
+def _closing_notice_body(application_id, borrower, data, attached):
+    name = ""
+    if borrower is not None:
+        name = (borrower["name"] or "").strip()
+    if not name:
+        name = (
+            (data or {}).get("signatory_name")
+            or (data or {}).get("borrower_legal_name")
+            or "A borrower"
+        )
+        name = str(name).strip() or "A borrower"
+    review = f"{public_base()}{url_for('closing_review', cid=application_id)}"
+    lines = [
+        f"{name} signed and submitted a loan application.",
+        "",
+        f"Borrower: {name}",
+    ]
+    property_address = ((data or {}).get("property") or "").strip()
+    if property_address:
+        lines.append(f"Property: {property_address}")
+    loan_bits = []
+    loan_type = ((data or {}).get("loan_type") or "").strip()
+    if loan_type:
+        loan_bits.append(loan_type)
+    principal = ((data or {}).get("note_principal") or (data or {}).get("loan_amount") or "")
+    principal = str(principal).strip()
+    if principal:
+        loan_bits.append(principal if principal.startswith("$") else f"${principal}")
+    if loan_bits:
+        lines.append("Loan: " + " · ".join(loan_bits))
+    lines.extend(["", f"Review it: {review}", ""])
+    if attached:
+        lines.append(
+            "A PDF copy of the signed application is attached. The application is saved in Brittco."
+        )
+    else:
+        lines.append(
+            "The signed application is saved in Brittco. "
+            "The PDF copy could not be attached to this email. Open the review link to download it."
+        )
+    return name, "\n".join(lines) + "\n"
+
+
+def _deliver_closing_notice(application_id, email, subject, body, plain_body, attachment, attachment_name):
+    if attachment:
+        try:
+            sent = send_mail(
+                email,
+                subject,
+                body,
+                attachment=attachment,
+                attachment_name=attachment_name,
+            )
+        except Exception:
+            logger.exception(
+                "closing submit %s: attachment email to %s failed; sending the review link without the PDF",
+                application_id,
+                email,
+            )
+        else:
+            if sent:
+                logger.info(
+                    "closing submit %s: emailed %s with signed PDF copy",
+                    application_id,
+                    email,
+                )
+            else:
+                logger.error("closing submit %s: email to %s was not sent", application_id, email)
+            return
+    try:
+        sent = send_mail(email, subject, plain_body)
+    except Exception:
+        logger.exception("closing submit %s: email to %s failed", application_id, email)
+        return
+    if sent:
+        logger.warning(
+            "closing submit %s: emailed %s with review link and no PDF attachment",
+            application_id,
+            email,
+        )
+    else:
+        logger.error("closing submit %s: email to %s was not sent", application_id, email)
+
+
+def notify_signed_loan_application(row, borrower, data, security_pdf, note_pdf):
+    """Email staff a copy. Failures are logged and never undo the saved application."""
+    application_id = row["id"]
+    try:
+        attachment, attachment_name = _signed_application_attachment(
+            application_id, data, security_pdf, note_pdf
+        )
+        name, body = _closing_notice_body(application_id, borrower, data, attached=bool(attachment))
+        _name, plain_body = _closing_notice_body(application_id, borrower, data, attached=False)
+        subject = f"Loan application signed — {name}"
+        recipients = closing_submit_notify_list()
+        logger.info(
+            "closing submit %s notifying %s",
+            application_id,
+            ", ".join(recipients) or "(none)",
+        )
+        if not recipients:
+            logger.error("closing submit %s: no staff recipients", application_id)
+            return
+        for email in recipients:
+            _deliver_closing_notice(
+                application_id,
+                email,
+                subject,
+                body,
+                plain_body,
+                attachment,
+                attachment_name,
+            )
+    except Exception:
+        logger.exception("closing submit %s: staff notification failed", application_id)
+
+
 @app.route("/closing/<token>", methods=["GET", "POST"])
 def closing_apply(token):
     closing_packet.ensure_schema(db())
@@ -15755,58 +16013,73 @@ def closing_apply(token):
     borrower = db().execute("SELECT * FROM borrowers WHERE id=?", (row["borrower_id"],)).fetchone()
     needs_password = not portal_password_is_set(row_val(borrower, "password") if borrower else "")
     errors = []
+    submit_error = None
     if request.method == "POST" and editable:
-        errors, data = closing_packet.submission_errors(data, request.form)
-        errors.extend(_password_errors(borrower, request.form))
-        if not errors:
-            ip, ua = _client_audit()
-            signed_at = datetime.now().isoformat(timespec="seconds")
-            signatures = closing_packet.build_signatures(data, request.form, signed_at, ip, ua)
-            logo = os.path.join(APP_DIR, "static", "logo.jpg")
-            rendered = closing_packet.render_closing_pdfs(data, signatures, db(), logo)
-            if rendered.get("error"):
-                errors.append(rendered["error"])
+        logger.info("closing submit %s started", row["id"])
+        notified = False
+        try:
+            errors, data = closing_packet.submission_errors(data, request.form)
+            errors.extend(_password_errors(borrower, request.form))
+            if errors:
+                logger.info("closing submit %s rejected: %s", row["id"], "; ".join(errors))
             else:
-                data = rendered["data"]
-                deed_name, note_name = _store_closing_pdfs(
-                    row["id"], row["borrower_id"], row["deal_id"], rendered
-                )
-                sync_borrower_from_application(row["borrower_id"], data)
-                chosen = (request.form.get("portal_password") or "").strip()
-                if chosen:
-                    db().execute(
-                        "UPDATE borrowers SET password=? WHERE id=?",
-                        (hash_portal_password(chosen), row["borrower_id"]),
-                    )
-                stored = closing_packet.redact_tax_ids(data)
-                db().execute(
-                    """UPDATE closing_applications
-                       SET payload=?, signatures=?, status=?, submitted_at=?, dot_filename=?, note_filename=?
-                       WHERE id=?""",
-                    (
-                        json.dumps(stored),
-                        json.dumps(signatures),
-                        "submitted",
-                        signed_at,
-                        deed_name,
-                        note_name,
+                current = db().execute(
+                    "SELECT status FROM closing_applications WHERE id=?",
+                    (row["id"],),
+                ).fetchone()
+                if (current["status"] or "") not in ("sent", "changes_requested"):
+                    logger.info(
+                        "closing submit %s skipped; status is already %s",
                         row["id"],
-                    ),
-                )
-                db().commit()
-                subject = f"Loan application signed — {(borrower['name'] if borrower else '')}"
-                body = (
-                    f"{borrower['name'] if borrower else 'A borrower'} signed the loan application.\n\n"
-                    f"Review it: {public_base()}{url_for('closing_review', cid=row['id'])}\n"
-                )
-                for email in staff_notify_list():
-                    try:
-                        send_mail(email, subject, body)
-                    except Exception:
-                        pass
-                row = db().execute("SELECT * FROM closing_applications WHERE id=?", (row["id"],)).fetchone()
+                        current["status"],
+                    )
+                    row = _reread_closing(row["id"]) or row
+                    data = closing_packet.derive(closing_packet.load_json(row["payload"], {}))
+                    signatures = closing_packet.load_json(row["signatures"], {})
+                    editable = (row["status"] or "") in ("sent", "changes_requested")
+                    if not editable:
+                        needs_password = False
+                else:
+                    saved = _save_signed_closing(row, data, request.form)
+                    data = saved["data"]
+                    signatures = saved["signatures"]
+                    row = _reread_closing(row["id"]) or row
+                    editable = False
+                    needs_password = False
+                    notify_signed_loan_application(
+                        row,
+                        borrower,
+                        data,
+                        saved["security_pdf"],
+                        saved["note_pdf"],
+                    )
+                    notified = True
+        except Exception as exc:
+            fresh = _reread_closing(row["id"])
+            saved_ok = bool(fresh and fresh["status"] == "submitted")
+            logger.exception(
+                "closing submit %s failed %s",
+                row["id"],
+                "after save" if saved_ok else "before save",
+            )
+            if saved_ok:
+                row = fresh
+                data = closing_packet.derive(closing_packet.load_json(row["payload"], {}))
+                signatures = closing_packet.load_json(row["signatures"], {})
                 editable = False
                 needs_password = False
+                errors = []
+                submit_error = None
+                if not notified:
+                    notify_signed_loan_application(row, borrower, data, b"", b"")
+            else:
+                try:
+                    db().rollback()
+                except Exception:
+                    logger.exception("closing submit %s rollback failed", row["id"])
+                errors = []
+                detail = str(exc).strip() if isinstance(exc, RuntimeError) else ""
+                submit_error = f"{detail} {_closing_retry_message(data)}".strip()
     return render_template(
         "closing_apply.html",
         packet=row,
@@ -15814,6 +16087,7 @@ def closing_apply(token):
         signatures=signatures,
         editable=editable,
         errors=errors,
+        submit_error=submit_error,
         fields=closing_packet.BORROWER_FIELDS,
         spouse_on=closing_packet.spouse_required(data),
         perjury=closing_packet.perjury_for(data),
