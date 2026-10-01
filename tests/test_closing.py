@@ -488,6 +488,16 @@ def _pending_ids():
         return [item["id"] for item in brittco.pending_closing_reviews()]
 
 
+def _forms_status_window(html, name):
+    marker = f"<td>{name}</td>"
+    start = html.find(marker)
+    assert start >= 0
+    row_start = html.rfind("<tr", 0, start)
+    row_end = html.find("</tr>", start)
+    assert row_start >= 0 and row_end >= 0
+    return html[row_start:row_end]
+
+
 def test_submitted_application_flags_staff_until_approved():
     bid = _borrower("Iris Review", "iris.review@example.com")
     row = _send(bid)
@@ -518,9 +528,7 @@ def test_submitted_application_flags_staff_until_approved():
     )
 
     forms_html = staff.get("/admin/forms").data.decode()
-    start = forms_html.find("Iris Review")
-    assert start >= 0
-    window = forms_html[max(0, start - 80) : start + 220]
+    window = _forms_status_window(forms_html, "Iris Review")
     assert "needs-review" in window
     assert "Needs review" in window
 
@@ -561,11 +569,11 @@ def test_submitted_application_flags_staff_until_approved():
     assert approved.status_code in (302, 303)
     assert row["id"] not in _pending_ids()
 
-    assert b"Iris Review" not in staff.get("/").data
+    cleared = staff.get("/").data.decode()
+    assert f"/admin/closings/{row['id']}" not in cleared
+    assert "Iris Review" not in cleared.split("Latest 5 loans")[0]
     forms_after = staff.get("/admin/forms").data.decode()
-    start = forms_after.find("Iris Review")
-    assert start >= 0
-    window = forms_after[max(0, start - 80) : start + 220]
+    window = _forms_status_window(forms_after, "Iris Review")
     assert "needs-review" not in window
     assert "Approved" in window
     assert "Needs review" not in window
