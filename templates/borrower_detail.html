@@ -175,8 +175,11 @@ details.box>summary .peek{font-weight:400;color:#5b6b7a;font-size:13px;margin-le
 </details>
 {% if b.notes %}<details class="box"><summary>Notes</summary><p>{{ b.notes }}</p></details>{% endif %}
 <details class="box">
-  <summary>ACH / bank <span class="peek">{{ b.bank_name or "not on file" }}</span></summary>
+  <summary>ACH / bank <span class="peek">{{ b.bank_name or "not on file" }} · portal {{ 'asks' if require_bank else 'does not ask' }}</span></summary>
 
+  {% with bank_bid=b.id, bank_next=url_for('borrower_detail', bid=b.id) %}
+  {% include "_portal_bank_switch.html" %}
+  {% endwith %}
   <p class="hint">Save the bank details here, then open the processor to set the payment schedule.</p>
   <form method="post" action="{{ url_for('borrower_ach', bid=b.id) }}" class="form-grid">
     <div><label>Bank name</label><input name="bank_name" value="{{ b.bank_name or '' }}"></div>
