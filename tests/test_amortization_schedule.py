@@ -44,15 +44,13 @@ def _insert_loan(name, email, **overrides):
     }
     fields.update(overrides)
     with brittco.app.app_context():
-        brittco.db().execute(
+        cur = brittco.db().execute(
             """INSERT INTO borrowers
                (name, entity_type, entity_name, email, phone, credit_score, password, notes)
                VALUES (?,?,?,?,?,?,?,?)""",
             (name, "LLC", name + " LLC", email, "555", 700, "borrower", ""),
         )
-        bid = brittco.db().execute(
-            "SELECT id FROM borrowers WHERE email=?", (email,)
-        ).fetchone()["id"]
+        bid = cur.lastrowid
         brittco.db().execute(
             """INSERT INTO loans (
                 borrower_id, loan_number, loan_type, property_address,
@@ -181,6 +179,24 @@ def test_document_name_includes_loan_borrower_and_date():
     assert name.endswith(date.today().isoformat() + ".xlsx")
 
 
+def test_opening_the_loan_keeps_a_monthly_first_payment_date(monkeypatch):
+    monkeypatch.setattr(brittco, "send_mail", lambda *a, **k: True)
+    email = f"keep-{uuid.uuid4().hex}@example.com"
+    _bid, lid, fields = _insert_loan("Monthly Borrower", email)
+    page = _staff().get(f"/loans/{lid}")
+    assert page.status_code == 200
+    with brittco.app.app_context():
+        due = brittco.db().execute(
+            "SELECT next_payment_due FROM loans WHERE id=?", (lid,)
+        ).fetchone()["next_payment_due"]
+    assert due == fields["next_payment_due"]
+    resp = _staff().post(f"/loans/{lid}/amortization-schedule", follow_redirects=True)
+    assert resp.status_code == 200
+    _info, path = _latest_schedule(_bid)
+    _labels, payments = _sheet(path)
+    assert [row[1] for row in payments] == ["2026-02-15", "2026-03-15", "2026-04-15"]
+
+
 def test_button_is_on_the_staff_loan_page(monkeypatch):
     monkeypatch.setattr(brittco, "send_mail", lambda *a, **k: True)
     email = f"btn-{uuid.uuid4().hex}@example.com"
@@ -256,7 +272,7 @@ def test_missing_email_still_stores_the_schedule(monkeypatch):
     resp = _staff().post(f"/loans/{lid}/amortization-schedule", follow_redirects=True)
     page = resp.get_data(as_text=True)
     assert "No borrower email is on file" in page
-    assert "saved to the borrower's documents" in page
+    assert "was not emailed" in page
     info, path = _latest_schedule(bid)
     assert os.path.getsize(path) > 100
     assert info["folder_loan_id"] == lid

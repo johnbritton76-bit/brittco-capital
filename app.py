@@ -3583,9 +3583,15 @@ def refresh_loan_maturity(lid, start=None, base_term=None):
         end = parse_date(mat)
         if end and date.today() <= end:
             status = "Current"
+    freq = (row_val(loan, "payment_frequency") or "").strip().lower()
+    at_maturity = any(token in freq for token in ("maturity", "payoff", "due at"))
+    existing_due = row_val(loan, "next_payment_due")
+    # Periodic loans keep the entered next/first payment date. Due-at-maturity
+    # loans, and loans with no date yet, stay due on the maturity date.
+    next_due = mat if at_maturity or not existing_due else existing_due
     db().execute(
         "UPDATE loans SET maturity_date=?, next_payment_due=?, status=? WHERE id=?",
-        (mat, mat, status, lid),
+        (mat, next_due, status, lid),
     )
     return mat
 
