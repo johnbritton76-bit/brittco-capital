@@ -137,6 +137,15 @@ def ensure_schema(conn):
            ON state_document_templates (state_code, instrument_type)
            WHERE active = 1"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS closing_date_edits (
+            id INTEGER PRIMARY KEY,
+            closing_id INTEGER,
+            staff_name TEXT,
+            changed_at TEXT,
+            changes_json TEXT
+        )"""
+    )
     seed_state_templates(conn)
 
 
@@ -216,6 +225,14 @@ def parse_iso(value):
         return datetime.strptime(raw, "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def _flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class DocumentDateError(ValueError):
+    """A staff date edit that should be shown and not saved."""
 
 
 def long_date(value):
@@ -315,7 +332,10 @@ def derive(data):
     out["effective_date"] = start.isoformat()
     days = int(_num(out.get("term_days")))
     months = int(_num(out.get("term_months")))
-    if (out.get("loan_type") == "Transactional Loan" and days) or (days and not months):
+    pinned_maturity = parse_iso(out.get("maturity_date")) if _flag(out.get("maturity_override")) else None
+    if pinned_maturity:
+        maturity = pinned_maturity
+    elif (out.get("loan_type") == "Transactional Loan" and days) or (days and not months):
         maturity = add_business_days(start, days)
     elif months:
         maturity = add_months(start, months)
@@ -323,7 +343,11 @@ def derive(data):
         maturity = parse_iso(out.get("maturity_date")) or start
     out["maturity_date"] = maturity.isoformat()
     ext_n = int(_num(out.get("extension_count")))
-    out["outside_date"] = add_months(maturity, ext_n).isoformat() if ext_n else maturity.isoformat()
+    pinned_outside = parse_iso(out.get("outside_date")) if _flag(out.get("outside_override")) else None
+    if pinned_outside:
+        out["outside_date"] = pinned_outside.isoformat()
+    else:
+        out["outside_date"] = add_months(maturity, ext_n).isoformat() if ext_n else maturity.isoformat()
     ext_rate = _num(out.get("extension_rate"))
     ext_pay = principal * ext_rate / 100.0 if principal and ext_rate else 0
     out["extension_payment"] = figures(ext_pay) if ext_pay else "0.00"
@@ -336,6 +360,135 @@ def derive(data):
     if not (out.get("trustee_name") or "").strip():
         out["trustee_name"] = "a trustee to be named by Lender before recording"
     return out
+
+
+# Dates the closing PDFs can print. effective_date is the closing date and the note date.
+DOCUMENT_DATES = (
+    (
+        "effective_date",
+        "Closing / note date",
+        ("execution_date", "origination_date", "effective_date"),
+        "Closing date and note date. Prints as the “made as of” date and as the date on the note.",
+    ),
+    (
+        "maturity_date",
+        "Maturity date",
+        ("maturity_date",),
+        "Prints as the maturity date on the note and the security instrument.",
+    ),
+    (
+        "outside_date",
+        "Outside date",
+        ("outside_date",),
+        "Prints when the template includes the outside date, after every extension is used.",
+    ),
+    (
+        "first_payment_date",
+        "First payment date",
+        ("first_payment_date",),
+        "Prints when the template includes a first payment date.",
+    ),
+)
+
+
+def _template_text(conn, data):
+    code = resolve_state_code(data)
+    if not code or conn is None:
+        return ""
+    chunks = []
+    for instrument in instruments_for_state(code, conn):
+        row = active_template(conn, code, instrument)
+        if row and row["body"]:
+            chunks.append(row["body"])
+    return "\n".join(chunks)
+
+
+def _token_used(text, token):
+    return re.search(r"\{\{\s*" + re.escape(token) + r"\s*\}\}", text or "") is not None
+
+
+def dates_on_documents(data, conn):
+    """Date fields the active closing templates actually print, with current values."""
+    derived = derive(data or {})
+    text = _template_text(conn, derived)
+    fields = []
+    for key, label, tokens, hint in DOCUMENT_DATES:
+        if any(_token_used(text, token) for token in tokens):
+            fields.append({
+                "key": key,
+                "label": label,
+                "hint": hint,
+                "value": (derived.get(key) or "")[:10],
+            })
+    return fields
+
+
+def apply_document_dates(data, submitted):
+    """Set document dates exactly as staff entered them.
+
+    A date left unchanged stays put. Changing the closing date does not move
+    maturity, and a maturity that still matches the term is not pinned.
+    Returns (payload, changes). changes lists only dates that differ.
+    """
+    source = dict(data or {})
+    before = derive(source)
+    working = dict(source)
+    provided = {}
+    for key, label, _tokens, _hint in DOCUMENT_DATES:
+        if key not in submitted:
+            continue
+        raw = (submitted.get(key) or "").strip()
+        parsed = parse_iso(raw)
+        if not parsed:
+            raise DocumentDateError(f"Enter a valid {label.lower()}.")
+        provided[key] = parsed.isoformat()
+    if not provided:
+        raise DocumentDateError("Enter the document dates to update.")
+
+    if "effective_date" in provided:
+        working["effective_date"] = provided["effective_date"]
+    if "maturity_date" in provided:
+        unpinned = derive({**working, "maturity_override": ""})
+        working["maturity_date"] = provided["maturity_date"]
+        working["maturity_override"] = "" if provided["maturity_date"] == unpinned["maturity_date"] else "1"
+    if "outside_date" in provided:
+        outside_formula = derive({**working, "outside_override": ""})["outside_date"]
+        working["outside_date"] = provided["outside_date"]
+        working["outside_override"] = "" if provided["outside_date"] == outside_formula else "1"
+    if "first_payment_date" in provided:
+        working["first_payment_date"] = provided["first_payment_date"]
+
+    after = derive(working)
+    effective = parse_iso(after.get("effective_date"))
+    maturity = parse_iso(after.get("maturity_date"))
+    if effective and maturity and maturity < effective:
+        raise DocumentDateError("Maturity date has to be on or after the closing / note date.")
+    if "outside_date" in provided:
+        outside = parse_iso(provided["outside_date"])
+        if outside and maturity and outside < maturity:
+            raise DocumentDateError("Outside date has to be on or after the maturity date.")
+    if "first_payment_date" in provided:
+        first = parse_iso(provided["first_payment_date"])
+        if first and effective and first < effective:
+            raise DocumentDateError("First payment date has to be on or after the closing / note date.")
+
+    changes = []
+    for key, label, _tokens, _hint in DOCUMENT_DATES:
+        if key not in provided:
+            continue
+        old = (before.get(key) or "")[:10]
+        new = (after.get(key) or "")[:10]
+        if old == new:
+            continue
+        changes.append({
+            "key": key,
+            "label": label,
+            "before": old,
+            "after": new,
+            "before_label": long_date(old),
+            "after_label": long_date(new),
+        })
+    return after, changes
 
 
 def blank_payload():
@@ -370,6 +523,10 @@ def submission_errors(data, form):
     for key, _label, _kind in BORROWER_FIELDS:
         if key in source:
             merged[key] = (source.get(key) or "").strip()
+    # A later borrower signature follows the term again. Staff date pins apply
+    # only to the documents already generated.
+    merged.pop("maturity_override", None)
+    merged.pop("outside_override", None)
     merged = derive(merged)
     errors = []
     for key, label in REQUIRED_FIELDS:
@@ -1414,6 +1571,12 @@ def merge_map(data):
         "maturity_date": long_date(data.get("maturity_date")),
         "execution_date": long_date(data.get("effective_date")),
         "origination_date": long_date(data.get("effective_date")),
+        "outside_date": long_date(data.get("outside_date")),
+        "first_payment_date": (
+            long_date(data.get("first_payment_date"))
+            if parse_iso(data.get("first_payment_date"))
+            else ""
+        ),
         "loan_type": data.get("loan_type") or "",
         "term_label": term_label(data),
         "recording_county": data.get("county") or "",

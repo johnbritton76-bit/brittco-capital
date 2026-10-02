@@ -19,6 +19,34 @@
   {% if borrower %} · <a href="{{ url_for('borrower_detail', bid=borrower.id) }}">Borrower file</a>{% endif %}
 </p>
 {% if packet.review_note %}<p><strong>Last note:</strong> {{ packet.review_note }}</p>{% endif %}
+{% if date_fields %}
+<div class="card" style="margin-top:14px">
+  <h3>Document dates</h3>
+  <p class="hint">Change a date and save. This replaces the deed or mortgage and the note on this closing. The signed loan application stays signed, and you do not approve it again.</p>
+  <p class="hint">Borrower signature times stay as they were signed. The notary lines stay blank for the closing table.</p>
+  {% if packet.title_sent_at %}<p class="hint">Title was emailed {{ packet.title_sent_at }}. After a date change, email the zip again.</p>{% endif %}
+  <form method="post" class="form-grid">
+    {% for field in date_fields %}
+    <div>
+      <label>{{ field.label }}</label>
+      <input type="date" name="{{ field.key }}" value="{{ field.value }}" required>
+      <p class="hint">{{ field.hint }}</p>
+    </div>
+    {% endfor %}
+    <div class="span-2"><button class="btn" name="action" value="dates" type="submit">Update dates and refresh PDFs</button></div>
+  </form>
+  {% if date_history %}
+  <p class="hint" style="margin-top:12px">Recent date changes</p>
+  <ul class="hint">
+    {% for edit in date_history %}
+    <li>{{ edit.who }} · {{ edit.when }} —
+      {% for change in edit.changes %}{{ change.label }} {{ change.before_label }} → {{ change.after_label }}{% if not loop.last %}; {% endif %}{% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
 {% if signatures.get('borrower') %}
 <div class="card">
   <h3>Signatures</h3>

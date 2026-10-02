@@ -814,3 +814,270 @@ def test_pdf_generation_error_does_not_claim_success(monkeypatch):
             "SELECT status FROM closing_applications WHERE id=?", (row["id"],)
         ).fetchone()["status"]
     assert status == "sent"
+
+
+def test_document_dates_stay_independent_of_the_term():
+    base = closing_packet.derive({
+        "loan_type": "Fix and Flip",
+        "interest_rate": "10",
+        "term_months": "4",
+        "term_days": "0",
+        "points": "0",
+        "extension_count": "2",
+        "extension_rate": "2",
+        "note_principal": "150000",
+        "effective_date": "2026-10-01",
+        "state": "Missouri",
+    })
+    assert base["maturity_date"] == "2027-02-01"
+    assert base["outside_date"] == "2027-04-01"
+
+    moved, changes = closing_packet.apply_document_dates(base, {
+        "effective_date": "2026-10-15",
+        "maturity_date": "2027-02-01",
+    })
+    assert moved["effective_date"] == "2026-10-15"
+    assert moved["maturity_date"] == "2027-02-01"
+    assert moved["maturity_override"] == "1"
+    assert [item["key"] for item in changes] == ["effective_date"]
+
+    aligned, aligned_changes = closing_packet.apply_document_dates(base, {
+        "effective_date": "2026-10-15",
+        "maturity_date": "2027-02-15",
+    })
+    assert aligned["maturity_date"] == "2027-02-15"
+    assert aligned.get("maturity_override") in ("", None)
+    assert {item["key"] for item in aligned_changes} == {"effective_date", "maturity_date"}
+
+    try:
+        closing_packet.apply_document_dates(base, {
+            "effective_date": "2026-10-15",
+            "maturity_date": "2026-10-01",
+        })
+    except closing_packet.DocumentDateError as exc:
+        assert "on or after" in str(exc)
+    else:
+        raise AssertionError("maturity before the closing date should be rejected")
+
+    resigned_errors, resigned = closing_packet.submission_errors(
+        moved,
+        _application("Ada Lender"),
+    )
+    assert resigned_errors == []
+    assert resigned["effective_date"] == "2026-10-01"
+    assert resigned["maturity_date"] == "2027-02-01"
+    assert not closing_packet._flag(resigned.get("maturity_override"))
+
+
+def test_stock_templates_print_closing_and_maturity_dates_only():
+    with brittco.app.app_context():
+        closing_packet.ensure_schema(brittco.db())
+        fields = closing_packet.dates_on_documents(
+            {"state": "Missouri", "effective_date": "2026-10-01", "term_months": "4", "loan_type": "Fix and Flip"},
+            brittco.db(),
+        )
+        note = closing_packet.active_template(brittco.db(), "MO", "note_guaranty")
+        original = note["body"]
+        closing_packet.publish_template(
+            brittco.db(),
+            "MO",
+            "note_guaranty",
+            note["title"],
+            original + "\nFirst payment date: {{first_payment_date}}.\n",
+        )
+        try:
+            extra = closing_packet.dates_on_documents(
+                {
+                    "state": "Missouri",
+                    "effective_date": "2026-10-01",
+                    "term_months": "4",
+                    "loan_type": "Fix and Flip",
+                    "first_payment_date": "2026-11-01",
+                },
+                brittco.db(),
+            )
+            rendered = closing_packet.render_closing_pdfs(
+                {
+                    "state": "Missouri",
+                    "property": "10 Oak St",
+                    "county": "Jackson",
+                    "borrower_legal_name": "Date LLC",
+                    "signatory_name": "Dana",
+                    "legal_description": "Lot 1",
+                    "note_principal": "1000",
+                    "loan_type": "Fix and Flip",
+                    "interest_rate": "10",
+                    "term_months": "4",
+                    "guarantor_name": "Dana",
+                    "marital_status": "Single",
+                    "effective_date": "2026-10-01",
+                    "first_payment_date": "2026-11-01",
+                },
+                {"borrower": {"typed_name": "Dana", "signed_at": "2026-10-01T12:00:00"}},
+                brittco.db(),
+            )
+        finally:
+            closing_packet.publish_template(
+                brittco.db(), "MO", "note_guaranty", note["title"], original
+            )
+    assert [field["key"] for field in fields] == ["effective_date", "maturity_date"]
+    assert [field["key"] for field in extra] == ["effective_date", "maturity_date", "first_payment_date"]
+    assert b"November 1, 2026" in rendered["note_pdf"]
+
+
+def test_date_form_waits_for_a_signed_packet_and_requires_staff():
+    bid = _borrower("Ned Unsigned", "ned.unsigned@example.com")
+    row = _send(bid)
+    anon = brittco.app.test_client().post(
+        f"/admin/closings/{row['id']}",
+        data={"action": "dates", "effective_date": "2026-10-15", "maturity_date": "2027-02-01"},
+    )
+    assert anon.status_code in (302, 303)
+    assert "login" in (anon.headers.get("Location") or "")
+    staff = _staff()
+    opened = staff.get(f"/admin/closings/{row['id']}")
+    assert b"Document dates" not in opened.data
+    refused = staff.post(
+        f"/admin/closings/{row['id']}",
+        data={"action": "dates", "effective_date": "2026-10-15", "maturity_date": "2027-02-01"},
+        follow_redirects=True,
+    )
+    assert b"after the borrower has signed" in refused.data
+    with brittco.app.app_context():
+        saved = brittco.db().execute(
+            "SELECT status FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()
+    assert saved["status"] == "sent"
+
+
+def test_staff_can_change_document_dates_without_a_new_signature():
+    bid = _borrower("Owen Dates", "owen.dates@example.com")
+    row = _send(bid)
+    signed = brittco.app.test_client().post(f"/closing/{row['token']}", data=_application("Owen Dates"))
+    assert signed.status_code == 200
+    assert b"Signed and received" in signed.data
+    staff = _staff()
+    approved = staff.post(f"/admin/closings/{row['id']}", data={"action": "approve"})
+    assert approved.status_code in (302, 303)
+
+    with brittco.app.app_context():
+        cur = brittco.db().execute(
+            """INSERT INTO loans
+               (borrower_id, loan_number, start_date, maturity_date, next_payment_due,
+                payment_frequency, status)
+               VALUES (?,?,?,?,?,?,?)""",
+            (bid, "BC-DATE-1", "2026-10-01", "2027-02-01", "2027-02-01", "Due at maturity", "Current"),
+        )
+        lid = cur.lastrowid
+        brittco.db().execute(
+            """UPDATE closing_applications
+               SET loan_id=?, title_sent_at=?
+               WHERE id=?""",
+            (lid, "2026-10-02T09:00:00", row["id"]),
+        )
+        brittco.db().commit()
+        before = brittco.db().execute(
+            "SELECT * FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()
+        before_signatures = before["signatures"]
+        before_note = open(os.path.join(brittco.UPLOAD_DIR, before["note_filename"]), "rb").read()
+
+    review = staff.get(f"/admin/closings/{row['id']}")
+    assert b"Document dates" in review.data
+    assert b"Closing / note date" in review.data
+    assert b"Maturity date" in review.data
+    assert b"do not approve it again" in review.data
+    assert b'value="2026-10-01"' in review.data
+    assert b'value="2027-02-01"' in review.data
+
+    changed = staff.post(
+        f"/admin/closings/{row['id']}",
+        data={
+            "action": "dates",
+            "effective_date": "2026-10-15",
+            "maturity_date": "2027-03-15",
+        },
+        follow_redirects=True,
+    )
+    page = changed.data.decode()
+    assert "Updated the closing documents" in page
+    assert "October 15, 2026" in page
+    assert "March 15, 2027" in page
+    assert "Email the zip to title again" in page
+    assert "admin@brittcocapital.com" in page
+
+    with brittco.app.app_context():
+        saved = brittco.db().execute(
+            "SELECT * FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()
+        payload = closing_packet.load_json(saved["payload"], {})
+        edits = brittco.db().execute(
+            "SELECT * FROM closing_date_edits WHERE closing_id=?", (row["id"],)
+        ).fetchall()
+        loan = brittco.db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+        note = open(os.path.join(brittco.UPLOAD_DIR, saved["note_filename"]), "rb").read()
+        deed = open(os.path.join(brittco.UPLOAD_DIR, saved["dot_filename"]), "rb").read()
+        copies = brittco.db().execute(
+            "SELECT COUNT(*) AS n FROM documents WHERE filename=?",
+            (saved["note_filename"],),
+        ).fetchone()["n"]
+
+    assert saved["status"] == "approved"
+    assert saved["signatures"] == before_signatures
+    assert saved["submitted_at"] == before["submitted_at"]
+    assert saved["reviewed_by"] == before["reviewed_by"]
+    assert saved["token"] == before["token"]
+    assert saved["title_sent_at"] == "2026-10-02T09:00:00"
+    assert payload["effective_date"] == "2026-10-15"
+    assert payload["maturity_date"] == "2027-03-15"
+    assert note != before_note
+    assert b"October 15, 2026" in note
+    assert b"March 15, 2027" in note
+    assert b"February 1, 2027" not in note
+    assert b"October 15, 2026" in deed
+    assert copies == 1
+    assert len(edits) == 1
+    assert edits[0]["staff_name"] == "admin@brittcocapital.com"
+    assert loan["start_date"] == "2026-10-15"
+    assert loan["maturity_date"] == "2027-03-15"
+    assert loan["next_payment_due"] == "2027-03-15"
+
+    borrower = brittco.app.test_client().get(f"/closing/{saved['token']}")
+    assert b"Submit and sign" not in borrower.data
+    assert b"Signed and received" in borrower.data
+
+    same = staff.post(
+        f"/admin/closings/{row['id']}",
+        data={
+            "action": "dates",
+            "effective_date": "2026-10-15",
+            "maturity_date": "2027-03-15",
+        },
+        follow_redirects=True,
+    )
+    assert b"already on the documents" in same.data
+
+    with brittco.app.app_context():
+        brittco.db().execute(
+            "UPDATE loans SET payment_frequency=?, next_payment_due=? WHERE id=?",
+            ("Monthly", "2026-11-01", lid),
+        )
+        brittco.db().commit()
+    staff.post(
+        f"/admin/closings/{row['id']}",
+        data={
+            "action": "dates",
+            "effective_date": "2026-10-15",
+            "maturity_date": "2027-04-01",
+        },
+    )
+    with brittco.app.app_context():
+        loan = brittco.db().execute("SELECT * FROM loans WHERE id=?", (lid,)).fetchone()
+        saved = brittco.db().execute(
+            "SELECT status, payload FROM closing_applications WHERE id=?", (row["id"],)
+        ).fetchone()
+    assert loan["next_payment_due"] == "2026-11-01"
+    assert loan["maturity_date"] == "2027-04-01"
+    assert loan["start_date"] == "2026-10-15"
+    assert saved["status"] == "approved"
+    assert closing_packet.load_json(saved["payload"], {})["effective_date"] == "2026-10-15"
